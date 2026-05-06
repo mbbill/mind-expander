@@ -301,6 +301,7 @@ export function buildLayout(inputs: LayoutInputs): Layout {
       globalXStart,
       xByPath,
       widthByPath,
+      measureText,
       ownership,
       incomingMap,
       state,
@@ -599,6 +600,23 @@ interface PlacedRect {
   readonly h: number;
 }
 
+interface RelativeRect {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+}
+
+interface CollisionShape {
+  readonly rects: readonly RelativeRect[];
+  readonly height: number;
+}
+
+interface PlacedShape {
+  readonly y: number;
+  readonly rects: readonly PlacedRect[];
+}
+
 function packBand(args: {
   readonly types: readonly TypeNode[];
   readonly depth: ReadonlyMap<string, number>;
@@ -608,10 +626,11 @@ function packBand(args: {
    *  edge from this map instead of from a column grid — that's what
    *  decouples unrelated chains at the same depth. */
   readonly xByPath: ReadonlyMap<string, number>;
-  /** Per-type widths, mirrored from the same map computeNodeXs used.
-   *  packBand needs these to decide x-overlap when packing types into
-   *  rows. */
+  /** Per-type display widths, mirrored from the same map computeNodeXs used.
+   *  Collision checks use row-shaped geometry; this width is preserved on
+   *  the emitted TypeBox for rendering/routing metadata. */
   readonly widthByPath: ReadonlyMap<string, number>;
+  readonly measureText: (text: string) => number;
   /** Visible structural incoming edges by target. Large collapsed groups
    *  without incoming constraints are allowed to wrap into shelf columns;
    *  constrained targets stay at the x assigned by weighted placement. */
@@ -637,6 +656,7 @@ function packBand(args: {
     globalXStart,
     xByPath,
     widthByPath,
+    measureText,
     incomingMap,
     state,
     sortKey,
@@ -691,6 +711,7 @@ function packBand(args: {
     x: number;
     w: number;
     h: number;
+    shape: CollisionShape;
   };
   const cells: Cell[] = sorted.map((t) => {
     const d = effectiveDepth(t);
@@ -701,7 +722,8 @@ function packBand(args: {
     const w =
       widthByPath.get(t.fullPath) ?? computeTypeBoxWidth(t, tExpanded, state, methodsHidden);
     const h = tExpanded ? ROW_H + expandedRowCount(t, state, methodsHidden) * FIELD_ROW_H : ROW_H;
-    return { t, tExpanded, col, x, w, h };
+    const shape = buildCollisionShape(t, tExpanded, state, methodsHidden, measureText);
+    return { t, tExpanded, col, x, w, h, shape };
   });
   const shelfGroups = new Map<string, Cell[]>();
   for (const c of cells) {
@@ -728,14 +750,16 @@ function packBand(args: {
   // Pass 1: greedy top-down packing to establish the band's natural height.
   // Used as a hard cap in pass 2 so types don't push the band taller just
   // to land near their barycenter.
-  const placed1: PlacedRect[] = [];
+  const placed1: PlacedShape[] = [];
   for (const c of cells) {
-    const y = findFitY(placed1, c.x, c.w, c.h);
-    placed1.push({ x: c.x, y, w: c.w, h: c.h });
+    const y = findFitY(placed1, c.x, c.shape);
+    placed1.push(placeShape(c.x, y, c.shape));
   }
   let bandHeight = 0;
-  for (const r of placed1) {
-    if (r.y + r.h > bandHeight) bandHeight = r.y + r.h;
+  for (let i = 0; i < placed1.length; i++) {
+    const r = placed1[i] as PlacedShape;
+    const c = cells[i] as Cell;
+    if (r.y + c.shape.height > bandHeight) bandHeight = r.y + c.shape.height;
   }
   const hasExpandedCells = cells.some((c) => c.tExpanded);
 
@@ -748,7 +772,7 @@ function packBand(args: {
         tExpanded: c.tExpanded,
         col: c.col,
         x: c.x,
-        y: (placed1[i] as PlacedRect).y,
+        y: (placed1[i] as PlacedShape).y,
         pixelHeight: c.h,
         width: c.w,
       }),
@@ -760,11 +784,11 @@ function packBand(args: {
   // clamped to the band height established by pass 1. The pass-1 y is
   // also a stability anchor: opening one type should not cause unrelated
   // neighbors to jump upward just because a spare slot appeared.
-  const placed2: PlacedRect[] = [];
+  const placed2: PlacedShape[] = [];
   const boxes: PackedBox[] = [];
   for (let i = 0; i < cells.length; i++) {
     const c = cells[i] as Cell;
-    const naturalY = (placed1[i] as PlacedRect).y;
+    const naturalY = (placed1[i] as PlacedShape).y;
     const anchoredY = anchorY?.has(c.t.fullPath)
       ? (anchorY.get(c.t.fullPath) as number) - bandTopY - ROW_H / 2
       : naturalY;
@@ -777,10 +801,10 @@ function packBand(args: {
       // horizontal arrow tracks.
       targetY = abs - bandTopY - ROW_H / 2;
     }
-    targetY = Math.max(0, Math.min(bandHeight - c.h, targetY));
+    targetY = Math.max(0, Math.min(bandHeight - c.shape.height, targetY));
     const floorY = hasExpandedCells && !c.tExpanded ? anchoredY : undefined;
-    const y = findFitYNearTarget(placed2, c.x, c.w, c.h, targetY, anchoredY, bandHeight, floorY);
-    placed2.push({ x: c.x, y, w: c.w, h: c.h });
+    const y = findFitYNearTarget(placed2, c.x, c.shape, targetY, anchoredY, bandHeight, floorY);
+    placed2.push(placeShape(c.x, y, c.shape));
     boxes.push({
       t: c.t,
       tExpanded: c.tExpanded,
@@ -793,21 +817,22 @@ function packBand(args: {
   }
   // Pass 2 might still grow the band slightly if all in-cap slots
   // conflict; recompute final bandHeight just in case.
-  for (const r of placed2) {
-    if (r.y + r.h > bandHeight) bandHeight = r.y + r.h;
+  for (let i = 0; i < placed2.length; i++) {
+    const r = placed2[i] as PlacedShape;
+    const c = cells[i] as Cell;
+    if (r.y + c.shape.height > bandHeight) bandHeight = r.y + c.shape.height;
   }
   return { boxes, bandHeight };
 }
 
-/** Find a y that fits the given rect closest to `targetY`. Candidates are:
+/** Find a y that fits the given shape closest to `targetY`. Candidates are:
  *  the target itself, the stability anchor, top-of-band (y=0), and
  *  just-below / just-above each x-overlapping placed rect. If nothing fits
  *  within `cap`, falls back to the unbounded greedy `findFitY`. */
 function findFitYNearTarget(
-  placed: readonly PlacedRect[],
+  placed: readonly PlacedShape[],
   x: number,
-  w: number,
-  h: number,
+  shape: CollisionShape,
   targetY: number,
   anchorY: number,
   cap: number,
@@ -817,63 +842,159 @@ function findFitYNearTarget(
   candidates.add(Math.max(0, targetY));
   candidates.add(Math.max(0, anchorY));
   candidates.add(0);
-  for (const p of placed) {
-    const xOverlap = !(p.x + p.w + TYPE_X_GAP <= x || p.x >= x + w + TYPE_X_GAP);
-    if (!xOverlap) continue;
-    candidates.add(p.y + p.h);
-    if (p.y - h >= 0) candidates.add(p.y - h);
+  for (const r of shape.rects) {
+    const rectX = x + r.x;
+    for (const placedShape of placed) {
+      for (const p of placedShape.rects) {
+        if (!xRangesOverlap(rectX, r.w, p.x, p.w, TYPE_X_GAP)) continue;
+        candidates.add(p.y + p.h - r.y);
+        const above = p.y - r.y - r.h;
+        if (above >= 0) candidates.add(above);
+      }
+    }
   }
 
   const fitting: number[] = [];
   for (const y of candidates) {
-    if (y < 0 || y + h > cap) continue;
+    if (y < 0 || y + shape.height > cap) continue;
     if (floorY !== undefined && y < floorY) continue;
-    let conflict = false;
-    for (const p of placed) {
-      const xOverlap = !(p.x + p.w + TYPE_X_GAP <= x || p.x >= x + w + TYPE_X_GAP);
-      if (!xOverlap) continue;
-      const yOverlap = !(p.y + p.h <= y || p.y >= y + h);
-      if (yOverlap) {
-        conflict = true;
-        break;
-      }
-    }
-    if (!conflict) fitting.push(y);
+    if (fitsShapeAt(placed, x, y, shape)) fitting.push(y);
   }
 
-  if (fitting.length === 0) return findFitY(placed, x, w, h, floorY ?? 0);
+  if (fitting.length === 0) return findFitY(placed, x, shape, floorY ?? 0);
   const score = (y: number): number => Math.abs(y - targetY) + Math.abs(y - anchorY) * 0.75;
   fitting.sort((a, b) => score(a) - score(b));
   return fitting[0] as number;
 }
 
 function findFitY(
-  placed: readonly PlacedRect[],
+  placed: readonly PlacedShape[],
   x: number,
-  w: number,
-  h: number,
+  shape: CollisionShape,
   startY = 0,
 ): number {
-  // Smallest y ≥ 0 such that the candidate rect doesn't overlap any placed
-  // rect (with TYPE_X_GAP horizontal margin). Iterates by pushing y past each
-  // conflicting rect; converges in O(N²) per insertion (fine at our scale).
+  // Smallest y >= 0 such that no candidate row-rect overlaps any placed
+  // row-rect (with TYPE_X_GAP horizontal margin). Iterates by pushing
+  // the whole shape past the lowest conflicting rect; converges in O(N^2)
+  // per insertion (fine at our scale).
   let y = Math.max(0, startY);
   for (let safety = 0; safety < 1024; safety++) {
     let pushTo = y;
     let conflict = false;
-    for (const p of placed) {
-      const xOverlap = !(p.x + p.w + TYPE_X_GAP <= x || p.x >= x + w + TYPE_X_GAP);
-      if (!xOverlap) continue;
-      const yOverlap = !(p.y + p.h <= y || p.y >= y + h);
-      if (!yOverlap) continue;
-      conflict = true;
-      if (p.y + p.h > pushTo) pushTo = p.y + p.h;
+    for (const r of shape.rects) {
+      const rectX = x + r.x;
+      const rectY = y + r.y;
+      for (const placedShape of placed) {
+        for (const p of placedShape.rects) {
+          if (!xRangesOverlap(rectX, r.w, p.x, p.w, TYPE_X_GAP)) continue;
+          if (!yRangesOverlap(rectY, r.h, p.y, p.h)) continue;
+          conflict = true;
+          const candidateY = p.y + p.h - r.y;
+          if (candidateY > pushTo) pushTo = candidateY;
+        }
+      }
     }
     if (!conflict) return y;
     if (pushTo === y) return y; // safety: shouldn't happen
     y = pushTo;
   }
   return y;
+}
+
+function fitsShapeAt(
+  placed: readonly PlacedShape[],
+  x: number,
+  y: number,
+  shape: CollisionShape,
+): boolean {
+  for (const r of shape.rects) {
+    const rectX = x + r.x;
+    const rectY = y + r.y;
+    for (const placedShape of placed) {
+      for (const p of placedShape.rects) {
+        if (!xRangesOverlap(rectX, r.w, p.x, p.w, TYPE_X_GAP)) continue;
+        if (yRangesOverlap(rectY, r.h, p.y, p.h)) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function placeShape(x: number, y: number, shape: CollisionShape): PlacedShape {
+  return {
+    y,
+    rects: shape.rects.map((r) => ({ x: x + r.x, y: y + r.y, w: r.w, h: r.h })),
+  };
+}
+
+function xRangesOverlap(ax: number, aw: number, bx: number, bw: number, gap: number): boolean {
+  return !(ax + aw + gap <= bx || bx + bw + gap <= ax);
+}
+
+function yRangesOverlap(ay: number, ah: number, by: number, bh: number): boolean {
+  return !(ay + ah <= by || by + bh <= ay);
+}
+
+function buildCollisionShape(
+  t: TypeNode,
+  expanded: boolean,
+  state: ViewState,
+  methodsHidden: boolean,
+  measureText: (text: string) => number,
+): CollisionShape {
+  const rects: RelativeRect[] = [
+    {
+      x: 0,
+      y: 0,
+      w: TYPE_GLYPH_W + measureText(t.label) + 4,
+      h: ROW_H,
+    },
+  ];
+
+  let rowIdx = 0;
+  if (expanded) {
+    for (const f of t.fields) {
+      rects.push(rowRect(rowIdx, labelInsetForRows(t), measureText(f.name)));
+      rowIdx++;
+    }
+    if (!methodsHidden) {
+      for (const mb of t.methodBuckets) {
+        const bucketText = bucketHeaderText(mb);
+        rects.push(rowRect(rowIdx, FIELD_LABEL_INSET, measureText(bucketText)));
+        rowIdx++;
+        if (state.isExpanded(methodBucketId(t.fullPath, mb.bucket))) {
+          for (const method of mb.methods) {
+            rects.push(
+              rowRect(rowIdx, FIELD_LABEL_INSET + METHOD_INDENT, measureText(method.name)),
+            );
+            rowIdx++;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    rects,
+    height: expanded ? ROW_H + rowIdx * FIELD_ROW_H : ROW_H,
+  };
+}
+
+function rowRect(rowIdx: number, labelInset: number, textWidth: number): RelativeRect {
+  return {
+    x: 0,
+    y: ROW_H + rowIdx * FIELD_ROW_H,
+    w: labelInset + textWidth + 4,
+    h: FIELD_ROW_H,
+  };
+}
+
+function shapeWidth(shape: CollisionShape): number {
+  let width = 0;
+  for (const r of shape.rects) {
+    if (r.x + r.w > width) width = r.x + r.w;
+  }
+  return width;
 }
 
 function computeTypeBoxWidth(
@@ -884,41 +1005,17 @@ function computeTypeBoxWidth(
   measureText: (text: string) => number = (s) => s.length * CHAR_W,
   capFunctionGroup = true,
 ): number {
-  // Box width counts the header label and the longest visible row label
-  // (field name, bucket header, or expanded method name). The grey
-  // `: ty_text` suffix overflows visually and isn't counted, so it
-  // doesn't push downstream depth columns rightward.
-  let w = TYPE_GLYPH_W + t.label.length * CHAR_W + 4;
-  if (expanded) {
-    const fieldLabelInset = labelInsetForRows(t);
-    for (const f of t.fields) {
-      const rowW = fieldLabelInset + measureText(f.name) + 4;
-      if (rowW > w) w = rowW;
-    }
-    if (!methodsHidden) {
-      for (const mb of t.methodBuckets) {
-        const headerText = bucketHeaderText(mb);
-        const headerW = FIELD_LABEL_INSET + measureText(headerText) + 4;
-        if (headerW > w) w = headerW;
-        const bucketId = methodBucketId(t.fullPath, mb.bucket);
-        if (state.isExpanded(bucketId)) {
-          for (const m of mb.methods) {
-            const rowW = FIELD_LABEL_INSET + measureText(m.name) + 4;
-            if (rowW > w) w = rowW;
-          }
-        }
-      }
-    }
-  }
+  // Box width counts the header label and the longest visible row label.
+  // The grey `: ty_text` suffix overflows visually and isn't counted, so it
+  // doesn't push downstream depth columns rightward. Packing uses the same
+  // row geometry as a shape, so long detail rows only block the rows they
+  // occupy rather than widening the whole expanded symbol rectangle.
+  let w = shapeWidth(buildCollisionShape(t, expanded, state, methodsHidden, measureText));
   // Function-group pseudo-types live in column 0; real types live in
-  // column 1+. Without this cap, an expanded function group with a
-  // long function name (e.g. `reset_native_runtime_state` at ~220 px)
-  // overflows into column 1's horizontal lane, and the packer pushes
-  // adjacent real types down to clear the conflict — leaving a blank
-  // row in the right-side band. Capping the layout-width at one column
-  // keeps the function group strictly inside col 0 so real types pack
-  // around it; long function names just visually overflow as text,
-  // similar to how field `: ty_text` already overflows.
+  // column 1+. Keep the emitted box width capped to that first column so
+  // function groups do not behave like full-width type boxes. Their long
+  // visible rows still participate in collision via CollisionShape above,
+  // so they block only the rows they actually occupy.
   if (capFunctionGroup && t.typeKind === 'function_group' && w > COL_W - TYPE_X_GAP) {
     w = COL_W - TYPE_X_GAP;
   }

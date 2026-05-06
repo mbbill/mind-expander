@@ -631,6 +631,80 @@ describe('buildLayout — function-group column shift', () => {
     );
   });
 
+  it('packs real types into short-row pockets beside expanded function groups', () => {
+    const longFn = 'a_function_name_long_enough_to_cross_the_type_column';
+    const shortFn = 'z';
+    const c = crateFacts('c', [
+      mod('', [ty('c', '', 'ZAnchor'), ty('c', '', 'ZPocket')], {
+        functions: [
+          { name: longFn, visibility: 'pub' },
+          { name: shortFn, visibility: 'pub' },
+        ],
+      }),
+    ]);
+    const root = buildModuleTree(c);
+    const fnGroupId = 'c::__fn_pub';
+    const layout = setup(c, [], [root.id, fnGroupId]);
+    const fnGroup = layout.types.find((t) => t.fullPath === fnGroupId);
+    const pocket = layout.types.find((t) => t.label === 'ZPocket');
+    const longRow = fnGroup?.fields.find((f) => f.name === longFn);
+    const shortRow = fnGroup?.fields.find((f) => f.name === shortFn);
+    expect(fnGroup).toBeDefined();
+    expect(pocket).toBeDefined();
+    expect(longRow).toBeDefined();
+    expect(shortRow).toBeDefined();
+
+    const fnGroupTop = (fnGroup as NonNullable<typeof fnGroup>).y - ROW_H / 2;
+    const pocketTop = (pocket as NonNullable<typeof pocket>).y - ROW_H / 2;
+    expect(pocketTop - fnGroupTop).toBe(ROW_H + FIELD_ROW_H);
+    expect((pocket as NonNullable<typeof pocket>).x).toBeLessThan(
+      (longRow as NonNullable<typeof longRow>).arrowSourceX,
+    );
+    expect((shortRow as NonNullable<typeof shortRow>).arrowSourceX).toBeLessThan(
+      (pocket as NonNullable<typeof pocket>).x,
+    );
+  });
+
+  it('packs real types into short-method pockets beside expanded type rows', () => {
+    const longMethod = 'a_method_name_long_enough_to_cross_the_next_column';
+    const shortMethod = 'z';
+    const owner: TypeFacts = {
+      ...ty('c', '', 'Owner'),
+      methods: [
+        { name: longMethod, visibility: 'pub' },
+        { name: shortMethod, visibility: 'pub' },
+      ],
+    };
+    const source = ty('c', '', 'Source');
+    const firstTarget = ty('c', '', 'FirstTarget');
+    const pocketTarget = ty('c', '', 'PocketTarget');
+    const c = crateFacts('c', [mod('', [owner, source, firstTarget, pocketTarget])]);
+    const root = buildModuleTree(c);
+    const layout = setup(
+      c,
+      [edge('c::Source', 'c::FirstTarget'), edge('c::Source', 'c::PocketTarget')],
+      [root.id, 'c::Owner', 'c::Owner::__methods_pub'],
+    );
+    const ownerBox = layout.types.find((t) => t.fullPath === 'c::Owner');
+    const pocket = layout.types.find((t) => t.fullPath === 'c::PocketTarget');
+    const longRow = ownerBox?.fields.find((f) => f.name === longMethod);
+    const shortRow = ownerBox?.fields.find((f) => f.name === shortMethod);
+    expect(ownerBox).toBeDefined();
+    expect(pocket).toBeDefined();
+    expect(longRow).toBeDefined();
+    expect(shortRow).toBeDefined();
+
+    const ownerTop = (ownerBox as NonNullable<typeof ownerBox>).y - ROW_H / 2;
+    const pocketTop = (pocket as NonNullable<typeof pocket>).y - ROW_H / 2;
+    expect(pocketTop - ownerTop).toBe(ROW_H + 2 * FIELD_ROW_H);
+    expect((pocket as NonNullable<typeof pocket>).x).toBeLessThan(
+      (longRow as NonNullable<typeof longRow>).arrowSourceX,
+    );
+    expect((shortRow as NonNullable<typeof shortRow>).arrowSourceX).toBeLessThan(
+      (pocket as NonNullable<typeof pocket>).x,
+    );
+  });
+
   it('uses uncapped function names for routing spacing without widening the packed box', () => {
     const longFn = 'full_optimization_for_bytecode_size';
     const c = crateFacts('c', [

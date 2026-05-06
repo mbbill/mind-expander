@@ -1061,7 +1061,20 @@ function renderFieldsForType(
     .selectAll<SVGGElement, Layout['types'][number]['fields'][number]>('g.field-row-g')
     .data(fields, (f) => `${f.kind}:${f.name}`);
 
-  sel.exit().transition('exit').duration(ANIM_MS).style('opacity', 0).remove();
+  // Fast collapse -> expand can re-bind rows that still have a pending
+  // named exit transition from the collapse render. Cancel that removal
+  // explicitly; otherwise the type header expands but the old exit's
+  // `.remove()` fires afterward and leaves an empty detail area.
+  sel.interrupt('exit').style('opacity', 1);
+
+  sel
+    .exit()
+    .interrupt('enter')
+    .interrupt('move')
+    .transition('exit')
+    .duration(ANIM_MS)
+    .style('opacity', 0)
+    .remove();
 
   const enter = sel.enter().append('g').attr('class', 'field-row-g').style('opacity', 0);
 
