@@ -1,0 +1,37 @@
+# Rust build outputs
+/target/
+
+# Node/Vite build outputs and dependencies
+node_modules/
+dist/
+.vite/
+
+# Test and coverage outputs
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+temp/
+*.tmp

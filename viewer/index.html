@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>mind-expander</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #1e293b;
+        overflow: hidden;
+      }
+      main {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+      /* Scoped to the main tree SVG only — without this, the legend's
+         inline SVGs (and the hidden defs-only SVG) would inherit
+         width:100%/height:100% and balloon to fill their containers. */
+      #tree {
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: default;
+        user-select: none;
+      }
+      #tree.viewport-dragging,
+      #tree.viewport-dragging:active {
+        cursor: move;
+      }
+      /* Arrows render subdued by default so dense diagrams stay readable;
+         hover or selection brings them forward via the .highlighted class
+         (see tree.ts for class-toggling). The widened contrast between
+         default and highlighted makes "what am I currently examining"
+         pop without losing the arrow set's structure.
+         path.visible carries the visual stroke; path.hit is a transparent
+         wider sibling that catches clicks (see tree.ts). pointer-events
+         is split so only .hit reacts — no double-fires. */
+      #tree g.arrows path.visible {
+        opacity: 0.7;
+        pointer-events: none;
+        transition:
+          opacity 80ms,
+          stroke-width 80ms;
+      }
+      #tree g.arrows path.visible.highlighted {
+        opacity: 1;
+        stroke-width: 1.5;
+      }
+      /* Method-reference arrows render dashed (`2 2`): roughly half the
+         pixel coverage of solid lines, so default 0.7 opacity makes
+         them faint. Boost idle visibility, then boost more when
+         highlighted — without this, the `.method` rule's stroke-width
+         silently overrides the `.highlighted` rule (same specificity,
+         later in the file), so chain selection ends up barely
+         visible on method rows. */
+      #tree g.arrows path.visible.method {
+        opacity: 0.95;
+        stroke-width: 1.25;
+      }
+      #tree g.arrows path.visible.method.highlighted {
+        opacity: 1;
+        stroke-width: 1.75;
+        /* Methods always render canonical-grey at idle (drift class
+           describes structural placement, irrelevant for use-relations),
+           and the `.canonical.highlighted` blue rule only fires when
+           the path actually carries the `.canonical` class — which it
+           doesn't when the target's drift class is drift_above /
+           drift_sideways. So restate the highlight stroke explicitly
+           here, decoupled from drift. */
+        stroke: #3b82f6;
+      }
+      #tree g.arrows path.hit {
+        cursor: pointer;
+      }
+      /* Hover affordance: when the cursor is over an arrow's wide hit
+         overlay, the whole arrow group is hovered, so we can safely
+         bump the visible path's weight via CSS. The marker glyph
+         scales with stroke-width (markerUnits defaults to
+         "strokeWidth"), so the arrowhead enlarges in proportion —
+         turning the entire arrow into an obvious clickable target.
+         Opacity also nudges up so faint dotted method arrows announce
+         themselves under the cursor. */
+      #tree g.arrows g.arrow:hover path.visible {
+        opacity: 1;
+        stroke-width: 1.75;
+      }
+      #tree g.arrows g.arrow:hover path.visible.method {
+        stroke-width: 2;
+      }
+      /* Canonical arrows are slate-500 grey by default (background context);
+         when highlighted, restore the original blue so "the chain I'm
+         examining" stands out by colour, not just intensity. The arrowhead
+         picks up the same colour via marker fill="context-stroke". */
+      #tree g.arrows path.visible.canonical.highlighted {
+        stroke: #3b82f6;
+      }
+      #tree text.field-row {
+        cursor: pointer;
+      }
+      #tree text.field-row:hover {
+        font-weight: 600;
+      }
+      /* Halo: paint a white stroke under every glyph so arrow lines passing
+         behind text appear to break around the letters instead of slicing
+         through them. paint-order puts stroke under fill so the visible
+         color is still the fill. */
+      #tree text {
+        paint-order: stroke fill;
+        stroke: white;
+        stroke-width: 3px;
+        stroke-linejoin: round;
+        stroke-linecap: round;
+      }
+      #top-controls {
+        position: fixed;
+        top: 8px;
+        right: 8px;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
+      }
+      #crate {
+        font-size: 12px;
+        padding: 3px 6px;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 4px;
+      }
+      /* Games-style keybinding hint, sits below the crate selector. */
+      #keyhints {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #475569;
+        user-select: none;
+      }
+      #keyhints .row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 6px 2px 4px;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 4px;
+        opacity: 0.85;
+        cursor: pointer;
+      }
+      #keyhints .row:hover {
+        opacity: 1;
+        border-color: #cbd5e1;
+      }
+      #keyhints .row.active {
+        background: #fef3c7;
+        border-color: #f59e0b;
+        color: #78350f;
+        opacity: 1;
+      }
+      #keyhints kbd {
+        display: inline-block;
+        min-width: 14px;
+        padding: 1px 5px;
+        font-family: inherit;
+        font-size: 10px;
+        font-weight: 600;
+        text-align: center;
+        color: #1e293b;
+        background: #f1f5f9;
+        border: 1px solid #cbd5e1;
+        border-bottom-width: 2px;
+        border-radius: 3px;
+      }
+      #keyhints .row.active kbd {
+        background: #fde68a;
+        border-color: #f59e0b;
+        color: #78350f;
+      }
+      /* Wrapper for the F/S/R chips. Inside a column-flex container with
+         default `align-items: stretch`, all rows take the cross-size of
+         the widest child — so the three chips end up uniform-width
+         (matching whichever has the longest label, currently "S scale 100%").
+         Legend is a sibling of this wrapper, not a child, so it doesn't
+         participate in the chip-width computation. */
+      #keyhints .chips {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      /* Foldable toggle. Folded by default; click to expand. State is
+         persisted in sessionStorage so it survives page reloads within
+         the same tab session. */
+      #keyhints .keyhints-toggle {
+        align-self: flex-end;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 4px;
+        padding: 2px 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        font-weight: 600;
+        color: #64748b;
+        cursor: pointer;
+        line-height: 1.5;
+      }
+      #keyhints .keyhints-toggle:hover {
+        background: #f8fafc;
+        color: #1e293b;
+      }
+      #keyhints .keyhints-body {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+      }
+      #keyhints .keyhints-body[hidden] {
+        display: none;
+      }
+      #settings {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #475569;
+        user-select: none;
+      }
+      #settings .settings-toggle {
+        align-self: flex-end;
+        width: 28px;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 4px;
+        padding: 2px 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        font-weight: 700;
+        color: #64748b;
+        cursor: pointer;
+        line-height: 1.5;
+      }
+      #settings .settings-toggle:hover {
+        background: #f8fafc;
+        color: #1e293b;
+      }
+      #settings .settings-body {
+        width: 214px;
+        padding: 8px;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 4px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+      }
+      #settings .settings-body[hidden] {
+        display: none;
+      }
+      #settings .settings-row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        cursor: pointer;
+      }
+      #settings .settings-row input {
+        margin: 0;
+      }
+      #settings .settings-summary {
+        margin-top: 6px;
+        color: #64748b;
+        line-height: 1.35;
+      }
+      #settings .settings-default {
+        margin-top: 4px;
+        color: #94a3b8;
+      }
+      #minimap {
+        width: 180px;
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+        overflow: hidden;
+        user-select: none;
+      }
+      #minimap[hidden] {
+        display: none;
+      }
+      #minimap .minimap-toggle {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 4px 7px;
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid #e2e8f0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        font-weight: 600;
+        color: #475569;
+        cursor: pointer;
+      }
+      #minimap .minimap-toggle:hover {
+        background: #f8fafc;
+        color: #1e293b;
+      }
+      #minimap .minimap-caret {
+        color: #94a3b8;
+      }
+      #minimap .minimap-body[hidden] {
+        display: none;
+      }
+      #minimap .minimap-body {
+        width: 180px;
+        height: 132px;
+      }
+      #minimap svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: pointer;
+        touch-action: none;
+      }
+      #minimap .minimap-viewport {
+        fill: rgba(59, 130, 246, 0.12);
+        stroke: #2563eb;
+        stroke-width: 1.5;
+        vector-effect: non-scaling-stroke;
+      }
+      /* Arrow legend — same stroke / arrowhead / colors as the graph
+         (see ensureArrowMarker in tree.ts). The marker referenced from
+         the inline SVGs below uses fill=context-stroke so the arrowhead
+         tracks each line's stroke color, matching the graph's behaviour. */
+      #keyhints .legend {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 6px;
+        padding: 6px 8px;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #keyhints .legend .legend-col {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      #keyhints .legend .legend-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #64748b;
+        font-size: 10px;
+      }
+      #keyhints .legend .legend-arrow {
+        display: block;
+        flex-shrink: 0;
+        width: 36px;
+        height: 10px;
+      }
+      /* Visibility dots — same colors used for type/function dots in the
+         graph. Matches view/encoding.ts:VISIBILITY_COLOR. */
+      #keyhints .legend .legend-dot {
+        flex-shrink: 0;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin: 0 14px 0 0;
+      }
+      .error {
+        position: absolute;
+        inset: 0;
+        padding: 16px;
+        color: #b91c1c;
+        white-space: pre-wrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        background: white;
+      }
+      /* Lightweight hover-only tooltip for type rows. Smaller and busier
+         than the owners popover — just a read-only chip with quick info. */
+      #type-tooltip {
+        background: rgba(255, 255, 255, 0.94);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        border: 1px solid #e2e8f0;
+        border-radius: 5px;
+        padding: 6px 10px;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #1e293b;
+        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.1);
+        max-width: 320px;
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      #type-tooltip .tt-name {
+        font-weight: 600;
+        font-size: 12px;
+        color: #1e293b;
+      }
+      #type-tooltip .tt-path {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #64748b;
+        font-size: 10px;
+        margin-top: 1px;
+      }
+      #type-tooltip .tt-meta {
+        color: #475569;
+        font-size: 11px;
+        margin-top: 2px;
+      }
+      #type-tooltip .tt-meta + .tt-meta {
+        margin-top: 0;
+      }
+      /* Hover-popover for incoming ownership relationships. Frosted-glass
+         backdrop so the arrows and labels behind read faintly through it. */
+      .owners-panel {
+        background: rgba(255, 255, 255, 0.88);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 0 14px 8px 14px;
+        font-size: 12px;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #1e293b;
+        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+        min-width: 200px;
+        max-width: 360px;
+        max-height: 420px;
+        overflow-y: auto;
+        /* Thin always-visible scrollbar so users see "more below" even
+           on macOS where overflow-y:auto otherwise auto-hides the bar. */
+        scrollbar-width: thin;
+        scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+      }
+      .owners-panel::-webkit-scrollbar {
+        width: 8px;
+      }
+      .owners-panel::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .owners-panel::-webkit-scrollbar-thumb {
+        background: rgba(100, 116, 139, 0.35);
+        border-radius: 4px;
+      }
+      .owners-panel::-webkit-scrollbar-thumb:hover {
+        background: rgba(100, 116, 139, 0.6);
+      }
+      .owners-panel .header {
+        position: sticky;
+        top: 0;
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 0 -14px 6px -14px;
+        padding: 8px 14px 4px 14px;
+        border-bottom: 1px solid #f1f5f9;
+      }
+      .owners-panel .title {
+        font-weight: 600;
+        color: #475569;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+      }
+      .owners-panel .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .owners-panel .pin-btn,
+      .owners-panel .expand-all-btn {
+        background: transparent;
+        border: none;
+        font-size: 14px;
+        cursor: pointer;
+        padding: 0 2px;
+        line-height: 1;
+        opacity: 0.45;
+        transition: opacity 80ms, color 80ms;
+        color: #64748b;
+      }
+      /* The "⇇" glyph is a text-style symbol, smaller than the pin emoji.
+         Bump it up so the two button hit-targets feel similar in weight. */
+      .owners-panel .expand-all-btn {
+        font-size: 18px;
+      }
+      .owners-panel .pin-btn:hover,
+      .owners-panel .expand-all-btn:hover {
+        opacity: 1;
+        color: #1e293b;
+      }
+      .owners-panel .pin-btn.active {
+        opacity: 1;
+        color: #ef4444;
+      }
+      .owners-panel .expand-all-btn.active {
+        opacity: 1;
+        color: #3b82f6;
+      }
+      .owners-panel ul.owners-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .owners-panel li.owners-row {
+        cursor: pointer;
+        padding: 4px 6px;
+        display: flex;
+        flex-direction: column;
+        border-radius: 3px;
+        transition: background-color 80ms;
+      }
+      .owners-panel li.owners-row:hover {
+        background: rgba(59, 130, 246, 0.08);
+      }
+      .owners-panel li.owners-row .module {
+        color: #64748b;
+        font-size: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .owners-panel li.owners-row .types {
+        color: #1e293b;
+        font-size: 12px;
+      }
+      .owners-panel .more {
+        color: #94a3b8;
+        font-size: 10px;
+        margin-top: 6px;
+        text-align: center;
+      }
+      /* Arrow-disambiguation popover. Reuses the owners-panel look-and-
+         feel so the two screen-space popovers feel like the same family,
+         but with a distinct class so styling can diverge later. */
+      .arrow-disambig-panel {
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 0 12px 8px 12px;
+        font-size: 12px;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #1e293b;
+        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+        min-width: 220px;
+        max-width: 380px;
+        max-height: 360px;
+        overflow-y: auto;
+      }
+      .arrow-disambig-panel .header {
+        position: sticky;
+        top: 0;
+        background: rgba(255, 255, 255, 0.96);
+        margin: 0 -12px 4px -12px;
+        padding: 8px 12px 4px 12px;
+        border-bottom: 1px solid #f1f5f9;
+      }
+      .arrow-disambig-panel .header .title {
+        font-weight: 600;
+        color: #475569;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+      }
+      .arrow-disambig-panel ul.arrow-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .arrow-disambig-panel li.arrow-row {
+        cursor: pointer;
+        padding: 5px 6px;
+        display: flex;
+        flex-direction: column;
+        border-radius: 3px;
+        transition: background-color 80ms;
+      }
+      .arrow-disambig-panel li.arrow-row:hover,
+      .arrow-disambig-panel li.arrow-row:focus {
+        background: rgba(59, 130, 246, 0.1);
+        outline: none;
+      }
+      .arrow-disambig-panel li.arrow-row .action {
+        font-weight: 600;
+        color: #1e293b;
+        font-size: 12px;
+      }
+      .arrow-disambig-panel li.arrow-row .meta {
+        color: #64748b;
+        font-size: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <svg id="tree" role="img" aria-label="module and type tree"></svg>
+      <div id="error" class="error" hidden></div>
+    </main>
+    <!-- Hidden SVG defs reachable from any inline SVG on the page —
+         shared marker for the legend arrows. Same shape as the graph's
+         markers; fill="context-stroke" makes the arrowhead track each
+         line's stroke colour automatically. -->
+    <svg width="0" height="0" aria-hidden="true" style="position: absolute" focusable="false">
+      <defs>
+        <!-- markerUnits="userSpaceOnUse" pins the arrowhead size to a
+             constant 8×8 in user-space, regardless of the line's
+             stroke-width. The "selected" legend entry therefore reads
+             as "thicker line" without also turning into a bigger head. -->
+        <marker
+          id="legend-arrow-marker"
+          viewBox="0 -4 8 8"
+          refX="7"
+          refY="0"
+          markerUnits="userSpaceOnUse"
+          markerWidth="8"
+          markerHeight="8"
+          orient="auto"
+        >
+          <path d="M0,-4L8,0L0,4Z" fill="context-stroke" />
+        </marker>
+      </defs>
+    </svg>
+    <div id="top-controls" aria-label="viewer controls">
+      <select id="crate" aria-label="crate"></select>
+      <div id="minimap" aria-label="diagram minimap">
+        <button
+          type="button"
+          class="minimap-toggle"
+          aria-expanded="true"
+          aria-controls="minimap-body"
+          title="Toggle minimap"
+        >
+          <span>map</span>
+          <span class="minimap-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="minimap-body" id="minimap-body" title="Click or drag to pan">
+          <svg aria-hidden="true" focusable="false"></svg>
+        </div>
+      </div>
+      <div id="settings" aria-label="settings">
+        <button
+          type="button"
+          class="settings-toggle"
+          aria-expanded="false"
+          aria-controls="settings-body"
+          title="Toggle settings"
+        >
+          ☰
+        </button>
+        <div class="settings-body" id="settings-body" hidden>
+          <label class="settings-row">
+            <input id="settings-trackpad-mode" type="checkbox" />
+            <span>trackpad mode</span>
+          </label>
+          <div class="settings-summary" id="settings-input-summary"></div>
+          <div class="settings-default" id="settings-input-default"></div>
+        </div>
+      </div>
+      <div id="keyhints" aria-label="keybindings">
+        <button
+          type="button"
+          class="keyhints-toggle"
+          aria-expanded="false"
+          aria-controls="keyhints-body"
+          title="Toggle legend & shortcuts"
+        >
+          ?
+        </button>
+        <div class="keyhints-body" id="keyhints-body" hidden>
+          <div class="legend" aria-label="legend">
+            <div class="legend-col" aria-label="arrow legend">
+              <div class="legend-row">
+                <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                  <line
+                    x1="2"
+                    y1="5"
+                    x2="28"
+                    y2="5"
+                    stroke="#94a3b8"
+                    stroke-width="1"
+                    marker-end="url(#legend-arrow-marker)"
+                  />
+                </svg>
+                <span>canonical</span>
+              </div>
+              <div class="legend-row">
+                <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                  <line
+                    x1="2"
+                    y1="5"
+                    x2="28"
+                    y2="5"
+                    stroke="#3b82f6"
+                    stroke-width="1.5"
+                    marker-end="url(#legend-arrow-marker)"
+                  />
+                </svg>
+                <span>selected</span>
+              </div>
+              <div class="legend-row">
+                <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                  <line
+                    x1="2"
+                    y1="5"
+                    x2="28"
+                    y2="5"
+                    stroke="#f59e0b"
+                    stroke-width="1"
+                    marker-end="url(#legend-arrow-marker)"
+                  />
+                </svg>
+                <span>drift_below</span>
+              </div>
+              <div class="legend-row">
+                <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                  <line
+                    x1="2"
+                    y1="5"
+                    x2="28"
+                    y2="5"
+                    stroke="#ef4444"
+                    stroke-width="1"
+                    marker-end="url(#legend-arrow-marker)"
+                  />
+                </svg>
+                <span>drift_above</span>
+              </div>
+            </div>
+            <div class="legend-col" aria-label="visibility legend">
+              <div class="legend-row">
+                <span class="legend-dot" style="background:#ef4444"></span>
+                <span>pub</span>
+              </div>
+              <div class="legend-row">
+                <span class="legend-dot" style="background:#22c55e"></span>
+                <span>pub(crate)</span>
+              </div>
+              <div class="legend-row">
+                <span class="legend-dot" style="background:#3b82f6"></span>
+                <span>pub(super)</span>
+              </div>
+              <div class="legend-row">
+                <span class="legend-dot" style="background:#f97316"></span>
+                <span>pub(in path)</span>
+              </div>
+              <div class="legend-row">
+                <span class="legend-dot" style="background:#94a3b8"></span>
+                <span>local</span>
+              </div>
+            </div>
+          </div>
+          <div class="chips">
+            <div class="row" id="hint-focus"><kbd>F</kbd><span>focus</span></div>
+            <div class="row" id="hint-methods" title="Show or hide the per-type method buckets"><kbd>M</kbd><span>methods</span></div>
+            <div class="row" id="hint-scale" title="Reset zoom to 100%"><kbd>S</kbd><span>scale</span><span id="scale-value">100%</span></div>
+            <div class="row" id="hint-reset" title="Reset everything"><kbd>R</kbd><span>reset</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
