@@ -258,7 +258,7 @@ describe('buildModuleTree — function group synthesis', () => {
     const groups = typeChildren(a as ModuleNode).filter((t) => t.typeKind === 'function_group');
     // Three buckets used (pub, pub(crate), priv); pub(super) and pub(in path) absent.
     expect(groups.map((g) => g.label).sort()).toEqual(
-      ['local fn', 'pub fn', 'pub(crate) fn'].sort(),
+      ['local fn (1)', 'pub fn (2)', 'pub(crate) fn (1)'].sort(),
     );
   });
 
@@ -274,10 +274,10 @@ describe('buildModuleTree — function group synthesis', () => {
     const a = findModule(root, 'a');
     const labels = typeChildren(a as ModuleNode).map((t) => t.label);
     // pub fn → pub(crate) fn → local fn → real types alphabetical
-    expect(labels).toEqual(['pub fn', 'pub(crate) fn', 'local fn', 'Real']);
+    expect(labels).toEqual(['pub fn (1)', 'pub(crate) fn (1)', 'local fn (1)', 'Real']);
   });
 
-  it('encodes the bucket name as the pseudo-type label and `function_group` typeKind', () => {
+  it('encodes the bucket name and count as the pseudo-type label and `function_group` typeKind', () => {
     const root = buildModuleTree(
       crateOf('c', [mod(''), mod('a', [], { functions: [fn('one', 'pub')] })]),
     );
@@ -286,7 +286,7 @@ describe('buildModuleTree — function group synthesis', () => {
     expect(groups).toHaveLength(1);
     const g = groups[0] as TypeNode;
     expect(g.typeKind).toBe('function_group');
-    expect(g.label).toBe('pub fn');
+    expect(g.label).toBe('pub fn (1)');
     expect(g.visibility).toBe('pub');
   });
 

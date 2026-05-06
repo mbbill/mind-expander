@@ -187,7 +187,7 @@ function synthesiseFunctionGroups(
       // Synthetic id — won't collide with any real type id since real
       // ids never contain `__fn_`.
       id: `${moduleId}::__fn_${bucket}`,
-      label: BUCKET_LABEL[bucket],
+      label: `${BUCKET_LABEL[bucket]} (${fns.length})`,
       typeKind: 'function_group',
       visibility: BUCKET_VIS_TOKEN[bucket],
       fullPath: `${moduleId}::__fn_${bucket}`,
@@ -284,8 +284,8 @@ function idForModule(crateName: string, path: string): string {
 
 // Order within a module's children:
 //   1. Submodules (so structural levels stay above leaves).
-//   2. Function-group pseudo-types (sorted by visibility — `pub fn` first,
-//      `local fn` last; the BUCKET_ORDER sequence is enforced via the
+//   2. Function-group pseudo-types (sorted by visibility — `pub fn (N)` first,
+//      `local fn (N)` last; the BUCKET_ORDER sequence is enforced via the
 //      synthesizer pushing in order, plus this comparator's tie-break).
 //   3. Real types (alphabetical).
 function compareTreeNodes(a: TreeNode, b: TreeNode): number {

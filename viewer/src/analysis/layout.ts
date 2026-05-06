@@ -31,6 +31,9 @@ const CHAR_W = 7;
 const TYPE_GLYPH_W = 32; // chevron room + circle + spacing before label
 const MODULE_GLYPH_W = 18;
 const FIELD_LABEL_INSET = 36;
+// Free-function rows are not nested members of a type. Keep them tucked
+// closer to the function-group header than real field rows.
+const FUNCTION_GROUP_LABEL_INSET = 24;
 // Methods are visually indented past the bucket header to mirror how
 // Rust source nests impl-block bodies. Living in layout (not the
 // renderer) means f.x and f.arrowSourceX both reflect the indent —
@@ -327,7 +330,7 @@ export function buildLayout(inputs: LayoutInputs): Layout {
         let rowIdx = 0;
         for (let i = 0; i < p.t.fields.length; i++) {
           const f = p.t.fields[i] as FieldFacts;
-          const nameStart = p.x + FIELD_LABEL_INSET;
+          const nameStart = p.x + labelInsetForRows(p.t);
           fieldRows.push({
             name: f.name,
             tyText: f.ty_text,
@@ -887,8 +890,9 @@ function computeTypeBoxWidth(
   // doesn't push downstream depth columns rightward.
   let w = TYPE_GLYPH_W + t.label.length * CHAR_W + 4;
   if (expanded) {
+    const fieldLabelInset = labelInsetForRows(t);
     for (const f of t.fields) {
-      const rowW = FIELD_LABEL_INSET + measureText(f.name) + 4;
+      const rowW = fieldLabelInset + measureText(f.name) + 4;
       if (rowW > w) w = rowW;
     }
     if (!methodsHidden) {
@@ -919,6 +923,10 @@ function computeTypeBoxWidth(
     w = COL_W - TYPE_X_GAP;
   }
   return w;
+}
+
+function labelInsetForRows(t: TypeNode): number {
+  return t.typeKind === 'function_group' ? FUNCTION_GROUP_LABEL_INSET : FIELD_LABEL_INSET;
 }
 
 /** Total number of inner rows an expanded type renders. Counts the

@@ -125,7 +125,7 @@ function arrowColor(a: Layout['arrows'][number]): string {
  *  which is exactly the visual register we want for an annotation
  *  alongside the more prominent label.
  *
- *  Function-groups self-identify via their "pub fn" / "local fn" label,
+ *  Function-groups self-identify via their "pub fn (N)" / "local fn (N)" label,
  *  so they get no marker. Ghosts inherit the canonical's TypeKind via
  *  the extractor's `re.target_kind` field, so they get the same marker
  *  as the type they alias — italic label + hollow ring still

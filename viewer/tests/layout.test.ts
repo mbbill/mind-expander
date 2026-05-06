@@ -615,6 +615,22 @@ describe('buildLayout — function-group column shift', () => {
     );
   });
 
+  it('uses a tighter row indent for module-level function names', () => {
+    const c = crateFacts('c', [
+      mod('', [], { functions: [{ name: 'top_level', visibility: 'pub' }] }),
+    ]);
+    const root = buildModuleTree(c);
+    const fnGroupId = 'c::__fn_pub';
+    const layout = setup(c, [], [root.id, fnGroupId]);
+    const fnGroup = layout.types.find((t) => t.typeKind === 'function_group');
+    const row = fnGroup?.fields.find((f) => f.name === 'top_level');
+    expect(fnGroup).toBeDefined();
+    expect(row).toBeDefined();
+    expect((row as NonNullable<typeof row>).x - (fnGroup as NonNullable<typeof fnGroup>).x).toBe(
+      24,
+    );
+  });
+
   it('uses uncapped function names for routing spacing without widening the packed box', () => {
     const longFn = 'full_optimization_for_bytecode_size';
     const c = crateFacts('c', [
