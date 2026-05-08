@@ -71,6 +71,8 @@ const COLOR_FOCUS_BG = '#bfdbfe'; // blue-200, soft fill behind selected fields
 const FOCUS_BG_RADIUS = 5;
 const FOCUS_BG_PAD_X = 4;
 const FOCUS_BG_PAD_Y_FIELD = 3;
+const METHOD_BUCKET_CHEVRON_OFFSET = 12;
+const METHOD_BUCKET_CHEVRON_FONT_SIZE = 14;
 const FOCUS_FILTER_ID = 'sf-feather';
 const EDGE_SHADOW_GRADIENT_ID = 'sf-edge-shadow';
 const EDGE_SHADOW_W = 16; // data-units; scales with zoom (small but visible)
@@ -417,6 +419,19 @@ export function debugGridPatternTile(grid: DebugLayoutGrid): {
     width: grid.cellWidth,
     height: grid.cellHeight,
   };
+}
+
+export function fieldRowDisplayParts(
+  row: Pick<Layout['types'][number]['fields'][number], 'kind' | 'name' | 'bucketId'>,
+  expandedBucketIds: ReadonlySet<string>,
+): { readonly label: string; readonly chevron: string | null } {
+  if (row.kind !== 'method_bucket') return { label: row.name, chevron: null };
+
+  // Bucket chevrons are rendered as a separate affordance before the label.
+  // Keeping the label text as exactly `pub fn (...)` aligns it with normal
+  // member rows and keeps layout's measured row width honest.
+  const open = row.bucketId !== null && expandedBucketIds.has(row.bucketId);
+  return { label: row.name, chevron: open ? '▾' : '▸' };
 }
 
 function renderDebugGridPattern(
@@ -1336,15 +1351,11 @@ function renderFieldsForType(
 
     // Visual differentiation by row kind:
     //   - field        → default styling, italic for borrow ownership.
-    //   - method_bucket → small chevron prefix (▸/▾) so it reads as
-    //                     foldable; bold so it stands out from methods.
+    //   - method_bucket → separate chevron before the aligned label so
+    //                     it reads as foldable without shifting the text.
     //   - method       → italic + slightly dimmer to read as
     //                     "subordinate to the bucket above."
-    let displayText = f.name;
-    if (isBucketHeader) {
-      const open = f.bucketId !== null && opts.expandedBucketIds.has(f.bucketId);
-      displayText = `${open ? '▾' : '▸'} ${f.name}`;
-    }
+    const display = fieldRowDisplayParts(f, opts.expandedBucketIds);
     const fontWeight = isBucketHeader ? 600 : isSelected ? 600 : 400;
     const fontStyle = isMethod ? 'italic' : isBorrow ? 'italic' : 'normal';
     // Method names use a slightly darker slate than the type-text hint
@@ -1361,9 +1372,31 @@ function renderFieldsForType(
       .attr('font-style', fontStyle)
       .attr('font-weight', fontWeight)
       .attr('fill', fillColor)
-      .text(displayText);
+      .text(display.label);
 
     text.transition('move').duration(ANIM_MS).attr('x', localX).attr('y', localY);
+
+    let chevron = fg.select<SVGTextElement>('text.method-bucket-chevron');
+    if (display.chevron !== null) {
+      if (chevron.empty()) {
+        chevron = fg
+          .insert('text', 'text.field-row')
+          .attr('class', 'method-bucket-chevron')
+          .attr('dy', '0.32em')
+          .attr('fill', COLOR_CHEVRON)
+          .style('cursor', 'pointer');
+      }
+      chevron
+        .attr('font-size', METHOD_BUCKET_CHEVRON_FONT_SIZE)
+        .attr('font-weight', 700)
+        .text(display.chevron)
+        .transition('move')
+        .duration(ANIM_MS)
+        .attr('x', localX - METHOD_BUCKET_CHEVRON_OFFSET)
+        .attr('y', localY);
+    } else if (!chevron.empty()) {
+      chevron.remove();
+    }
 
     const tyText = fg
       .select<SVGTextElement>('text.field-ty')
@@ -1376,7 +1409,7 @@ function renderFieldsForType(
     // signature stays visible until you click again to deselect.
     if (isSelected) tyText.style('opacity', 1);
 
-    text.on('click', (event: MouseEvent) => {
+    const handleRowClick = (event: MouseEvent): void => {
       event.stopPropagation();
       if (isBucketHeader) {
         if (f.bucketId !== null) opts.onToggle(f.bucketId);
@@ -1386,7 +1419,13 @@ function renderFieldsForType(
         // method with the same name highlight independently.
         opts.onSelectField(d.fullPath, f.name, f.kind);
       }
-    });
+    };
+    text.on('click', handleRowClick);
+    if (display.chevron === null) {
+      chevron.on('click', null);
+    } else {
+      chevron.on('click', handleRowClick);
+    }
 
     // Type-hint stays for TY_HIDE_DELAY ms after mouse-out, so a glance
     // away doesn't immediately erase what the user just looked at. Re-entry

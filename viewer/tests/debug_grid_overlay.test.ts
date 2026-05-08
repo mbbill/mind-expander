@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LAYOUT_GRID } from '../src/analysis/layout_metrics.ts';
-import { debugGridPatternTile } from '../src/view/tree.ts';
+import { debugGridPatternTile, fieldRowDisplayParts } from '../src/view/tree.ts';
 
 describe('debug grid overlay', () => {
   it('uses one extent-independent pattern tile instead of per-dot geometry', () => {
@@ -20,5 +20,21 @@ describe('debug grid overlay', () => {
       width: LAYOUT_GRID.cellWidth,
       height: LAYOUT_GRID.cellHeight,
     });
+  });
+});
+
+describe('field row display parts', () => {
+  it('keeps method bucket chevrons separate from the aligned label text', () => {
+    const closed = fieldRowDisplayParts(
+      { kind: 'method_bucket', name: 'pub fn (25)', bucketId: 'bucket:pub' },
+      new Set(),
+    );
+    const open = fieldRowDisplayParts(
+      { kind: 'method_bucket', name: 'pub fn (25)', bucketId: 'bucket:pub' },
+      new Set(['bucket:pub']),
+    );
+
+    expect(closed).toEqual({ label: 'pub fn (25)', chevron: '▸' });
+    expect(open).toEqual({ label: 'pub fn (25)', chevron: '▾' });
   });
 });
