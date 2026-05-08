@@ -4,7 +4,7 @@
 // "body" click (anywhere else along the polyline — navigates to target).
 // Lives in analysis/ so it can be unit-tested without DOM.
 
-import type { Arrow, ArrowWaypoint } from './layout_bak.ts';
+import type { Arrow, ArrowWaypoint } from './layout_model.ts';
 
 export type ArrowHitZone = 'head' | 'body';
 

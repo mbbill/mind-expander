@@ -3,8 +3,8 @@ import {
   type LayoutBoxFragment,
   type LayoutBoxSplitStrategy,
   buildLayoutBoxFragments,
-} from '../src/layout2/box_fragments.ts';
-import { gridRectToPx } from '../src/layout2/grid.ts';
+} from '../src/layout/box_fragments.ts';
+import { gridRectToPx } from '../src/layout/grid.ts';
 
 const TEN_PX_GRID = { cellWidth: 10, cellHeight: 10 };
 
@@ -16,7 +16,7 @@ function fragmentAt(fragments: readonly LayoutBoxFragment[], index: number): Lay
   return fragment;
 }
 
-describe('layout2 box fragments', () => {
+describe('layout box fragments', () => {
   it('produces one main fragment for a normal object with normal rows', () => {
     const result = buildLayoutBoxFragments({
       objectId: 'type:normal',

@@ -1,6 +1,5 @@
-// Internal types for the layout2 pipeline. The pipeline's final output
-// is the existing `Layout` shape (from analysis/layout.ts) so the
-// renderer doesn't need to know which implementation produced it.
+// Internal types for the layout pipeline. The pipeline's final output is the
+// renderer-facing `Layout` shape from analysis/layout_model.ts.
 
 import type { ModuleNode, TypeNode } from '../analysis/module_tree.ts';
 import type { Ownership } from '../data/schema.ts';
@@ -20,8 +19,8 @@ export interface RankAssignment {
   readonly rank: number;
 }
 
-/** A laid-out type box: legacy renderer-facing header + rows, with header
- *  center y. Physical routeable extents live in `PlacedFragmentRect` so the
+/** A laid-out type box: renderer-facing header + rows, with header center y.
+ *  Physical routeable extents live in `PlacedFragmentRect` so the
  *  obstacle/debug model can stay tied to snapped placement fragments. */
 export interface PositionedType {
   readonly node: TypeNode;

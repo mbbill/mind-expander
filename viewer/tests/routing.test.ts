@@ -6,16 +6,16 @@ import {
   type Geometry,
   ROW_H,
   computeGeometry,
-} from '../src/layout2/geometry.ts';
-import { computeObstacles } from '../src/layout2/obstacles.ts';
+} from '../src/layout/geometry.ts';
+import { computeObstacles } from '../src/layout/obstacles.ts';
 import {
   FALLBACK_RECOVERY_EXTRA_CELLS,
   LANE_W,
   ROUTE_GAP,
   computeRoutingPressureForArrowGroups,
   routeArrows,
-} from '../src/layout2/routing.ts';
-import type { PlacedFragmentRect, PositionedType } from '../src/layout2/types.ts';
+} from '../src/layout/routing.ts';
+import type { PlacedFragmentRect, PositionedType } from '../src/layout/types.ts';
 import { buildInputs, crateFacts, edge, mod, ty } from './fixtures/builders.ts';
 import { mediumFixtureInputs } from './fixtures/medium.ts';
 import { smallFixtureInputs } from './fixtures/small.ts';

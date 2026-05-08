@@ -3,15 +3,15 @@ import {
   type BandLayoutItem,
   type BandLayoutResult,
   layoutOneModuleBand,
-} from '../src/layout2/band_layout.ts';
-import { type BandDepth, planBandShape } from '../src/layout2/band_shape.ts';
+} from '../src/layout/band_layout.ts';
+import { type BandDepth, planBandShape } from '../src/layout/band_shape.ts';
 import type {
   LayoutBoxFragmentClearance,
   LayoutBoxSplitStrategy,
   MeasuredBoxPart,
   MeasuredLayoutRow,
-} from '../src/layout2/box_fragments.ts';
-import type { GridSpec } from '../src/layout2/grid.ts';
+} from '../src/layout/box_fragments.ts';
+import type { GridSpec } from '../src/layout/grid.ts';
 
 const GRID: GridSpec = { cellWidth: 10, cellHeight: 10 };
 const prelude: BandDepth = { kind: 'prelude' };
@@ -72,7 +72,7 @@ function placedItem(result: BandLayoutResult, id: string) {
   return placed;
 }
 
-describe('layout2 one-module band layout', () => {
+describe('layout one-module band layout', () => {
   it('places prelude items before rank items through the composed path', () => {
     const result = layoutOneModuleBand(
       [item('TypeB', rankDepth(1)), item('FunctionGroup', prelude), item('TypeA', rankDepth(0))],

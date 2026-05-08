@@ -1,5 +1,5 @@
 // Two-area renderer: indented module tree on the left, per-module type bands
-// on the right. Layout is precomputed in analysis/layout.ts; this module
+// on the right. Layout is precomputed by layout; this module
 // translates Layout objects into SVG and wires click handlers.
 //
 // Rendering uses a persistent DOM with d3 data-join and stable keys so that
@@ -11,13 +11,13 @@
 import { type Selection, pointer, select, zoomTransform } from 'd3';
 import { type ArrowHit, pickArrowsAtPoint } from '../analysis/arrow_hit.ts';
 import type { DriftClass } from '../analysis/drift.ts';
-import { type Layout, ROW_H } from '../analysis/layout_bak.ts';
 import {
   HIT_MIN_W,
   MODULE_LABEL_X,
   TYPE_LABEL_X,
   splitModuleDisplayLabel,
 } from '../analysis/layout_metrics.ts';
+import { type Layout, ROW_H } from '../analysis/layout_model.ts';
 import { colorForVisibility } from './encoding.ts';
 import { ANIM_MS, type ZoomLayers } from './zoom.ts';
 

@@ -13,7 +13,7 @@
 // Exercises: forward arrows, hierarchical module placement, branching at
 // the root, two parallel chains.
 
-import type { LayoutInputs } from '../../src/analysis/layout_bak.ts';
+import type { LayoutInputs } from '../../src/analysis/layout_model.ts';
 import { buildInputs, crateFacts, edge, mod, ty } from './builders.ts';
 
 export function smallFixtureInputs(expandedIds: string[] = []): LayoutInputs {

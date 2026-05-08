@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type BandDepth, type BandShapeItem, planBandShape } from '../src/layout2/band_shape.ts';
+import { type BandDepth, type BandShapeItem, planBandShape } from '../src/layout/band_shape.ts';
 
 const prelude: BandDepth = { kind: 'prelude' };
 
@@ -21,7 +21,7 @@ function namesByGroup(items: readonly BandShapeItem[]): readonly (readonly strin
   );
 }
 
-describe('layout2 band shape planner', () => {
+describe('layout band shape planner', () => {
   it('sorts unsorted input deterministically by prelude, rank depth, then name', () => {
     const input = [
       item('Delta', rankDepth(2)),

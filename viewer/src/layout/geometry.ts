@@ -3,8 +3,6 @@
 // module measures visible items, places snapped rectangles, and adapts them to
 // renderer-facing boxes.
 
-import type { LayoutInputs } from '../analysis/layout_bak.ts';
-import type { LayoutDebugGrid, LayoutDebugLabel } from '../analysis/layout_channels_bak.ts';
 import {
   FIELD_LABEL_INSET,
   FIELD_ROW_H,
@@ -24,6 +22,7 @@ import {
   measureModuleHitWidth,
   measureTypeHeaderMetrics,
 } from '../analysis/layout_metrics.ts';
+import type { LayoutDebugGrid, LayoutDebugLabel, LayoutInputs } from '../analysis/layout_model.ts';
 import type { ModuleNode, TreeNode, TypeNode } from '../analysis/module_tree.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
 import { BUCKET_LABEL, type VisibilityBucket } from '../analysis/visibility.ts';

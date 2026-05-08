@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { computeDrift } from '../src/analysis/drift.ts';
-import type { LayoutInputs } from '../src/analysis/layout_bak.ts';
+import type { LayoutInputs } from '../src/analysis/layout_model.ts';
 import { type TreeNode, buildModuleTree } from '../src/analysis/module_tree.ts';
 import { buildOwnershipIndex, computeOwnershipDepth } from '../src/analysis/ownership.ts';
 import { canonicalize } from '../src/data/canonicalize.ts';
 import type { Facts } from '../src/data/schema.ts';
-import { TYPE_X_GAP, computeGeometry } from '../src/layout2/geometry.ts';
+import { TYPE_X_GAP, computeGeometry } from '../src/layout/geometry.ts';
 import { ViewState } from '../src/state/view_state.ts';
 
 function collectTypeIds(root: TreeNode): string[] {
@@ -58,7 +58,7 @@ function sfNanoCoreInputs(expandedIds: readonly string[]): LayoutInputs {
   };
 }
 
-describe('layout2 ownership-DAG placement — sf-nano-core regression', () => {
+describe('layout ownership-DAG placement — sf-nano-core regression', () => {
   it('places ValueType to the right of visible owners from earlier rank order', () => {
     const inputs = sfNanoCoreInputs([
       'sf-nano-core',

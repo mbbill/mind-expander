@@ -2,7 +2,7 @@
 // It evaluates full-route clearance so horizontal and vertical segments share
 // the same placed-fragment obstacle contract.
 
-import type { ArrowWaypoint } from '../analysis/layout_bak.ts';
+import type { ArrowWaypoint } from '../analysis/layout_model.ts';
 
 export type RoutingChannelStrategy = 'direct' | 'lane-scan' | 'bypass' | 'fallback';
 

@@ -1,10 +1,10 @@
-// Programmatic fact builders for layout2 tests. Mirrors the helpers
+// Programmatic fact builders for layout tests. Mirrors the helpers
 // embedded in tests/layout.test.ts (which can't be imported because
 // they're scoped to that file). Centralised here so every fixture
 // constructs Facts the same way.
 
 import { computeDrift } from '../../src/analysis/drift.ts';
-import type { LayoutInputs } from '../../src/analysis/layout_bak.ts';
+import type { LayoutInputs } from '../../src/analysis/layout_model.ts';
 import { type TreeNode, buildModuleTree } from '../../src/analysis/module_tree.ts';
 import { buildOwnershipIndex, computeOwnershipDepth } from '../../src/analysis/ownership.ts';
 import type { CrateFacts, Edge, Facts, ModuleFacts, TypeFacts } from '../../src/data/schema.ts';
@@ -44,8 +44,8 @@ export function facts(crate: CrateFacts, edges: Edge[]): Facts {
 }
 
 /** Build a `LayoutInputs` from a crate + edges + initially-expanded ids.
- *  Intentionally identical to the setup used in tests/layout.test.ts so
- *  layout2 tests are directly comparable to v1 tests. */
+ *  Shared fixtures keep layout tests focused on algorithm behavior instead
+ *  of repeating crate/index setup in every test. */
 export function buildInputs(crate: CrateFacts, edges: Edge[], expandedIds: string[]): LayoutInputs {
   const f = facts(crate, edges);
   const root = buildModuleTree(crate);

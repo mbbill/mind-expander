@@ -8,7 +8,7 @@ import {
   layoutBox,
   overlaps,
   snapPxRectToGrid,
-} from '../src/layout2/grid.ts';
+} from '../src/layout/grid.ts';
 
 const NONE: Clearance = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -16,7 +16,7 @@ function rect(col: number, row: number, cols: number, rows: number): GridRect {
   return { col, row, cols, rows };
 }
 
-describe('layout2 grid primitives', () => {
+describe('layout grid primitives', () => {
   it('snap rounds measured px rectangles outward and never inward', () => {
     const measured = { x: 11, y: 19, width: 20, height: 22 };
     const grid = { cellWidth: 10, cellHeight: 10 };

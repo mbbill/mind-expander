@@ -243,7 +243,7 @@ function synthesiseTypeReExportGhosts(
   if (!reExports || reExports.length === 0) return [];
   const out: TypeNode[] = [];
   for (const re of reExports) {
-    if (re.kind !== 'type') continue; // function re-exports deferred to v2
+    if (re.kind !== 'type') continue; // function re-exports are not modeled yet
     if (!isRealVisibility(re.visibility)) continue;
     const moduleId = idForModule(crateName, modulePath);
     // Synthetic id keeps ghosts distinct from the canonical type node

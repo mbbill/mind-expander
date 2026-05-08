@@ -1,4 +1,4 @@
-// Layout2 invariants: every arrow's polyline must obey active-router
+// Layout invariants: every arrow's polyline must obey active-router
 // direction and obstacle-clearance rules regardless of the input crate. Run
 // against the live sf-nano-core data at "everything expanded" so we exercise
 // the densest arrow set we realistically render.
@@ -6,15 +6,15 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { computeDrift } from '../src/analysis/drift.ts';
-import type { Arrow, ArrowWaypoint, LayoutInputs } from '../src/analysis/layout_bak.ts';
+import type { Arrow, ArrowWaypoint, LayoutInputs } from '../src/analysis/layout_model.ts';
 import { type TreeNode, buildModuleTree } from '../src/analysis/module_tree.ts';
 import { buildOwnershipIndex, computeOwnershipDepth } from '../src/analysis/ownership.ts';
 import { canonicalize } from '../src/data/canonicalize.ts';
 import type { Facts } from '../src/data/schema.ts';
-import { computeGeometry } from '../src/layout2/geometry.ts';
-import { type ObstacleMap, computeObstacles } from '../src/layout2/obstacles.ts';
-import { type RoutingResult, routeArrows } from '../src/layout2/routing.ts';
-import type { Obstacle } from '../src/layout2/types.ts';
+import { computeGeometry } from '../src/layout/geometry.ts';
+import { type ObstacleMap, computeObstacles } from '../src/layout/obstacles.ts';
+import { type RoutingResult, routeArrows } from '../src/layout/routing.ts';
+import type { Obstacle } from '../src/layout/types.ts';
 import { ViewState } from '../src/state/view_state.ts';
 
 function collectAllIds(root: TreeNode): { all: string[]; types: string[] } {
@@ -101,7 +101,7 @@ function findViolations(arrows: readonly Arrow[]): Violation[] {
       out.push({ kind: 'final-backward', arrow: desc });
     }
 
-    // Layout2 picks forward vs reverse source side from physical endpoint
+    // Layout picks forward vs reverse source side from physical endpoint
     // positions, so even canonical ownership may leave leftward. The stable
     // direction invariant is that target entry still comes from the left.
   }
@@ -117,7 +117,7 @@ function routeFinalLayoutPass(inputs: LayoutInputs): RoutedLayoutPass {
     return { obstacles: firstObstacles, routing: firstRouting };
   }
 
-  // Match buildLayoutV2's bounded routing-feedback contract so this
+  // Match buildLayout's bounded routing-feedback contract so this
   // invariant checks the same final arrows the app renders, while retaining
   // obstacle type ids that Layout.debug.routing intentionally omits.
   const geometry = computeGeometry(inputs, { routingExtraGaps: firstRouting.routingPressure });

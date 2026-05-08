@@ -25,13 +25,15 @@
 //   planned horizontal/vertical segment against the real placed-fragment
 //   obstacle map.
 
-import type { Arrow, ArrowWaypoint, LayoutDebug } from '../analysis/layout_bak.ts';
-import type { LayoutInputs } from '../analysis/layout_bak.ts';
 import type {
+  Arrow,
+  ArrowWaypoint,
   ChannelDebugGroup,
   ChannelDebugLane,
   ChannelObstacle,
-} from '../analysis/layout_channels_bak.ts';
+  LayoutDebug,
+  LayoutInputs,
+} from '../analysis/layout_model.ts';
 import type { DriftClass } from './../analysis/drift.ts';
 import { BAND_GRID_CELL_W, TYPE_GLYPH_W } from './geometry.ts';
 import type { Geometry } from './geometry.ts';
@@ -80,9 +82,8 @@ export interface RoutingResult {
    *  does not loop on this; routing pressure is the explicit placement
    *  feedback contract. */
   readonly needsReflow: boolean;
-  /** Debug overlay payload — formatted in the existing
-   *  `Layout.debug.routing` shape so the v1 renderer can draw it
-   *  without modification. */
+  /** Debug overlay payload formatted in the renderer-facing
+   *  `Layout.debug.routing` shape. */
   readonly debug: LayoutDebug;
 }
 

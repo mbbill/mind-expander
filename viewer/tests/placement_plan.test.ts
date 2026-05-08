@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { buildPlacementLayoutPlan } from '../src/layout2/placement_plan.ts';
+import { buildPlacementLayoutPlan } from '../src/layout/placement_plan.ts';
 import { buildInputs, crateFacts, edge, mod, ty } from './fixtures/builders.ts';
 
-describe('layout2 placement plan', () => {
+describe('layout placement plan', () => {
   it('keeps rank depth and same-rank order independent from expansion state', () => {
     const c = crateFacts('c', [
       mod('m', [

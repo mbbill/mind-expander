@@ -4,7 +4,7 @@ import {
   type RoutingDensityConfig,
   computeRequiredExtraCells,
   computeRoutingPressure,
-} from '../src/layout2/routing_pressure.ts';
+} from '../src/layout/routing_pressure.ts';
 
 const DENSITY: RoutingDensityConfig = {
   maxArrowsPerCell: {
@@ -21,7 +21,7 @@ function afterOrder(afterOrder = 0): RoutingChannelKey {
   };
 }
 
-describe('layout2 routing pressure', () => {
+describe('layout routing pressure', () => {
   it('fits two forward arrows in one cell and requests one more for three', () => {
     expect(computeRequiredExtraCells([{ arrowClass: 'forward', count: 2 }], 1, DENSITY)).toBe(0);
     expect(computeRequiredExtraCells([{ arrowClass: 'forward', count: 3 }], 1, DENSITY)).toBe(1);

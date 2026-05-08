@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { LayoutInputs } from '../src/analysis/layout_bak.ts';
 import { MIN_TYPE_BOX_W } from '../src/analysis/layout_metrics.ts';
+import type { LayoutInputs } from '../src/analysis/layout_model.ts';
 import type { TypeFacts } from '../src/data/schema.ts';
-import { FIELD_ROW_H, ROW_H, computeGeometry } from '../src/layout2/geometry.ts';
-import { computeObstacles } from '../src/layout2/obstacles.ts';
-import { buildLayoutV2 } from '../src/layout2/pipeline.ts';
-import type { Obstacle, PlacedFragmentRect } from '../src/layout2/types.ts';
+import { FIELD_ROW_H, ROW_H, computeGeometry } from '../src/layout/geometry.ts';
+import { computeObstacles } from '../src/layout/obstacles.ts';
+import { buildLayout } from '../src/layout/pipeline.ts';
+import type { Obstacle, PlacedFragmentRect } from '../src/layout/types.ts';
 import { buildInputs, crateFacts, mod } from './fixtures/builders.ts';
 
 // 10 px per character, keeping measurement-dependent fragment splits stable.
@@ -179,7 +179,7 @@ describe('layout debug routing obstacles', () => {
     const inputs = makeInputs([ty], ['c', 'c::m', 'c::m::A']);
     const geometry = computeGeometry(inputs);
     const obstacles = computeObstacles(geometry, measure);
-    const layout = buildLayoutV2(inputs);
+    const layout = buildLayout(inputs);
 
     expect(layout.arrows).toEqual([]);
     expect(layout.debug?.routing.obstacles).toEqual(obstacles.all.map(debugRect));

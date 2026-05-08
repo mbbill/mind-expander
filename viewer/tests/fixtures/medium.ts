@@ -10,7 +10,7 @@
 // fixture is the smallest realistic test of channel allocation under
 // load.
 
-import type { LayoutInputs } from '../../src/analysis/layout_bak.ts';
+import type { LayoutInputs } from '../../src/analysis/layout_model.ts';
 import { buildInputs, crateFacts, edge, mod, ty } from './builders.ts';
 
 const ROOT_LEAVES = 12;

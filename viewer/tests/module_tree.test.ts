@@ -381,7 +381,7 @@ describe('buildModuleTree — type re-export ghosts', () => {
     expect(g.ghostTarget).toBe('c::inner::OldName');
   });
 
-  it('skips function re-exports (deferred to v2)', () => {
+  it('skips function re-exports until they are modeled', () => {
     const root = buildModuleTree(
       crateOf('c', [
         mod(''),

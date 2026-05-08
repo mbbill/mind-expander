@@ -1,10 +1,10 @@
-// Debug overlay primitives produced by the layout2 pipeline. The renderer
+// Debug overlay primitives produced by the layout pipeline. The renderer
 // reads this when the "layout debug" toggle is on and draws the rects /
 // lines / labels at the right z-order.
 
 import type { Gutter, LaneSlot, Obstacle } from './types.ts';
 
-export interface LayoutDebugV2 {
+export interface LayoutDebugSnapshot {
   readonly obstacles: readonly Obstacle[];
   readonly gutters: readonly Gutter[];
   /** Allocated lanes, one entry per used slot per gutter. */
@@ -14,6 +14,6 @@ export interface LayoutDebugV2 {
   readonly arrowSlots?: ReadonlyMap<string, number>;
 }
 
-export function emptyDebug(): LayoutDebugV2 {
+export function emptyDebug(): LayoutDebugSnapshot {
   return { obstacles: [], gutters: [], lanes: [] };
 }

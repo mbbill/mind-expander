@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { type Clearance, type GridRect, conflicts, layoutBox } from '../src/layout2/grid.ts';
+import { type Clearance, type GridRect, conflicts, layoutBox } from '../src/layout/grid.ts';
 import {
   GridPlacementFailure,
   type GridPlacementFragment,
   type GridPlacementItem,
   placeGridItemsTopToBottom,
-} from '../src/layout2/grid_placement.ts';
+} from '../src/layout/grid_placement.ts';
 
 const NONE: Clearance = { top: 0, right: 0, bottom: 0, left: 0 };
 
@@ -58,7 +58,7 @@ function singleFragmentItem(
   return item(id, groupOrder, indexInGroup, [fragment(id, 'main', own, clearance)]);
 }
 
-describe('layout2 grid placement', () => {
+describe('layout grid placement', () => {
   it('places a single group top-down and preserves item order', () => {
     const result = placeGridItemsTopToBottom(
       [

@@ -5,7 +5,7 @@ import {
   type RoutingChannelRequest,
   buildRoutingObstacleIndex,
   planRoutingChannel,
-} from '../src/layout2/routing_channels.ts';
+} from '../src/layout/routing_channels.ts';
 
 const OPTIONS: RoutingChannelOptions = {
   gridCellSize: 10,

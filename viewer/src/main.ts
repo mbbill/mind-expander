@@ -1,5 +1,5 @@
 import { computeDrift } from './analysis/drift.ts';
-import type { Layout } from './analysis/layout_bak.ts';
+import type { Layout } from './analysis/layout_model.ts';
 import { type TreeNode, buildModuleTree } from './analysis/module_tree.ts';
 import {
   type OwnershipIndex,
@@ -8,8 +8,8 @@ import {
 } from './analysis/ownership.ts';
 import { FactsLoadError, loadFacts } from './data/load.ts';
 import type { Facts } from './data/schema.ts';
-import { buildLayoutV2 } from './layout2/pipeline.ts';
-import { buildPlacementLayoutPlan } from './layout2/placement_plan.ts';
+import { buildLayout } from './layout/pipeline.ts';
+import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
 import { ViewState } from './state/view_state.ts';
 import { anchorTranslation } from './view/anchor.ts';
 import { createArrowDisambig } from './view/arrow_disambig.ts';
@@ -35,11 +35,9 @@ const SCALE_MAX = 1.5;
 // Padding factor so content doesn't kiss the viewport edge at the fit scale.
 const FIT_PADDING = 0.95;
 const INPUT_MODE_KEY = 'mind-expander.input-mode';
-// Layout v2 (ownership-rank geometry + lane-allocated routing) is the only active
-// pipeline. v1 has been renamed `analysis/layout_bak.ts` and is no
-// longer wired up — its sole purpose for now is exporting shared types
-// like `Layout`. After full validation of v2 those types move to a
-// dedicated file and the _bak files are deleted entirely.
+// The layout pipeline is active here. Renderer-facing data contracts live in
+// `analysis/layout_model.ts`; removed algorithm files should not be
+// reintroduced as compatibility shims.
 
 type InputMode = 'mouse' | 'trackpad';
 
@@ -381,7 +379,7 @@ async function main(): Promise<void> {
         methodsHidden: currentCtx?.methodsHidden ?? false,
         ...(focus ? { focusModules: focus.modules } : {}),
       };
-      lastLayout = buildLayoutV2(buildArgs);
+      lastLayout = buildLayout(buildArgs);
       if (currentCtx) currentCtx.lastLayout = lastLayout;
       applyFitScaleExtent(svg, layers, lastLayout);
       // Compute the union of arrow chains for every selected field. These are

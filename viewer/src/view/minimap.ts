@@ -1,5 +1,5 @@
 import { select, zoomTransform } from 'd3';
-import type { Layout } from '../analysis/layout_bak.ts';
+import type { Layout } from '../analysis/layout_model.ts';
 import { colorForVisibility } from './encoding.ts';
 import type { ZoomLayers } from './zoom.ts';
 
