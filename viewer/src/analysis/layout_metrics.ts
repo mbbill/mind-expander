@@ -35,11 +35,14 @@ export const METHOD_INDENT = gridCols(2);
 export const HIT_MIN_W = gridCols(5);
 export const MIN_TYPE_BOX_W = gridCols(12);
 
-export const TYPE_LABEL_FONT_SCALE = 14 / 12;
+export const BASE_FONT_SIZE = 12;
+export const TYPE_LABEL_FONT_SIZE = 14;
+export const TYPE_EXPAND_ARROW_FONT_SIZE = 22;
+export const TYPE_LABEL_FONT_SCALE = TYPE_LABEL_FONT_SIZE / BASE_FONT_SIZE;
+export const TYPE_EXPAND_ARROW_FONT_SCALE = TYPE_EXPAND_ARROW_FONT_SIZE / BASE_FONT_SIZE;
 export const TYPE_EXPAND_ARROW_GAP = 6;
-export const TYPE_EXPAND_ARROW_W = 14;
-export const TYPE_EXPAND_ARROW_HIT_PAD = 4;
-export const TYPE_HEADER_TRAILING_PAD = gridCols(1);
+export const TYPE_EXPAND_ARROW_CLOSED = '▸';
+export const TYPE_EXPAND_ARROW_OPEN = '▾';
 export const HIT_PAD_RIGHT = gridCols(1);
 export const MODULE_LABEL_PREFIX_FONT_SCALE = 11 / 12;
 export const MODULE_LABEL_LEAF_FONT_SCALE = 14 / 12;
@@ -58,13 +61,22 @@ export function measureTypeHeaderMetrics(
   const renderedLabelWidth = measureText(label) * TYPE_LABEL_FONT_SCALE;
   const labelRight = TYPE_LABEL_X + renderedLabelWidth;
   if (!hasExpandArrow) {
-    const width = Math.max(MIN_TYPE_BOX_W, labelRight + TYPE_HEADER_TRAILING_PAD);
-    return { width, arrowX: null, hitWidth: Math.max(width, HIT_MIN_W) };
+    // Non-expandable headers have no trailing affordance. Their layout box
+    // should cover the rendered anchors only; adding a grid-cell pad here
+    // turns into real obstacle/debug width with no matching visual content.
+    const width = Math.max(MIN_TYPE_BOX_W, labelRight);
+    return { width, arrowX: null, hitWidth: width };
   }
 
   const arrowX = labelRight + TYPE_EXPAND_ARROW_GAP;
-  const width = Math.max(MIN_TYPE_BOX_W, arrowX + TYPE_EXPAND_ARROW_W + TYPE_EXPAND_ARROW_HIT_PAD);
-  return { width, arrowX, hitWidth: Math.max(width, HIT_MIN_W) };
+  // The transparent click target must match the visible header box. If hit
+  // width is wider than placement width, debug/obstacle boxes no longer match
+  // what the user can actually click.
+  const arrowWidth =
+    Math.max(measureText(TYPE_EXPAND_ARROW_CLOSED), measureText(TYPE_EXPAND_ARROW_OPEN)) *
+    TYPE_EXPAND_ARROW_FONT_SCALE;
+  const width = Math.max(MIN_TYPE_BOX_W, arrowX + arrowWidth);
+  return { width, arrowX, hitWidth: width };
 }
 
 export function splitModuleDisplayLabel(id: string): { prefix: string; leaf: string } {

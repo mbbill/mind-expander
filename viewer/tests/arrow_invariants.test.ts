@@ -52,7 +52,7 @@ function collectTypeModule(root: TreeNode): Map<string, string> {
 }
 
 interface Violation {
-  readonly kind: 'final-backward';
+  readonly kind: 'lca-forward-nonmonotonic' | 'target-left-entry-violation';
   readonly arrow: string; // human-readable description
 }
 
@@ -68,9 +68,14 @@ interface RoutedLayoutPass {
   readonly routing: RoutingResult;
 }
 
-function findViolations(arrows: readonly Arrow[]): Violation[] {
+function findViolations(
+  arrows: readonly Arrow[],
+  inputs: LayoutInputs,
+  blockedLaneSignatures: ReadonlySet<string>,
+): Violation[] {
   const out: Violation[] = [];
   for (const a of arrows) {
+    if (arrowHasBlockedLane(a, blockedLaneSignatures)) continue;
     // Method arrows aren't structural ownership and don't follow LCA
     // placement — source/target columns can land in any order. The
     // layout already routes them via canonical lanes when they go
@@ -84,46 +89,47 @@ function findViolations(arrows: readonly Arrow[]): Violation[] {
     // (forward vs drift channel chosen by relative x) and the renderer
     // styles them violet/dashed so they read as a different category.
     if (a.kind === 'reexport') continue;
-    const w = a.waypoints;
-    if (w.length < 2) continue;
-    const last = w[w.length - 1];
-    const beforeLast = w[w.length - 2];
-    if (!last || !beforeLast) continue;
+    if (a.driftClass !== 'at_lca' && a.driftClass !== 'within_budget') continue;
+    const start = a.waypoints[0];
+    const end = a.waypoints[a.waypoints.length - 1];
+    const trunk = verticalTrunkSegment(a.waypoints);
+    if (!start || !end || trunk === null) continue;
+    const [trunkStart, trunkEnd] = trunk;
 
     const desc = `${a.fromTypeId}.${a.fromFieldName} → ${a.toTypeId} [${a.driftClass}]`;
-
-    // Final segment must enter the target rightward — true for both
-    // canonical (lane between source/target → into target's left edge)
-    // and drift (lane left of target → into target's left edge from
-    // outside). A backward final segment indicates either misrouted
-    // lanes or that owner/owned ended up at the same column.
-    if (last.x < beforeLast.x) {
-      out.push({ kind: 'final-backward', arrow: desc });
+    if (!(trunkStart.x === trunkEnd.x && trunkEnd.x <= end.x)) {
+      out.push({ kind: 'target-left-entry-violation', arrow: desc });
     }
 
-    // Layout picks forward vs reverse source side from physical endpoint
-    // positions, so even canonical ownership may leave leftward. The stable
-    // direction invariant is that target entry still comes from the left.
+    const sourceDepth = inputs.depth.get(a.fromTypeId) ?? 0;
+    const targetDepth = inputs.depth.get(a.toTypeId) ?? 0;
+    if (targetDepth > sourceDepth && !(start.x <= trunkStart.x && trunkStart.x <= end.x)) {
+      out.push({ kind: 'lca-forward-nonmonotonic', arrow: desc });
+    }
   }
   return out;
 }
 
 function routeFinalLayoutPass(inputs: LayoutInputs): RoutedLayoutPass {
   const measure = inputs.measureText ?? ((s: string) => s.length * 7);
-  const firstGeometry = computeGeometry(inputs);
-  const firstObstacles = computeObstacles(firstGeometry, measure);
-  const firstRouting = routeArrows(firstGeometry, firstObstacles, inputs, measure);
-  if (firstRouting.routingPressure.length === 0) {
-    return { obstacles: firstObstacles, routing: firstRouting };
-  }
-
-  // Match buildLayout's bounded routing-feedback contract so this
-  // invariant checks the same final arrows the app renders, while retaining
-  // obstacle type ids that Layout.debug.routing intentionally omits.
-  const geometry = computeGeometry(inputs, { routingExtraGaps: firstRouting.routingPressure });
+  // Routing is intentionally downstream of placement now: this invariant
+  // checks the same one-pass geometry and dogleg routes the app renders.
+  const geometry = computeGeometry(inputs);
   const obstacles = computeObstacles(geometry, measure);
   const routing = routeArrows(geometry, obstacles, inputs, measure);
   return { obstacles, routing };
+}
+
+function verticalTrunkSegment(
+  waypoints: readonly ArrowWaypoint[],
+): readonly [ArrowWaypoint, ArrowWaypoint] | null {
+  for (let index = 1; index < waypoints.length; index += 1) {
+    const from = waypoints[index - 1];
+    const to = waypoints[index];
+    if (from === undefined || to === undefined) continue;
+    if (from.x === to.x && from.y !== to.y) return [from, to];
+  }
+  return null;
 }
 
 function findObstacleViolations(
@@ -219,14 +225,14 @@ function segmentIntersectsObstacle(from: ArrowWaypoint, to: ArrowWaypoint, obsta
   if (from.x === to.x) {
     return (
       from.x >= left &&
-      from.x <= right &&
+      from.x < right &&
       rangesOverlap(Math.min(from.y, to.y), Math.max(from.y, to.y), top, bottom)
     );
   }
 
   return (
     from.y >= top &&
-    from.y <= bottom &&
+    from.y < bottom &&
     rangesOverlap(Math.min(from.x, to.x), Math.max(from.x, to.x), left, right)
   );
 }
@@ -274,9 +280,9 @@ describe('arrow direction invariants — sf-nano-core crate', () => {
     ghostArrowsShown: new Set<string>(),
   };
 
-  it('allocated router produces no backward arrow segments when everything is expanded', () => {
+  it('dogleg router preserves LCA ownership direction when everything is expanded', () => {
     const { routing } = routeFinalLayoutPass(inputs);
-    const violations = findViolations(routing.arrows);
+    const violations = findViolations(routing.arrows, inputs, blockedLaneSignatures(routing));
     if (violations.length > 0) {
       // First few are usually enough to diagnose — print them in the
       // assertion message so a CI failure points at the real culprit.

@@ -12,6 +12,8 @@ These instructions apply to the whole repository.
 - When adding code for a specific feature or product behavior, include a nearby comment explaining why the code is needed and what behavior it protects. Keep the comment focused on intent and constraints, not a line-by-line restatement of the code.
 - Do not compensate for lower-layer bugs in rendering or UI event handlers unless the renderer is truly the owning layer.
 - Keep debug and diagnostic views driven by the same data structures used by the real implementation. Do not maintain separate approximate diagnostic data.
+- Do not add speculative features, diagnostics, UI affordances, or "helpful" extras that were not requested. If an addition seems useful but is not required for the current task, discuss it first instead of implementing it.
+- When an issue exposes an algorithm, architecture, or product-behavior tradeoff, do not immediately take a conservative shortcut just to make the symptom go away. First identify the best intended solution and the owning layer. If the right solution is unclear or has meaningful tradeoffs, stop and discuss it before implementing.
 
 ## Change Ownership Rule
 
@@ -46,3 +48,4 @@ Use this checklist for any non-trivial change:
 - Did this keep producer/consumer contracts explicit?
 - Did feature-specific code include a nearby intent comment?
 - If the architecture was unclear, was the boundary refactored before adding feature logic?
+- If there was a difficult tradeoff, did this avoid a conservative shortcut and either implement the intended solution or discuss the uncertainty first?

@@ -487,6 +487,28 @@ describe('computeGeometry — basic placement', () => {
     expect(fragment?.width ?? 0).toBeGreaterThanOrEqual(box?.width ?? 0);
   });
 
+  it('emits measured visual fragment bounds instead of snapped packing width', () => {
+    const label = 'RefType';
+    const id = `c::m::${label}`;
+    const c = crateFacts('c', [
+      mod('m', [ty('c', 'm', label, [{ name: 'heap_type', ty_text: 'HeapType' }])]),
+    ]);
+    const inputs = {
+      ...buildInputs(c, [], ['c', 'c::m']),
+      measureText: (s: string) => s.length * 10,
+    };
+    const g = computeGeometry(inputs);
+    const box = g.typesById.get(id);
+    const fragment = g.placedFragments.find((f) => f.typeId === id);
+    const snappedWidth = Math.ceil((box?.width ?? 0) / BAND_GRID_CELL_W) * BAND_GRID_CELL_W;
+
+    expect(box).toBeDefined();
+    expect(fragment).toBeDefined();
+    expect(snappedWidth).toBeGreaterThan(box?.width ?? 0);
+    expect(fragment?.width).toBeCloseTo(box?.width ?? 0);
+    expect(fragment?.width ?? 0).toBeLessThan(snappedWidth);
+  });
+
   it('does not let verbose method signatures widen the physical block', () => {
     const thingId = 'c::m::Thing';
     const c = crateFacts('c', [
@@ -584,7 +606,7 @@ describe('buildLayout — Layout shape', () => {
     expect(thing?.height).toBe(ROW_H + 3 * FIELD_ROW_H);
   });
 
-  it('keeps crowded target geometry unchanged while routing feedback is disabled', () => {
+  it('keeps crowded target geometry unchanged during one-pass routing', () => {
     const inputs = crowdedTargetInputs();
     const firstGeometry = computeGeometry(inputs);
     const layout = buildLayout(inputs);
@@ -592,11 +614,11 @@ describe('buildLayout — Layout shape', () => {
     expect(typeBoxGeometryFingerprint(layout.types)).toEqual(
       typeBoxGeometryFingerprint(toTypeBoxLike(firstGeometry.types)),
     );
-    expect(layout.debug?.routing.lanes).toEqual([]);
+    expect(layout.arrows.length).toBeGreaterThan(0);
     expect(layout.debug?.routing.groups).toEqual([]);
   });
 
-  it('keeps fallback-pressure fixture geometry while block layout isolation is active', () => {
+  it('keeps blocked-route fixture geometry unchanged during one-pass routing', () => {
     const inputs = fallbackPressureInputs();
     const firstGeometry = computeGeometry(inputs);
     const layout = buildLayout({ ...inputs, measureText: measure });
@@ -604,7 +626,7 @@ describe('buildLayout — Layout shape', () => {
     expect(typeBoxGeometryFingerprint(layout.types)).toEqual(
       typeBoxGeometryFingerprint(toTypeBoxLike(firstGeometry.types)),
     );
-    expect(layout.debug?.routing.lanes).toEqual([]);
+    expect(layout.arrows.length).toBeGreaterThan(0);
     expect(layout.debug?.routing.groups).toEqual([]);
   });
 

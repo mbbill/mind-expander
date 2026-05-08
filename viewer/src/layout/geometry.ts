@@ -40,13 +40,13 @@ import {
   type PlacedGridItem,
   placeGridItemsTopToBottom,
 } from './grid_placement.ts';
+import type { ExtraGap } from './placement_gaps.ts';
 import {
   type PlacementLayoutPlan,
   buildPlacementLayoutPlan,
   isNonRankType,
   requirePlacement,
 } from './placement_plan.ts';
-import type { ExtraGap } from './routing_pressure.ts';
 import type {
   PlacedFragmentRect,
   PositionedModule,
@@ -96,7 +96,7 @@ export interface Geometry {
 }
 
 export interface GeometryOptions {
-  readonly routingExtraGaps?: readonly ExtraGap[];
+  readonly extraGaps?: readonly ExtraGap[];
   readonly placementPlan?: PlacementLayoutPlan;
 }
 
@@ -109,7 +109,7 @@ export function computeGeometry(inputs: LayoutInputs, options: GeometryOptions =
   const measure = inputs.measureText ?? ((s: string) => s.length * CHAR_W);
   const globalXStart = computeGlobalXStart(inputs.staticRoot, inputs.state, measure);
   const columnStride = computeColumnStride(allTypes, measure);
-  const routingExtraGaps = options.routingExtraGaps ?? [];
+  const extraGaps = options.extraGaps ?? [];
 
   const moduleBands = collectVisibleModuleBands(
     inputs.staticRoot,
@@ -128,7 +128,11 @@ export function computeGeometry(inputs: LayoutInputs, options: GeometryOptions =
     preparedBands.flatMap((band) => band.gridItems),
     {
       ...BAND_PLACEMENT_SEARCH,
-      extraGaps: routingExtraGaps,
+      extraGaps,
+      rankLayerGapCells: BAND_ITEM_RIGHT_CLEARANCE_CELLS,
+      // Prelude/function groups are intentionally module-local; the global
+      // LCA layer floor starts at the first real ownership rank.
+      firstRankLayerOrder: 1,
     },
   );
   const assembled = assembleGeometryFromPlacedBands(
@@ -390,6 +394,11 @@ function assembleGeometryFromPlacedBands(
           throw new Error(`Missing placed item for fragment: ${fragment.fragmentId}`);
         }
         const px = gridRectToPx(fragment.own, BAND_GRID);
+        const obstacleWidth = original.measuredWidthPx;
+        const obstacleHeight = original.measuredHeightPx;
+        // Packing uses snapped grid cells, but the exported fragment is the
+        // visible/routable rectangle. Keeping those separate prevents one
+        // hidden snap cell from becoming a debug box, hit target, or obstacle.
         outFragments.push({
           typeId: fragment.ownerId,
           bandId: band.node.id,
@@ -404,12 +413,12 @@ function assembleGeometryFromPlacedBands(
           rowIds: original.rowIds,
           x: globalXStart + px.x,
           y: cursorY + px.y,
-          width: px.width,
-          height: px.height,
+          width: obstacleWidth,
+          height: obstacleHeight,
         });
         debugLabels.push({
           id: `${band.node.id}:${fragment.ownerId}:${fragment.fragmentId}`,
-          x: globalXStart + px.x + px.width - 4,
+          x: globalXStart + px.x + obstacleWidth - 4,
           y: cursorY + px.y + 12,
           // Rank is the stable logical tier; bandOrder is the same-rank
           // display group used by physical packing in this band.

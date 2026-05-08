@@ -24,11 +24,11 @@ export interface RankAssignment {
  *  obstacle/debug model can stay tied to snapped placement fragments. */
 export interface PositionedType {
   readonly node: TypeNode;
-  /** Module band that owns this physical placement. Used internally by
-   *  routing feedback to target explicit band-scoped gap constraints. */
+  /** Module band that owns this physical placement. Used by placement,
+   *  obstacles, routing, and debug output as the explicit region id. */
   readonly bandId: string;
-  /** Band-local placement group order. This is the `afterOrder` coordinate
-   *  routing pressure can address without mutating box clearance. */
+  /** Band-local placement group order. Extra placement gaps can address this
+   *  coordinate without mutating box clearance. */
   readonly bandOrder: number;
   /** Stable order inside `bandOrder`, retained for diagnostics/tests. */
   readonly indexInBandOrder: number;
@@ -81,10 +81,10 @@ export interface PositionedModule {
   readonly expanded: boolean;
 }
 
-/** Pixel-space rectangle for one fragment produced by band placement. Geometry
- *  carries the fragment owner/id metadata so obstacles, routing, and debug can
- *  all reason about the same snapped rectangles while still recognizing
- *  endpoint type blocks by type id. */
+/** Pixel-space visual/routing rectangle for one fragment anchored at its
+ *  snapped grid placement. Packing owns the snapped cells, but consumers here
+ *  need the measured visible bounds so debug boxes, hit areas, and routing
+ *  obstacles do not grow by a hidden trailing grid cell. */
 export interface PlacedFragmentRect {
   readonly typeId: string;
   readonly bandId: string;

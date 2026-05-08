@@ -3,7 +3,7 @@
 //
 // Geometry owns pixel-space placement. This pass deliberately does not
 // re-measure rows or rebuild protrusion thresholds; the debug overlay and
-// router must see the same snapped rectangles the band planner placed.
+// router must see the exact fragment rectangles emitted by geometry.
 
 import type { Geometry } from './geometry.ts';
 import type { Obstacle, PlacedFragmentRect } from './types.ts';

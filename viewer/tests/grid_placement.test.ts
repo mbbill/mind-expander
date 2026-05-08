@@ -58,6 +58,13 @@ function singleFragmentItem(
   return item(id, groupOrder, indexInGroup, [fragment(id, 'main', own, clearance)]);
 }
 
+function inRegion(item: GridPlacementItem, regionId: string): GridPlacementItem {
+  return {
+    ...item,
+    regionId,
+  };
+}
+
 describe('layout grid placement', () => {
   it('places a single group top-down and preserves item order', () => {
     const result = placeGridItemsTopToBottom(
@@ -200,6 +207,106 @@ describe('layout grid placement', () => {
     expect(right.own).toEqual(rect(4, 0, 2, 2));
     expect(conflicts(left, right)).toBe(false);
     expect(conflicts(right, left)).toBe(false);
+  });
+
+  it('applies rank-layer gap across regions without adding it to clearance', () => {
+    const lowerRank = inRegion(
+      singleFragmentItem('lower-rank', 0, 0, rect(0, 0, 10, 1), {
+        top: 0,
+        right: 2,
+        bottom: 0,
+        left: 0,
+      }),
+      'module:a',
+    );
+    const nextRank = inRegion(
+      item('next-rank', 0, 0, [fragment('next-rank', 'main', rect(0, 0, 1, 1))], 1),
+      'module:b',
+    );
+
+    const result = placeGridItemsTopToBottom([lowerRank, nextRank], {
+      maxCols: 24,
+      maxRows: 4,
+      rankLayerGapCells: 2,
+    });
+
+    expect(result.items.find((placed) => placed.id === 'next-rank')?.origin.col).toBe(12);
+  });
+
+  it('uses the larger of rank-layer gap and fragment clearance between ranks', () => {
+    const lowClearance = inRegion(
+      singleFragmentItem('low-clearance', 0, 0, rect(0, 0, 10, 1), {
+        top: 0,
+        right: 1,
+        bottom: 0,
+        left: 0,
+      }),
+      'module:a',
+    );
+    const wideClearance = inRegion(
+      singleFragmentItem('wide-clearance', 0, 1, rect(0, 0, 10, 1), {
+        top: 0,
+        right: 3,
+        bottom: 0,
+        left: 0,
+      }),
+      'module:a',
+    );
+    const afterLow = inRegion(
+      item('after-low', 0, 0, [fragment('after-low', 'main', rect(0, 0, 1, 1))], 1),
+      'module:b',
+    );
+    const afterWide = inRegion(
+      item('after-wide', 0, 0, [fragment('after-wide', 'main', rect(0, 0, 1, 1))], 1),
+      'module:b',
+    );
+
+    const lowResult = placeGridItemsTopToBottom([lowClearance, afterLow], {
+      maxCols: 24,
+      maxRows: 4,
+      rankLayerGapCells: 3,
+    });
+    const wideResult = placeGridItemsTopToBottom([wideClearance, afterWide], {
+      maxCols: 24,
+      maxRows: 4,
+      rankLayerGapCells: 2,
+    });
+
+    expect(lowResult.items.find((placed) => placed.id === 'after-low')?.origin.col).toBe(13);
+    expect(wideResult.items.find((placed) => placed.id === 'after-wide')?.origin.col).toBe(13);
+  });
+
+  it('does not apply the rank-layer floor between items in the same rank', () => {
+    const left = inRegion(singleFragmentItem('left', 0, 0, rect(0, 0, 10, 1)), 'module:a');
+    const peer = inRegion(
+      item('peer', 0, 0, [fragment('peer', 'main', rect(0, 0, 1, 1))], 0),
+      'module:b',
+    );
+
+    const result = placeGridItemsTopToBottom([left, peer], {
+      maxCols: 24,
+      maxRows: 4,
+      rankLayerGapCells: 2,
+    });
+
+    expect(result.items.find((placed) => placed.id === 'peer')?.origin.col).toBe(0);
+  });
+
+  it('can exclude prelude orders from the rank-layer floor', () => {
+    const prelude = inRegion(singleFragmentItem('prelude', 0, 0, rect(0, 0, 10, 1)), 'module:a');
+    const realRank = inRegion(
+      item('real-rank', 0, 0, [fragment('real-rank', 'main', rect(0, 0, 1, 1))], 1),
+      'module:b',
+    );
+
+    const result = placeGridItemsTopToBottom([prelude, realRank], {
+      maxCols: 24,
+      maxRows: 4,
+      rankLayerGapCells: 2,
+      firstRankLayerOrder: 1,
+    });
+
+    expect(result.items.find((placed) => placed.id === 'real-rank')?.origin.col).toBe(0);
   });
 
   it('preserves multi-fragment item layout when translating fragments', () => {

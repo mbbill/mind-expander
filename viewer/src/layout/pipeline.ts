@@ -38,7 +38,7 @@ function runLayoutPass(
 ): readonly [Geometry, RoutingResult] {
   const geometry = computeGeometry(inputs, { placementPlan });
   const obstacles = computeObstacles(geometry, measure);
-  const routing = routeArrows(geometry, obstacles, inputs, measure, { allocateLanes: false });
+  const routing = routeArrows(geometry, obstacles, inputs, measure);
 
   return [geometry, routing];
 }

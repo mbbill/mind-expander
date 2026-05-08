@@ -301,6 +301,38 @@ on insertion order and may violate the new box's requested gap.
 Do not use clearance-vs-clearance as the default collision check. That
 double-counts gap requests and creates too much empty space.
 
+## LCA Layer Gap
+
+Different LCA/rank layers need a minimum horizontal gap so arrows have room to
+turn between layers. This gap is a layer-to-layer placement floor, not part of
+any block's clearance rectangle.
+
+Prelude/non-rank items are not LCA layers. They may reserve local module-band
+space, but they must not become a global floor for the first real rank.
+
+The LCA gap and block clearance are two minimums on the same physical
+own-to-own distance. Do not add them together.
+
+Example in grid cells:
+
+```text
+A own = 0..10
+LCA layer gap = 2
+block clearance requirement = 2
+B min x = 10 + max(2, 2) = 12
+```
+
+If the block clearance requirement were 3:
+
+```text
+B min x = 10 + max(2, 3) = 13
+```
+
+So placement should compute the floor from the previous relevant layer's
+own-right edge plus `max(lcaLayerGap, requiredBlockGap)`. If normal clearance
+already satisfies the LCA gap, nothing extra happens. If it does not, increase
+the spacing to satisfy the LCA gap.
+
 ## Unified Obstacles
 
 The rectangle model used for placement, arrow routing, hit testing, and debug
@@ -323,65 +355,108 @@ representation so diagnostics do not dominate paint cost.
 ## Arrow Routing
 
 Arrows route after physical placement. Routing should consume the same
-obstacle rectangles used by placement.
+obstacle rectangles used by placement, but it must not feed back into physical
+placement. Layout owns block positions. Routing owns only the path chosen
+between already-placed endpoints.
 
-Source and target side selection should depend on current physical positions:
-use the right side when the target is physically to the right with room to
-route; otherwise use the left side or another explicit fallback. Routing lanes
-are routing channels, not type-placement lanes.
-
-There are two routing classes:
-
-- **forward arrows**: follow ownership predecessor direction and should be
-  visually clearer
-- **backward arrows**: go against ownership predecessor direction or represent
-  cyclic/same-rank links and may be compressed more
-
-They should use the same routing algorithm. The difference is only the allowed
-maximum density per grid channel, which determines how much gap pressure they
-create.
-
-Routing may feed back into layout, but only through an explicit bounded pass:
+Every arrow uses one dogleg shape:
 
 ```text
-1. place boxes with intrinsic clearance
-2. route arrows
-3. measure routing pressure
-4. place boxes again with extra routing gap constraints
-5. route again and squeeze remaining overflow if needed
+source -> horizontal stub -> vertical trunk -> horizontal stub -> target
 ```
 
-Do not allow routing and placement to iterate freely. Routing feedback should
-only request more space; it must not change logical order or item assignment.
+For expanded row arrows, the row anchor and the route port are distinct. The
+row anchor stays at the field/method text so focus and hit behavior stays
+semantic. The dogleg may leave from either side of that member row depending
+on the route class and geometry; its route port is on the chosen source-side
+boundary. Only the short connector from the row anchor to that boundary is
+allowed to touch the source block; the vertical trunk must still be scored
+against source occupancy. This prevents long upward/downward routes from
+cutting through an expanded source block's text.
 
-Routing pressure should not be encoded as intrinsic box clearance. Box
-clearance answers "how much space does this box need around itself?" Routing
-pressure answers "how much space does this gap/channel need for arrows?"
+Do not add maze routing, multi-detour paths, or a second placement pass for
+routing pressure. This keeps routing deterministic and makes bad routes visible
+as route quality/debug data instead of hiding them by moving blocks.
 
-Represent routing pressure as gap constraints between placement regions:
+There are three routing classes:
+
+- **LCA forward arrows**: ownership edges that must travel forward. They start
+  from the source right side and end on the target left side.
+- **LCA backward arrows**: ownership/cyclic edges that do not have the forward
+  LCA source-side constraint. They may leave from either side of the source
+  member row, but they still end on the target left side.
+- **Other arrows**: non-LCA edges such as function relationships. They may use
+  either source member-row side based on the current relative source/target
+  positions, but they still end on the target left side.
+
+Target landing is invariant across all route classes: the final horizontal
+stub must move rightward into the target's left side. Do not land on the
+target's right side, because that makes the route cut across the target block
+from right to left.
+
+The edge class decides which side pairs are legal. The scorer then chooses the
+best vertical trunk for the legal side pair:
 
 ```text
-ExtraGap {
-  bandId
-  axis
-  afterOrder or betweenRegions
-  cells
-}
+classify edge
+produce legal side-pair candidates
+score dogleg trunk candidates against grid occupancy
+choose the lowest-cost deterministic candidate
+emit route quality/debug metadata
 ```
 
-During the second placement pass, combine intrinsic clearance and routing gap
-constraints when checking candidate positions. For example, horizontal
-separation between two neighboring regions should respect:
+For LCA-forward arrows, direction is a hard invariant. A forward LCA route
+must leave the source's right side, keep moving right, and enter the target's
+left side from the left. If the physical positions leave no legal monotonic
+dogleg interval, report a routing/layout violation. Do not silently flip the
+side pair to make the edge draw.
 
-```text
-max(leftBox.rightClearance,
-    rightBox.leftClearance,
-    routingExtraGapBetweenThem)
-```
+For backward and other arrows, choose the source side from physical geometry:
 
-Avoid assigning routing pressure to one neighboring box's clearance, because
-that would affect unrelated future neighbors. The extra space belongs to the
-gap/channel, not to either box.
+- target clearly right of source: try source-right first
+- target clearly left of source: try source-left first
+- overlapping or ambiguous x-ranges: score both source sides and choose the
+  lower-cost route, while preserving target-left landing
+
+Dogleg trunk selection should operate primarily in grid cells. Candidate trunks
+are scored by how much they cut through occupied space and how much ambiguity
+they create:
+
+- crossing a box's own grid cells is expensive
+- crossing a row/text own area is expensive
+- crossing clearance-only space is cheap, because clearance is routing space
+- crossing another arrow is expensive unless the intersection is a shared
+  endpoint/corner; ordered source/target rows should keep their doglegs ordered
+  instead of cutting through each other
+- overlapping another vertical trunk with an overlapping y-range is expensive,
+  especially for LCA forward arrows, unless both routes enter the same target
+- sharing or nearly sharing horizontal stubs at the same source or target is
+  allowed and should be cheap
+
+If multiple doglegs still need the same vertical trunk lane, or the scorer
+pushes them into neighboring lanes inside the same narrow corridor, keep that
+as one routing decision and assign small deterministic visual subtracks inside
+the corridor. Different-target subtracks should use real grid-lane spacing
+when the corridor has room; falling back to tiny pixel offsets should be an
+overflow condition, not the normal case. The subtracks are a readability step
+only and must not feed back into block placement or cause a new routing pass.
+
+Same-target fan-in arrows are allowed to reuse the same dogleg lane. They still
+pay normal obstacle cost, but they should not count as arrow-crossing or
+vertical-trunk conflicts against each other, because overlapping routes with
+the same destination are intentional fan-in rather than ambiguous competing
+paths. Same-target reuse should happen inside normal route candidate scoring,
+not as a separate rendering-only bundle.
+
+The router may still cut through occupied cells when no clean dogleg exists.
+In that case it must choose the least-bad route deterministically and expose
+the cut cost in debug output. Cutting through blocks is an overflow condition,
+not the normal case.
+
+Rounded dogleg corners consume space. With a two-grid-cell object clearance,
+the default corner radius should be one grid cell. Candidate horizontal stubs
+must have enough room for that radius; otherwise the route should be scored as
+bad or reported as a violation.
 
 ## Non-Rank Items
 
@@ -407,5 +482,14 @@ Any significant layout change should add or update tests for these invariants:
 - debug overlay rectangles cover the actual rendered stable affordances,
   including type expand chevrons
 - debug overlay rectangles match the real placement/routing obstacle model
-- arrow vertical channels do not pass through occupied rectangles unless the
-  router explicitly reports an overflow/debug condition
+- routing does not change physical block placement
+- LCA forward arrows always start from the source right side, end on the target
+  left side, and remain forward-monotonic
+- LCA backward arrows and other arrows may choose either source member-row side
+  from physical source/target positions, but still end on the target left side
+- every arrow's final horizontal segment enters the target from the left and
+  moves rightward into the target
+- arrow vertical trunks do not overlap other vertical trunks with overlapping
+  y-ranges unless the router explicitly reports a compressed/overflow condition
+- arrows do not pass through occupied own rectangles unless the router
+  explicitly reports an overflow/debug condition

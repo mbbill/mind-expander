@@ -12,8 +12,13 @@ import { type Selection, pointer, select, zoomTransform } from 'd3';
 import { type ArrowHit, pickArrowsAtPoint } from '../analysis/arrow_hit.ts';
 import type { DriftClass } from '../analysis/drift.ts';
 import {
+  BASE_FONT_SIZE,
   HIT_MIN_W,
   MODULE_LABEL_X,
+  TYPE_EXPAND_ARROW_CLOSED,
+  TYPE_EXPAND_ARROW_FONT_SIZE,
+  TYPE_EXPAND_ARROW_OPEN,
+  TYPE_LABEL_FONT_SIZE,
   TYPE_LABEL_X,
   splitModuleDisplayLabel,
 } from '../analysis/layout_metrics.ts';
@@ -43,15 +48,13 @@ const TYPE_KIND_MARKER_X = 14;
 // Exported so other modules (e.g. the canvas-backed text measurer) can
 // match the rendered font exactly. Keep these in sync with the SVG.
 export const FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-const FONT_SIZE = 12;
-export const FONT_SIZE_FIELD = 12;
-const FONT_SIZE_TYPE_ARROW = 22;
+const FONT_SIZE = BASE_FONT_SIZE;
+export const FONT_SIZE_FIELD = BASE_FONT_SIZE;
 // Module leaf and type header bumped slightly above the base so the
 // "main thing on this row" reads more prominently than ancillary text.
 // Stays within the grid-derived band height — at 14px the
 // cap-height plus descender comfortably fits.
 const FONT_SIZE_MODULE_LEAF = 14;
-const FONT_SIZE_TYPE_LABEL = 14;
 const FONT_SIZE_MODULE_PREFIX = 11; // smaller than the leaf, to keep the row tight
 const FONT_SIZE_MODULE_CHEVRON = 14; // bumped above the base + bold so the
 // "+/-" expand affordance reads clearly without changing direction-neutral
@@ -312,46 +315,7 @@ function renderLayoutDebug(
     .attr('width', (d) => d.right - d.left)
     .attr('height', (d) => d.bottom - d.top);
 
-  const laneSel = g
-    .selectAll<SVGLineElement, (typeof routing.lanes)[number]>('line.debug-lane')
-    .data(
-      routing.lanes,
-      (d) => `${d.bundleKey}:${d.fromTypeId}:${d.toTypeId}:${d.x}:${d.yMin}:${d.yMax}`,
-    );
-  laneSel.exit().remove();
-  laneSel
-    .enter()
-    .append('line')
-    .attr('class', 'debug-lane')
-    .attr('stroke-width', 0.9)
-    .attr('stroke-opacity', 0.45)
-    .merge(laneSel)
-    .attr('stroke', (d) => (d.blocked ? '#dc2626' : '#2563eb'))
-    .attr('stroke-dasharray', (d) => (d.blocked ? '4 3' : null))
-    .attr('x1', (d) => d.x)
-    .attr('x2', (d) => d.x)
-    .attr('y1', (d) => d.yMin)
-    .attr('y2', (d) => d.yMax);
-
-  const groups = routing.groups.filter((d) => Number.isFinite(d.xMin) && Number.isFinite(d.xMax));
-  const groupSel = g
-    .selectAll<SVGTextElement, (typeof groups)[number]>('text.debug-channel')
-    .data(groups, (d) => `${d.id}:${d.xMin}:${d.xMax}:${d.laneCount}`);
-  groupSel.exit().remove();
-  groupSel
-    .enter()
-    .append('text')
-    .attr('class', 'debug-channel')
-    .attr('font-size', 10)
-    .attr('fill', '#1d4ed8')
-    .attr('stroke', 'white')
-    .attr('stroke-width', 2)
-    .attr('paint-order', 'stroke fill')
-    .merge(groupSel)
-    .attr('x', (d) => (d.xMin + d.xMax) / 2)
-    .attr('y', 16)
-    .attr('text-anchor', 'middle')
-    .text((d) => `${d.laneCount} lanes`);
+  g.selectAll('line.debug-lane,text.debug-channel').remove();
 
   const labels = routing.layoutLabels ?? [];
   const labelSel = g
@@ -365,7 +329,7 @@ function renderLayoutDebug(
     .attr('font-size', 10)
     .attr('fill', '#6d28d9')
     .attr('stroke', 'white')
-    .attr('stroke-width', 2)
+    .attr('stroke-width', 3)
     .attr('paint-order', 'stroke fill')
     .attr('text-anchor', 'end')
     .merge(labelSel)
@@ -954,10 +918,11 @@ function applyChainHighlight(
 
 const CORNER_OFFSET = 8;
 
-function polylinePath(waypoints: readonly { x: number; y: number }[]): string {
-  if (waypoints.length < 2) return '';
-  const head = waypoints[0];
-  const tail = waypoints[waypoints.length - 1];
+export function polylinePath(waypoints: readonly { x: number; y: number }[]): string {
+  const points = compactStraightThroughWaypoints(waypoints);
+  if (points.length < 2) return '';
+  const head = points[0];
+  const tail = points[points.length - 1];
   if (!head || !tail) return '';
 
   // Round each interior corner with a quadratic bezier: trim back from the
@@ -965,10 +930,10 @@ function polylinePath(waypoints: readonly { x: number; y: number }[]): string {
   // the segment is too short), then use the corner itself as the Q control
   // point. This smooths the bend without specifying an explicit radius.
   let d = `M${head.x},${head.y}`;
-  for (let i = 1; i < waypoints.length - 1; i++) {
-    const prev = waypoints[i - 1];
-    const cur = waypoints[i];
-    const next = waypoints[i + 1];
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const cur = points[i];
+    const next = points[i + 1];
     if (!prev || !cur || !next) continue;
 
     const inLen = Math.hypot(cur.x - prev.x, cur.y - prev.y);
@@ -990,6 +955,51 @@ function polylinePath(waypoints: readonly { x: number; y: number }[]): string {
   }
   d += `L${tail.x},${tail.y}`;
   return d;
+}
+
+function compactStraightThroughWaypoints(
+  waypoints: readonly { x: number; y: number }[],
+): readonly { x: number; y: number }[] {
+  if (waypoints.length < 3) return waypoints;
+
+  const out: { x: number; y: number }[] = [];
+  const first = waypoints[0];
+  if (!first) return [];
+  out.push(first);
+
+  for (let i = 1; i < waypoints.length - 1; i += 1) {
+    const prev = out[out.length - 1];
+    const cur = waypoints[i];
+    const next = waypoints[i + 1];
+    if (!prev || !cur || !next) continue;
+
+    // Routing may add semantic boundary ports that sit on the same straight
+    // stub as the next real dogleg corner. They are important for scoring,
+    // but rounding them as corners visually distorts upward/downward turns.
+    if (isStraightThrough(prev, cur, next)) continue;
+    out.push(cur);
+  }
+
+  const last = waypoints[waypoints.length - 1];
+  if (last) out.push(last);
+  return out;
+}
+
+function isStraightThrough(
+  prev: { readonly x: number; readonly y: number },
+  cur: { readonly x: number; readonly y: number },
+  next: { readonly x: number; readonly y: number },
+): boolean {
+  const dxIn = cur.x - prev.x;
+  const dyIn = cur.y - prev.y;
+  const dxOut = next.x - cur.x;
+  const dyOut = next.y - cur.y;
+
+  if ((dxIn === 0 && dyIn === 0) || (dxOut === 0 && dyOut === 0)) return true;
+
+  const horizontal = dyIn === 0 && dyOut === 0 && Math.sign(dxIn) === Math.sign(dxOut);
+  const vertical = dxIn === 0 && dxOut === 0 && Math.sign(dyIn) === Math.sign(dyOut);
+  return horizontal || vertical;
 }
 
 function renderModules(
@@ -1146,7 +1156,7 @@ function renderTypes(
     .attr('x', TYPE_LABEL_X)
     .attr('y', ROW_H / 2)
     .attr('dy', '0.32em')
-    .attr('font-size', FONT_SIZE_TYPE_LABEL)
+    .attr('font-size', TYPE_LABEL_FONT_SIZE)
     .attr('fill', COLOR_LABEL)
     .attr('font-style', (d) => (d.isGhost ? 'italic' : 'normal'))
     .text((d) => d.label);
@@ -1157,7 +1167,7 @@ function renderTypes(
     .attr('class', 'expand-arrow')
     .attr('y', ROW_H / 2)
     .attr('dy', '0.32em')
-    .attr('font-size', FONT_SIZE_TYPE_ARROW)
+    .attr('font-size', TYPE_EXPAND_ARROW_FONT_SIZE)
     .attr('fill', COLOR_CHEVRON);
 
   enter
@@ -1209,7 +1219,7 @@ function renderTypes(
   merged
     .filter((d) => d.hasFields)
     .select<SVGTextElement>('text.expand-arrow')
-    .text((d) => (d.expanded ? '▾' : '▸'));
+    .text((d) => (d.expanded ? TYPE_EXPAND_ARROW_OPEN : TYPE_EXPAND_ARROW_CLOSED));
 
   // Refresh click handler each draw. Row-click semantics:
   //   - real type with fields → toggle expansion (current behaviour)

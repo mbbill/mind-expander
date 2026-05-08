@@ -1,5 +1,5 @@
 import { type GridRect, type LayoutBox, conflicts } from './grid.ts';
-import type { ExtraGap } from './routing_pressure.ts';
+import type { ExtraGap } from './placement_gaps.ts';
 
 export interface GridPoint {
   readonly col: number;
@@ -54,11 +54,18 @@ export interface GridPlacementOptions {
   readonly maxCols?: number;
   readonly maxRows?: number;
   readonly extraGaps?: readonly ExtraGap[];
+  readonly rankLayerGapCells?: number;
+  readonly firstRankLayerOrder?: number;
 }
 
 interface SearchBounds {
   readonly maxCols: number;
   readonly maxRows: number;
+}
+
+interface PlacementRules {
+  readonly rankLayerGapCells: number;
+  readonly firstRankLayerOrder: number;
 }
 
 interface RectBounds {
@@ -109,6 +116,7 @@ export function placeGridItemsTopToBottom(
   options: GridPlacementOptions = {},
 ): GridPlacementResult {
   const bounds = normalizeSearchBounds(options);
+  const rules = normalizePlacementRules(options);
   const orderedItems = normalizeItems(items);
   const groupExtraOffsets = buildGroupExtraOffsets(orderedItems, options.extraGaps ?? []);
   const placedItems: PlacedGridItem[] = [];
@@ -127,6 +135,7 @@ export function placeGridItemsTopToBottom(
       placedItems,
       placedFragments,
       bounds,
+      rules,
       groupExtraOffsets,
       { byRegionGroup: groupTracks },
     );
@@ -148,6 +157,7 @@ function placeOneItem(
   placedItems: readonly PlacedGridItem[],
   placedFragments: readonly PlacedGridFragment[],
   bounds: SearchBounds,
+  rules: PlacementRules,
   groupExtraOffsets: GroupExtraOffsets,
   groupTracks: DisplayGroupTracks,
 ): PlacedGridItem {
@@ -157,7 +167,15 @@ function placeOneItem(
 
   const firstLeftCol = Math.max(
     0,
-    minimumLeftColForItem(item, placedItems, groupExtraOffsets, groupTracks),
+    minimumLeftColForItem(
+      item,
+      localOwnBounds,
+      placedItems,
+      groupExtraOffsets,
+      groupTracks,
+      rules.rankLayerGapCells,
+      rules.firstRankLayerOrder,
+    ),
   );
   const lastLeftCol = bounds.maxCols - localOwnBounds.cols;
   const hasEstablishedGroupTrack = groupTracks.byRegionGroup.has(
@@ -235,6 +253,20 @@ function normalizeSearchBounds(options: GridPlacementOptions): SearchBounds {
   return { maxCols, maxRows };
 }
 
+function normalizePlacementRules(options: GridPlacementOptions): PlacementRules {
+  const rankLayerGapCells = options.rankLayerGapCells ?? 0;
+  const firstRankLayerOrder = options.firstRankLayerOrder ?? 0;
+
+  if (!Number.isInteger(rankLayerGapCells) || rankLayerGapCells < 0) {
+    throw new Error('Grid placement rank layer gap must be a non-negative integer cell count.');
+  }
+  if (!Number.isInteger(firstRankLayerOrder) || firstRankLayerOrder < 0) {
+    throw new Error('Grid placement first rank layer order must be a non-negative integer.');
+  }
+
+  return { rankLayerGapCells, firstRankLayerOrder };
+}
+
 function buildGroupExtraOffsets(
   items: readonly GridPlacementItem[],
   extraGaps: readonly ExtraGap[],
@@ -246,7 +278,7 @@ function buildGroupExtraOffsets(
   const byRegionGroup = new Map<string, number>();
 
   for (const [_key, item] of regionGroups) {
-    // Routing extra gaps are channel constraints, so placement applies them as
+    // Extra gaps are channel constraints, so placement applies them as
     // band-global group offsets instead of inflating any fragment clearance.
     const cells = gaps.reduce(
       (sum, gap) =>
@@ -348,9 +380,12 @@ function candidateFits(
 
 function minimumLeftColForItem(
   item: GridPlacementItem,
+  localOwnBounds: RectBounds,
   placedItems: readonly PlacedGridItem[],
   groupExtraOffsets: GroupExtraOffsets,
   groupTracks: DisplayGroupTracks,
+  rankLayerGapCells: number,
+  firstRankLayerOrder: number,
 ): number {
   const regionId = regionIdForItem(item);
   const groupExtraOffset = extraOffsetForGroup(regionId, item.groupOrder, groupExtraOffsets);
@@ -364,8 +399,49 @@ function minimumLeftColForItem(
   // items are handled as collisions so expansion pushes down before sideways.
   const displayGroupFloor =
     currentTrack?.leftCol ?? previousTrack?.rightCol ?? (item.groupOrder === 0 ? 0 : undefined);
+  const rankLayerFloor = rankLayerFloorForItem(
+    item,
+    localOwnBounds,
+    placedItems,
+    rankLayerGapCells,
+    firstRankLayerOrder,
+  );
 
-  return Math.max(predecessorFloor, (displayGroupFloor ?? 0) + groupExtraOffset);
+  return Math.max(predecessorFloor, (displayGroupFloor ?? 0) + groupExtraOffset, rankLayerFloor);
+}
+
+function rankLayerFloorForItem(
+  item: GridPlacementItem,
+  localOwnBounds: RectBounds,
+  placedItems: readonly PlacedGridItem[],
+  rankLayerGapCells: number,
+  firstRankLayerOrder: number,
+): number {
+  if (rankLayerGapCells === 0 || item.rankOrder < firstRankLayerOrder) {
+    return 0;
+  }
+
+  const localClearanceBounds = boundsOf(item.fragments.map((fragment) => fragment.clearance));
+  const leftClearanceCells = Math.max(0, localOwnBounds.col - localClearanceBounds.col);
+  let floor = 0;
+
+  for (const placed of placedItems) {
+    if (placed.rankOrder < firstRankLayerOrder || placed.rankOrder >= item.rankOrder) {
+      continue;
+    }
+    for (const fragment of placed.fragments) {
+      const ownRight = fragment.own.col + fragment.own.cols;
+      const clearanceRight = fragment.clearance.col + fragment.clearance.cols;
+      const rightClearanceCells = Math.max(0, clearanceRight - ownRight);
+      // LCA ranks are a logical floor between own boxes. Clearance remains a
+      // separate box contract, so the required gap is the larger constraint,
+      // not rank gap plus clearance.
+      const requiredGap = Math.max(rankLayerGapCells, rightClearanceCells, leftClearanceCells);
+      floor = Math.max(floor, ownRight + requiredGap);
+    }
+  }
+
+  return floor;
 }
 
 function predecessorContexts(
