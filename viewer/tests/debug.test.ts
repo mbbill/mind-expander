@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'vitest';
 import { computeDrift } from '../src/analysis/drift.ts';
-import { type Layout, buildLayout, buildOptimizedLayout } from '../src/analysis/layout.ts';
+import { type Layout, buildLayout, buildOptimizedLayout } from '../src/analysis/layout_bak.ts';
 import { type TreeNode, buildModuleTree } from '../src/analysis/module_tree.ts';
 import {
   type OwnershipIndex,

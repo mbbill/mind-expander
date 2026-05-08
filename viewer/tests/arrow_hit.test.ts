@@ -4,7 +4,7 @@ import {
   distanceToSegment,
   pickArrowsAtPoint,
 } from '../src/analysis/arrow_hit.ts';
-import type { Arrow } from '../src/analysis/layout.ts';
+import type { Arrow } from '../src/analysis/layout_bak.ts';
 
 function arrow(
   waypoints: Array<[number, number]>,

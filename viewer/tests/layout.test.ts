@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { computeDrift } from '../src/analysis/drift.ts';
-import { FIELD_ROW_H, ROW_H, buildLayout, buildOptimizedLayout } from '../src/analysis/layout.ts';
+import {
+  FIELD_ROW_H,
+  ROW_H,
+  buildLayout,
+  buildOptimizedLayout,
+} from '../src/analysis/layout_bak.ts';
+import {
+  LANE_BASE_GAP,
+  MIN_SEMANTIC_LANE_GAP,
+  allocateIncomingChannels,
+} from '../src/analysis/layout_channels_bak.ts';
 import { buildModuleTree } from '../src/analysis/module_tree.ts';
 import { buildOwnershipIndex, computeOwnershipDepth } from '../src/analysis/ownership.ts';
 import type {
@@ -158,7 +168,7 @@ describe('buildLayout', () => {
     expect(aBand?.bandHeight).toBe(2 * ROW_H);
   });
 
-  it('many unconstrained collapsed roots wrap into shelf columns', () => {
+  it('many same-rank collapsed roots use stable subrank columns', () => {
     const roots = Array.from({ length: 9 }, (_, i) => ty('c', 'a', `Root${i}`));
     const c = crateFacts('c', [mod(''), mod('a', roots)]);
     const root = buildModuleTree(c);
@@ -166,6 +176,24 @@ describe('buildLayout', () => {
     const aBand = layout.modules.find((m) => m.label === 'a');
     expect(aBand?.bandHeight).toBe(3 * ROW_H);
     expect(new Set(layout.types.map((t) => t.x)).size).toBe(3);
+  });
+
+  it('dense same-depth groups keep stable subrank columns across expansion changes', () => {
+    const roots = Array.from({ length: 9 }, (_, i) =>
+      ty('c', 'a', `Root${i}`, [{ name: 'field', ty_text: 'u8' }]),
+    );
+    const c = crateFacts('c', [mod(''), mod('a', roots)]);
+    const root = buildModuleTree(c);
+    const collapsed = setup(c, [], [root.id, 'c::a']);
+    const expanded = setup(c, [], [root.id, 'c::a', 'c::a::Root0']);
+
+    const collapsedX = new Map(collapsed.types.map((t) => [t.fullPath, t.x]));
+    const expandedX = new Map(expanded.types.map((t) => [t.fullPath, t.x]));
+    expect(new Set(collapsed.types.map((t) => t.x)).size).toBe(3);
+    expect(new Set(expanded.types.map((t) => t.x)).size).toBe(3);
+    for (const [id, x] of collapsedX) {
+      expect(expandedX.get(id)).toBe(x);
+    }
   });
 
   it('expanded type takes (1 + fieldCount) rows in its band', () => {
@@ -459,6 +487,108 @@ describe('buildLayout — per-channel routing', () => {
     expect(arrows).toHaveLength(2);
     const laneXs = new Set(arrows.map((a) => a.waypoints[a.waypoints.length - 2]?.x));
     expect(laneXs.size).toBe(2);
+  });
+
+  it('unrelated same-channel bundles keep rail spacing even when vertical spans do not overlap', () => {
+    const c = crateFacts('c', [
+      mod(''),
+      mod('a', [
+        ty('c', 'a', 'A1', [
+          { name: 'pad1', ty_text: 'u8' },
+          { name: 'b', ty_text: 'B' },
+        ]),
+        ty('c', 'a', 'A2', [
+          { name: 'pad2', ty_text: 'u8' },
+          { name: 'c', ty_text: 'C' },
+        ]),
+        ty('c', 'a', 'B'),
+        ty('c', 'a', 'C'),
+      ]),
+    ]);
+    const root = buildModuleTree(c);
+    const layout = setup(
+      c,
+      [edge('c::a::A1', 'c::a::B', 'field b'), edge('c::a::A2', 'c::a::C', 'field c')],
+      [root.id, 'c::a', 'c::a::A1', 'c::a::A2'],
+    );
+    const arrows = layout.arrows.filter(
+      (a) => a.toTypeId === 'c::a::B' || a.toTypeId === 'c::a::C',
+    );
+    expect(arrows).toHaveLength(2);
+    const [first, second] = arrows;
+    const firstLane = first?.waypoints[first.waypoints.length - 2]?.x;
+    const secondLane = second?.waypoints[second.waypoints.length - 2]?.x;
+    expect(firstLane).toBeDefined();
+    expect(secondLane).toBeDefined();
+    expect(Math.abs((firstLane as number) - (secondLane as number))).toBeGreaterThanOrEqual(
+      MIN_SEMANTIC_LANE_GAP,
+    );
+    expect(layout.debug?.routing.lanes).toHaveLength(2);
+    expect(layout.debug?.routing.groups.some((g) => g.laneCount > 1)).toBe(true);
+  });
+
+  it('blocked channel lanes report extra slot demand instead of silently looking usable', () => {
+    const allocation = allocateIncomingChannels(
+      [
+        {
+          sourceX: 0,
+          sourceLeftX: -4,
+          sourceRightX: 0,
+          sourceSide: 'right',
+          sourceY: 0,
+          targetX: 40,
+          targetY: 100,
+          sourceCol: 0,
+          targetCol: 1,
+          fromTypeId: 'source',
+          fromFieldName: 'field',
+          fromRowKind: 'field',
+          toTypeId: 'target',
+          driftClass: 'at_lca',
+          kind: 'ownership',
+        },
+      ],
+      [{ left: 11, right: 29, top: -10, bottom: 110 }],
+    );
+
+    expect(allocation.slotCountByTarget.get('target')).toBeGreaterThan(1);
+    expect(allocation.debug.lanes[0]?.blocked).toBe(true);
+  });
+
+  it('routing obstacles use one hull for short rows and protrusions for long rows', () => {
+    const longName = 'this_field_name_is_long_enough_to_need_a_route_protrusion';
+    const c = crateFacts('c', [
+      mod(''),
+      mod('a', [
+        ty('c', 'a', 'Owner', [
+          { name: 'short_a', ty_text: 'u8' },
+          { name: 'short_b', ty_text: 'u8' },
+          { name: longName, ty_text: 'u8' },
+        ]),
+        ty('c', 'a', 'Target'),
+      ]),
+    ]);
+    const root = buildModuleTree(c);
+    const layout = setup(c, [], [root.id, 'c::a', 'c::a::Owner']);
+    const owner = layout.types.find((t) => t.fullPath === 'c::a::Owner');
+    expect(owner).toBeDefined();
+
+    const ownerBox = owner as NonNullable<typeof owner>;
+    const ownerTop = ownerBox.y - ROW_H / 2;
+    const ownerBottom = ownerTop + ownerBox.height;
+    const ownerObstacles =
+      layout.debug?.routing.obstacles.filter(
+        (o) =>
+          o.left < ownerBox.x + 80 &&
+          o.right > ownerBox.x &&
+          o.top >= ownerTop &&
+          o.bottom <= ownerBottom,
+      ) ?? [];
+    expect(ownerObstacles).toHaveLength(2);
+    const hull = ownerObstacles.find((o) => o.top === ownerTop && o.bottom === ownerBottom);
+    expect(hull).toBeDefined();
+    const protrusion = ownerObstacles.find((o) => o !== hull);
+    expect(protrusion?.right).toBeGreaterThan(hull?.right ?? 0);
   });
 
   it('a heavy target-local incoming gutter is wider than a light one', () => {
@@ -1299,6 +1429,75 @@ describe('buildLayout — type method buckets', () => {
       (a) => a.fromTypeId === 'c::a::Foo' && a.fromFieldName === 'consume',
     );
     expect(methodArrow?.toTypeId).toBe('c::a::Bar');
+  });
+
+  it('method arrow source side follows actual horizontal channel space', () => {
+    const longMethod =
+      'method_name_long_enough_to_physically_cross_the_target_column_before_routing';
+    const c = crateFacts('c', [
+      mod('', []),
+      mod('a', [
+        tyM(
+          'c',
+          'a',
+          'Foo',
+          [
+            { name: 'short', visibility: 'pub' },
+            { name: longMethod, visibility: 'pub' },
+          ],
+          [{ name: 'bar', ty_text: 'Bar' }],
+        ),
+        ty('c', 'a', 'Bar'),
+        ty('c', 'a', 'Baz'),
+      ]),
+    ]);
+    const root = buildModuleTree(c);
+    const layout = setup(
+      c,
+      [
+        edge('c::a::Foo', 'c::a::Bar', 'field bar'),
+        {
+          from: 'c::a::Foo',
+          to: 'c::a::Bar',
+          kind: 'owns',
+          via: 'fn_param',
+          origin: 'fn short param x',
+        },
+        {
+          from: 'c::a::Foo',
+          to: 'c::a::Baz',
+          kind: 'owns',
+          via: 'fn_param',
+          origin: `fn ${longMethod} param x`,
+        },
+      ],
+      [root.id, 'c::a', 'c::a::Foo', 'c::a::Foo::__methods_pub'],
+    );
+
+    const foo = layout.types.find((t) => t.fullPath === 'c::a::Foo');
+    const bar = layout.types.find((t) => t.fullPath === 'c::a::Bar');
+    const baz = layout.types.find((t) => t.fullPath === 'c::a::Baz');
+    const shortRow = foo?.fields.find((f) => f.kind === 'method' && f.name === 'short');
+    const longRow = foo?.fields.find((f) => f.kind === 'method' && f.name === longMethod);
+    const shortArrow = layout.arrows.find(
+      (a) => a.kind === 'method' && a.fromFieldName === 'short',
+    );
+    const longArrow = layout.arrows.find(
+      (a) => a.kind === 'method' && a.fromFieldName === longMethod,
+    );
+
+    expect(shortRow).toBeDefined();
+    expect(longRow).toBeDefined();
+    expect(bar).toBeDefined();
+    expect(baz).toBeDefined();
+    const short = shortRow as NonNullable<typeof shortRow>;
+    const long = longRow as NonNullable<typeof longRow>;
+    const barBox = bar as NonNullable<typeof bar>;
+    const bazBox = baz as NonNullable<typeof baz>;
+    expect(short.arrowSourceX + 2 * LANE_BASE_GAP).toBeLessThanOrEqual(barBox.x);
+    expect(long.arrowSourceX + 2 * LANE_BASE_GAP).toBeGreaterThan(bazBox.x);
+    expect(shortArrow?.waypoints[0]?.x).toBe(short.arrowSourceX);
+    expect(longArrow?.waypoints[0]?.x).toBe(long.x - 4);
   });
 
   it('method rows produce no arrows when their bucket is collapsed', () => {

@@ -272,6 +272,9 @@
         gap: 7px;
         cursor: pointer;
       }
+      #settings .settings-row + .settings-row {
+        margin-top: 6px;
+      }
       #settings .settings-row input {
         margin: 0;
       }
@@ -672,6 +675,10 @@
           <label class="settings-row">
             <input id="settings-trackpad-mode" type="checkbox" />
             <span>trackpad mode</span>
+          </label>
+          <label class="settings-row" title="Show layout routing boundaries and channel lanes">
+            <input id="settings-debug-layout" type="checkbox" />
+            <span>debug overlay</span>
           </label>
           <div class="settings-summary" id="settings-input-summary"></div>
           <div class="settings-default" id="settings-input-default"></div>

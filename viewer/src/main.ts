@@ -1,5 +1,5 @@
 import { computeDrift } from './analysis/drift.ts';
-import { type Layout, buildOptimizedLayout } from './analysis/layout.ts';
+import type { Layout } from './analysis/layout_bak.ts';
 import { type TreeNode, buildModuleTree } from './analysis/module_tree.ts';
 import {
   type OwnershipIndex,
@@ -8,7 +8,10 @@ import {
 } from './analysis/ownership.ts';
 import { FactsLoadError, loadFacts } from './data/load.ts';
 import type { Facts } from './data/schema.ts';
+import { buildLayoutV2 } from './layout2/pipeline.ts';
+import { buildPlacementLayoutPlan } from './layout2/placement_plan.ts';
 import { ViewState } from './state/view_state.ts';
+import { anchorTranslation } from './view/anchor.ts';
 import { createArrowDisambig } from './view/arrow_disambig.ts';
 import { createTextMeasurer } from './view/measure.ts';
 import { type Minimap, createMinimap } from './view/minimap.ts';
@@ -16,8 +19,10 @@ import { createOwnersOverlay } from './view/owners_overlay.ts';
 import {
   FONT_FAMILY,
   FONT_SIZE_FIELD,
+  LAYOUT_DEBUG_STORAGE_KEY,
   chainArrowsFromMany,
   fieldKey,
+  layoutDebugEnabled,
   parseFieldKey,
   renderEdgeShadows,
   renderTree,
@@ -30,6 +35,11 @@ const SCALE_MAX = 1.5;
 // Padding factor so content doesn't kiss the viewport edge at the fit scale.
 const FIT_PADDING = 0.95;
 const INPUT_MODE_KEY = 'mind-expander.input-mode';
+// Layout v2 (ownership-rank geometry + lane-allocated routing) is the only active
+// pipeline. v1 has been renamed `analysis/layout_bak.ts` and is no
+// longer wired up — its sole purpose for now is exporting shared types
+// like `Layout`. After full validation of v2 those types move to a
+// dedicated file and the _bak files are deleted entirely.
 
 type InputMode = 'mouse' | 'trackpad';
 
@@ -330,6 +340,7 @@ async function main(): Promise<void> {
     const typeModule = collectTypeModuleMap(staticRoot);
     const drift = computeDrift(ownership, typeModule);
     const depth = computeOwnershipDepth(ownership, allTypeIds, drift);
+    const placementPlan = buildPlacementLayoutPlan(staticRoot, depth, ownership);
     const typeIdSet = new Set(allTypeIds);
     const typeInfo = collectTypeInfo(staticRoot);
 
@@ -357,18 +368,20 @@ async function main(): Promise<void> {
           methodArrowsShown.add(`${parsed.typePath}\x1F${parsed.fieldName}`);
         }
       }
-      lastLayout = buildOptimizedLayout({
+      const buildArgs = {
         staticRoot,
         ownership,
         depth,
         state,
         drift,
         measureText,
+        placementPlan,
         ghostArrowsShown,
         methodArrowsShown,
         methodsHidden: currentCtx?.methodsHidden ?? false,
         ...(focus ? { focusModules: focus.modules } : {}),
-      });
+      };
+      lastLayout = buildLayoutV2(buildArgs);
       if (currentCtx) currentCtx.lastLayout = lastLayout;
       applyFitScaleExtent(svg, layers, lastLayout);
       // Compute the union of arrow chains for every selected field. These are
@@ -390,10 +403,10 @@ async function main(): Promise<void> {
         selectedArrows,
         expandedBucketIds,
         onToggle: (id) => {
-          // Anchor the clicked item: capture its absolute y before the layout
-          // changes, then after re-render compute the new y and shift the
-          // viewport by the inverse so the click target stays under the cursor.
-          const beforeY = lookupY(lastLayout, id);
+          // Anchor the clicked item in both axes: expansion can change a
+          // type's physical group, so preserving only y lets the target drift
+          // sideways when its layout tier gets wider.
+          const before = lookupPoint(lastLayout, id);
           const wasExpanded = state.isExpanded(id);
           state.toggle(id);
           if (!wasExpanded && typeIdSet.has(id)) {
@@ -402,12 +415,13 @@ async function main(): Promise<void> {
             }
           }
           draw();
-          const afterY = lookupY(lastLayout, id);
-          if (beforeY !== null && afterY !== null && beforeY !== afterY) {
+          const after = lookupPoint(lastLayout, id);
+          const delta = anchorTranslation(before, after);
+          if (delta !== null) {
             // Animated translate so the viewport tween runs in lockstep with
             // the renderer's transform tween, keeping the click target glued
             // under the cursor for the entire animation.
-            layers.translateBy(0, beforeY - afterY, true);
+            layers.translateBy(delta.dx, delta.dy, true);
           }
         },
         onSelectField: (typePath, fieldName, kind) => {
@@ -545,7 +559,7 @@ async function main(): Promise<void> {
     const toggleExpandAllOwnersOf = (typePath: string): boolean => {
       const ownerIds = ownership.ownedBy.get(typePath);
       if (!ownerIds || ownerIds.length === 0) return false;
-      const beforeY = lookupY(lastLayout, typePath);
+      const before = lookupPoint(lastLayout, typePath);
       const allExpanded = ownerIds.every((id) => state.isExpanded(id));
       if (allExpanded) {
         for (const ownerId of ownerIds) state.collapse(ownerId);
@@ -556,9 +570,10 @@ async function main(): Promise<void> {
         }
       }
       draw();
-      const afterY = lookupY(lastLayout, typePath);
-      if (beforeY !== null && afterY !== null && beforeY !== afterY) {
-        layers.translateBy(0, beforeY - afterY, true);
+      const after = lookupPoint(lastLayout, typePath);
+      const delta = anchorTranslation(before, after);
+      if (delta !== null) {
+        layers.translateBy(delta.dx, delta.dy, true);
       }
       return !allExpanded;
     };
@@ -728,16 +743,20 @@ function ancestorModuleIds(typeFullPath: string, crateName: string): string[] {
   return ids;
 }
 
-function lookupY(
-  layout: ReturnType<typeof buildOptimizedLayout> | null,
+function lookupY(layout: Layout | null, id: string): number | null {
+  return lookupPoint(layout, id)?.y ?? null;
+}
+
+function lookupPoint(
+  layout: Layout | null,
   id: string,
-): number | null {
+): { readonly x: number; readonly y: number } | null {
   if (!layout) return null;
   for (const t of layout.types) {
-    if (t.id === id) return t.y;
+    if (t.id === id) return { x: t.x, y: t.y };
   }
   for (const m of layout.modules) {
-    if (m.id === id) return m.y;
+    if (m.id === id) return { x: m.labelX, y: m.y };
   }
   return null;
 }
@@ -910,10 +929,11 @@ function installInputControls(
 function setupInputSettings(controller: InputController): void {
   const toggle = document.querySelector<HTMLButtonElement>('.settings-toggle');
   const body = document.querySelector<HTMLElement>('#settings-body');
-  const checkbox = document.querySelector<HTMLInputElement>('#settings-trackpad-mode');
+  const inputModeCheckbox = document.querySelector<HTMLInputElement>('#settings-trackpad-mode');
+  const debugLayoutCheckbox = document.querySelector<HTMLInputElement>('#settings-debug-layout');
   const summary = document.querySelector<HTMLElement>('#settings-input-summary');
   const defaultBadge = document.querySelector<HTMLElement>('#settings-input-default');
-  if (!toggle || !body || !checkbox || !summary || !defaultBadge) return;
+  if (!toggle || !body || !inputModeCheckbox || !summary || !defaultBadge) return;
 
   let expanded = sessionStorage.getItem('mind-expander.settings.expanded') === '1';
   const applyExpanded = (): void => {
@@ -923,23 +943,32 @@ function setupInputSettings(controller: InputController): void {
   };
   const renderMode = (): void => {
     const mode = controller.getMode();
-    checkbox.checked = mode === 'trackpad';
+    inputModeCheckbox.checked = mode === 'trackpad';
     summary.textContent =
       mode === 'trackpad'
         ? 'Two-finger scroll pans. Shift + two-finger scroll zooms.'
         : 'Wheel zooms. Right-button drag pans.';
     defaultBadge.textContent = `default: ${controller.defaultMode}`;
   };
+  const renderDebugLayout = (): void => {
+    if (debugLayoutCheckbox) debugLayoutCheckbox.checked = layoutDebugEnabled();
+  };
 
   applyExpanded();
   renderMode();
+  renderDebugLayout();
   toggle.addEventListener('click', () => {
     expanded = !expanded;
     applyExpanded();
   });
-  checkbox.addEventListener('change', () => {
-    controller.setMode(checkbox.checked ? 'trackpad' : 'mouse');
+  inputModeCheckbox.addEventListener('change', () => {
+    controller.setMode(inputModeCheckbox.checked ? 'trackpad' : 'mouse');
     renderMode();
+  });
+  debugLayoutCheckbox?.addEventListener('change', () => {
+    localStorage.setItem(LAYOUT_DEBUG_STORAGE_KEY, debugLayoutCheckbox.checked ? '1' : '0');
+    renderDebugLayout();
+    currentCtx?.draw();
   });
 }
 

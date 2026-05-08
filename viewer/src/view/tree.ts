@@ -11,7 +11,13 @@
 import { type Selection, pointer, select, zoomTransform } from 'd3';
 import { type ArrowHit, pickArrowsAtPoint } from '../analysis/arrow_hit.ts';
 import type { DriftClass } from '../analysis/drift.ts';
-import { type Layout, ROW_H } from '../analysis/layout.ts';
+import { type Layout, ROW_H } from '../analysis/layout_bak.ts';
+import {
+  HIT_MIN_W,
+  MODULE_LABEL_X,
+  TYPE_LABEL_X,
+  splitModuleDisplayLabel,
+} from '../analysis/layout_metrics.ts';
 import { colorForVisibility } from './encoding.ts';
 import { ANIM_MS, type ZoomLayers } from './zoom.ts';
 
@@ -33,12 +39,6 @@ const CHEVRON_X = 6;
 // italic glyphs are narrow.
 const TYPE_CIRCLE_X = 6;
 const TYPE_KIND_MARKER_X = 14;
-const TYPE_LABEL_X = 24;
-const TYPE_ARROW_GAP = 6;
-const TYPE_ARROW_HIT_PAD = 4;
-const MODULE_LABEL_X = 18;
-const HIT_PAD_RIGHT = 8;
-const HIT_MIN_W = 40;
 
 // Exported so other modules (e.g. the canvas-backed text measurer) can
 // match the rendered font exactly. Keep these in sync with the SVG.
@@ -48,7 +48,7 @@ export const FONT_SIZE_FIELD = 12;
 const FONT_SIZE_TYPE_ARROW = 22;
 // Module leaf and type header bumped slightly above the base so the
 // "main thing on this row" reads more prominently than ancillary text.
-// Stays within the existing band height (ROW_H = 26) — at 14px the
+// Stays within the grid-derived band height — at 14px the
 // cap-height plus descender comfortably fits.
 const FONT_SIZE_MODULE_LEAF = 14;
 const FONT_SIZE_TYPE_LABEL = 14;
@@ -260,6 +260,7 @@ export function renderTree(layers: ZoomLayers, layout: Layout, opts: TreeRenderO
   // Persistent parent groups — ensured once, then re-used across renders so
   // children with stable keys can tween rather than be wiped + rebuilt.
   const bandG = ensureGroup(zoomLayer, 'band-bg');
+  const debugG = ensureGroup(zoomLayer, 'layout-debug');
   const arrowG = ensureGroup(zoomLayer, 'arrows');
   arrowG.attr('fill', 'none').attr('stroke-width', 1);
   const typeG = ensureGroup(zoomLayer, 'types');
@@ -267,6 +268,7 @@ export function renderTree(layers: ZoomLayers, layout: Layout, opts: TreeRenderO
   const moduleG = ensureGroup(frozenLayer, 'modules');
 
   renderBandBackgrounds(bandG, layout);
+  renderLayoutDebug(debugG, layout);
   renderFrozenBandBackgrounds(frozenBandG, layout);
   renderArrows(arrowG, layout, opts.selectedArrows);
   renderTypes(typeG, zoomLayer, layout, opts);
@@ -274,6 +276,230 @@ export function renderTree(layers: ZoomLayers, layout: Layout, opts: TreeRenderO
   sizeFrozenBackdrop(layers.backdrop, frozenLayer, layout);
   renderEdgeShadowsImpl(frozenLayer, layout);
   installArrowClickHandler(layers, layout, opts);
+}
+
+function renderLayoutDebug(
+  g: Selection<SVGGElement, unknown, null, undefined>,
+  layout: Layout,
+): void {
+  if (!layoutDebugEnabled() || layout.debug === undefined) {
+    g.selectAll('*').remove();
+    return;
+  }
+
+  g.attr('pointer-events', 'none');
+  const routing = layout.debug.routing;
+
+  renderDebugGrid(g, routing.layoutGrid);
+
+  const obstacleSel = g
+    .selectAll<SVGRectElement, (typeof routing.obstacles)[number]>('rect.debug-obstacle')
+    .data(routing.obstacles, (d) => `${d.left}:${d.right}:${d.top}:${d.bottom}`);
+  obstacleSel.exit().remove();
+  obstacleSel
+    .enter()
+    .append('rect')
+    .attr('class', 'debug-obstacle')
+    .attr('fill', 'rgba(249,115,22,0.07)')
+    .attr('stroke', '#f97316')
+    .attr('stroke-width', 0.75)
+    .attr('stroke-dasharray', '3 2')
+    .merge(obstacleSel)
+    .attr('x', (d) => d.left)
+    .attr('y', (d) => d.top)
+    .attr('width', (d) => d.right - d.left)
+    .attr('height', (d) => d.bottom - d.top);
+
+  const laneSel = g
+    .selectAll<SVGLineElement, (typeof routing.lanes)[number]>('line.debug-lane')
+    .data(
+      routing.lanes,
+      (d) => `${d.bundleKey}:${d.fromTypeId}:${d.toTypeId}:${d.x}:${d.yMin}:${d.yMax}`,
+    );
+  laneSel.exit().remove();
+  laneSel
+    .enter()
+    .append('line')
+    .attr('class', 'debug-lane')
+    .attr('stroke-width', 0.9)
+    .attr('stroke-opacity', 0.45)
+    .merge(laneSel)
+    .attr('stroke', (d) => (d.blocked ? '#dc2626' : '#2563eb'))
+    .attr('stroke-dasharray', (d) => (d.blocked ? '4 3' : null))
+    .attr('x1', (d) => d.x)
+    .attr('x2', (d) => d.x)
+    .attr('y1', (d) => d.yMin)
+    .attr('y2', (d) => d.yMax);
+
+  const groups = routing.groups.filter((d) => Number.isFinite(d.xMin) && Number.isFinite(d.xMax));
+  const groupSel = g
+    .selectAll<SVGTextElement, (typeof groups)[number]>('text.debug-channel')
+    .data(groups, (d) => `${d.id}:${d.xMin}:${d.xMax}:${d.laneCount}`);
+  groupSel.exit().remove();
+  groupSel
+    .enter()
+    .append('text')
+    .attr('class', 'debug-channel')
+    .attr('font-size', 10)
+    .attr('fill', '#1d4ed8')
+    .attr('stroke', 'white')
+    .attr('stroke-width', 2)
+    .attr('paint-order', 'stroke fill')
+    .merge(groupSel)
+    .attr('x', (d) => (d.xMin + d.xMax) / 2)
+    .attr('y', 16)
+    .attr('text-anchor', 'middle')
+    .text((d) => `${d.laneCount} lanes`);
+
+  const labels = routing.layoutLabels ?? [];
+  const labelSel = g
+    .selectAll<SVGTextElement, (typeof labels)[number]>('text.debug-layout-label')
+    .data(labels, (d) => d.id);
+  labelSel.exit().remove();
+  labelSel
+    .enter()
+    .append('text')
+    .attr('class', 'debug-layout-label')
+    .attr('font-size', 10)
+    .attr('fill', '#6d28d9')
+    .attr('stroke', 'white')
+    .attr('stroke-width', 2)
+    .attr('paint-order', 'stroke fill')
+    .attr('text-anchor', 'end')
+    .merge(labelSel)
+    .attr('x', (d) => d.x)
+    .attr('y', (d) => d.y)
+    .text((d) => d.label);
+}
+
+const DEBUG_GRID_PATTERN_ID = 'mind-expander-debug-grid-pattern';
+const DEBUG_GRID_DOT_R = 0.55;
+const DEBUG_GRID_DOT_OPACITY = 0.25;
+
+function renderDebugGrid(
+  g: Selection<SVGGElement, unknown, null, undefined>,
+  grid: NonNullable<Layout['debug']>['routing']['layoutGrid'] | undefined,
+): void {
+  renderDebugGridPattern(g, grid);
+
+  const rectSel = g
+    .selectAll<SVGRectElement, DebugLayoutGrid>('rect.debug-grid')
+    .data(
+      grid === undefined ? [] : [grid],
+      (d) => `${d.originX}:${d.originY}:${d.cellWidth}:${d.cellHeight}:${d.width}:${d.height}`,
+    );
+  rectSel.exit().remove();
+  rectSel
+    .enter()
+    .append('rect')
+    .attr('class', 'debug-grid')
+    .attr('pointer-events', 'none')
+    .attr('fill', `url(#${DEBUG_GRID_PATTERN_ID})`)
+    .merge(rectSel)
+    .attr('x', (d) => d.originX)
+    .attr('y', (d) => d.originY)
+    .attr('width', (d) => d.width)
+    .attr('height', (d) => d.height)
+    .lower();
+}
+
+type DebugLayoutGrid = NonNullable<NonNullable<Layout['debug']>['routing']['layoutGrid']>;
+
+export function debugGridPatternTile(grid: DebugLayoutGrid): {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+} {
+  return {
+    x: grid.originX,
+    y: grid.originY,
+    width: grid.cellWidth,
+    height: grid.cellHeight,
+  };
+}
+
+function renderDebugGridPattern(
+  g: Selection<SVGGElement, unknown, null, undefined>,
+  grid: DebugLayoutGrid | undefined,
+): void {
+  const defs = ensureDebugDefs(g);
+  const patternSel = defs
+    .selectAll<SVGPatternElement, DebugLayoutGrid>(`pattern#${DEBUG_GRID_PATTERN_ID}`)
+    .data(grid === undefined ? [] : [grid]);
+  patternSel.exit().remove();
+
+  const patternEnter = patternSel
+    .enter()
+    .append('pattern')
+    .attr('id', DEBUG_GRID_PATTERN_ID)
+    .attr('patternUnits', 'userSpaceOnUse');
+
+  const merged = patternEnter.merge(patternSel);
+  if (grid !== undefined) {
+    const tile = debugGridPatternTile(grid);
+    merged
+      .attr('x', tile.x)
+      .attr('y', tile.y)
+      .attr('width', tile.width)
+      .attr('height', tile.height);
+  }
+  merged.each(function (d) {
+    const dotSel = select(this)
+      .selectAll<SVGCircleElement, { readonly x: number; readonly y: number }>(
+        'circle.debug-grid-pattern-dot',
+      )
+      .data(debugGridPatternCornerDots(d));
+    dotSel.exit().remove();
+    dotSel
+      .enter()
+      .append('circle')
+      .attr('class', 'debug-grid-pattern-dot')
+      .attr('r', DEBUG_GRID_DOT_R)
+      .attr('fill', '#64748b')
+      .attr('opacity', DEBUG_GRID_DOT_OPACITY)
+      .merge(dotSel)
+      .attr('cx', (dot) => dot.x)
+      .attr('cy', (dot) => dot.y);
+  });
+}
+
+function ensureDebugDefs(
+  g: Selection<SVGGElement, unknown, null, undefined>,
+): Selection<SVGDefsElement, unknown, null, undefined> {
+  let defs = g.select<SVGDefsElement>('defs.debug-defs');
+  if (defs.empty()) {
+    defs = g.append('defs').attr('class', 'debug-defs');
+  }
+  return defs;
+}
+
+function debugGridPatternCornerDots(
+  grid: DebugLayoutGrid,
+): readonly { readonly x: number; readonly y: number }[] {
+  // SVG patterns clip each tile. Drawing all four tile corners makes each
+  // repeated grid intersection render as a full dot while still using a
+  // single pattern-filled rect instead of per-grid-point DOM nodes.
+  return [
+    { x: 0, y: 0 },
+    { x: grid.cellWidth, y: 0 },
+    { x: 0, y: grid.cellHeight },
+    { x: grid.cellWidth, y: grid.cellHeight },
+  ];
+}
+
+export const LAYOUT_DEBUG_STORAGE_KEY = 'mind-expander:debugLayout';
+
+export function layoutDebugEnabled(): boolean {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const stored = window.localStorage.getItem(LAYOUT_DEBUG_STORAGE_KEY);
+    if (stored === '1') return true;
+    if (stored === '0') return false;
+    return params.has('debugLayout');
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -481,24 +707,10 @@ function sizeFrozenBackdrop(
   frozen: Selection<SVGGElement, unknown, null, undefined>,
   layout: Layout,
 ): void {
-  // Compute the rightmost label edge per row by adding the row's translate-x
-  // to the text/rect bbox.right inside that row group. Plain getBBox() on
-  // descendants gives row-local coords; we have to add the row's transform-x.
   let maxX = 0;
-  frozen.selectAll<SVGGElement, unknown>('g.module-row').each(function () {
-    const baseVal = this.transform.baseVal;
-    const tx = baseVal.length > 0 ? (baseVal.getItem(0).matrix.e ?? 0) : 0;
-    const bbox = this.getBBox();
-    const right = tx + bbox.x + bbox.width;
+  for (const m of layout.modules) {
+    const right = m.labelX + m.hitWidth;
     if (right > maxX) maxX = right;
-  });
-  // Belt-and-suspenders: if the DOM measurement gave nothing (e.g. no rows),
-  // fall back to a layout-derived estimate.
-  if (maxX === 0) {
-    for (const m of layout.modules) {
-      const est = m.labelX + 24 + m.label.length * 7;
-      if (est > maxX) maxX = est;
-    }
   }
   const rightEdge = Math.max(maxX + 12, 80);
   backdrop.setAttribute('width', String(rightEdge + 10000));
@@ -851,8 +1063,10 @@ function renderModules(
   // some intermediate modules out of the visible tree).
   merged
     .select<SVGTSpanElement>('text.name tspan.prefix')
-    .text((d) => splitModuleLabel(d.id).prefix);
-  merged.select<SVGTSpanElement>('text.name tspan.leaf').text((d) => splitModuleLabel(d.id).leaf);
+    .text((d) => splitModuleDisplayLabel(d.id).prefix);
+  merged
+    .select<SVGTSpanElement>('text.name tspan.leaf')
+    .text((d) => splitModuleDisplayLabel(d.id).leaf);
 
   // Refresh click handler with current closure each draw.
   merged
@@ -866,25 +1080,13 @@ function renderModules(
   sizeModuleExpandHit(merged);
 }
 
-// Split a module's full id (`crate::a::b::leaf`) into a parent prefix
-// rendered dimmed and the leaf rendered normally. The crate root and
-// top-level modules under the crate get an empty prefix — there's nothing
-// useful to show above them.
-function splitModuleLabel(id: string): { prefix: string; leaf: string } {
-  const segs = id.split('::');
-  const leaf = segs[segs.length - 1] ?? id;
-  if (segs.length <= 2) return { prefix: '', leaf };
-  return { prefix: `${segs.slice(1, -1).join('::')}::`, leaf };
-}
-
-function sizeModuleExpandHit<D>(sel: Selection<SVGGElement, D, SVGGElement, unknown>): void {
-  // Width the expand-hit to cover chevron + gap + name + small trailing pad.
-  sel.each(function () {
-    const gg = select(this);
-    const node = gg.select<SVGGraphicsElement>('text.name').node();
-    const nameW = node ? node.getBBox().width : 0;
-    const w = Math.max(MODULE_LABEL_X + nameW + HIT_PAD_RIGHT, HIT_MIN_W);
-    gg.select<SVGRectElement>('rect.expand-hit').attr('width', w);
+function sizeModuleExpandHit(
+  sel: Selection<SVGGElement, Layout['modules'][number], SVGGElement, unknown>,
+): void {
+  // Layout owns module label measurement so toggling a band does not force SVG
+  // text layout across every visible module row before the animation frame.
+  sel.each(function (d) {
+    select(this).select<SVGRectElement>('rect.expand-hit').attr('width', d.hitWidth);
   });
 }
 
@@ -1246,21 +1448,17 @@ function renderFieldsForType(
   });
 }
 
-function sizeTypeHits<D>(sel: Selection<SVGGElement, D, SVGGElement, unknown>): void {
-  // Place the trailing expand-arrow at end-of-name + gap; size the row's
-  // single hit rect to span dot through past the arrow.
-  sel.each(function () {
+function sizeTypeHits(
+  sel: Selection<SVGGElement, Layout['types'][number], SVGGElement, unknown>,
+): void {
+  // Type header sizing is produced by layout from the same text measurer used
+  // for placement. Consuming that contract here avoids SVG getBBox() calls in
+  // the click redraw path, where they force a browser layout before animation.
+  sel.each(function (d) {
     const gg = select(this);
-    const nameNode = gg.select<SVGGraphicsElement>('text.name').node();
-    const nameW = nameNode ? nameNode.getBBox().width : 0;
-    const nameEndX = TYPE_LABEL_X + nameW;
-    const arrowX = nameEndX + TYPE_ARROW_GAP;
-
-    gg.select<SVGTextElement>('text.expand-arrow').attr('x', arrowX);
-
-    const arrowNode = gg.select<SVGGraphicsElement>('text.expand-arrow').node();
-    const arrowW = arrowNode ? arrowNode.getBBox().width : 0;
-    const right = arrowNode ? arrowX + arrowW + TYPE_ARROW_HIT_PAD : nameEndX + HIT_PAD_RIGHT;
-    gg.select<SVGRectElement>('rect.expand-hit').attr('width', Math.max(right, HIT_MIN_W));
+    if (d.headerArrowX !== null) {
+      gg.select<SVGTextElement>('text.expand-arrow').attr('x', d.headerArrowX);
+    }
+    gg.select<SVGRectElement>('rect.expand-hit').attr('width', d.headerHitWidth);
   });
 }

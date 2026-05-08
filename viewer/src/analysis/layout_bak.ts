@@ -12,40 +12,69 @@
 import type { FieldFacts, FnFacts, Ownership, TypeKind } from '../data/schema.ts';
 import type { ViewState } from '../state/view_state.ts';
 import { type DriftClass, type DriftIndex, isCanonicalTarget } from './drift.ts';
+import {
+  type ChannelDebug,
+  type ChannelObstacle,
+  LANE_BASE_GAP,
+  LANE_SLOT_W,
+  allocateIncomingChannels,
+  fallbackIncomingLaneX,
+  gutterWidth,
+  isCanonicalDriftClass,
+  isPlacementArrow,
+  isReturnArrow,
+  routeSourceX,
+} from './layout_channels_bak.ts';
+import {
+  FIELD_LABEL_INSET,
+  FIELD_ROW_H,
+  FUNCTION_GROUP_LABEL_INSET,
+  INDENT_PX,
+  LEFT_PAD,
+  METHOD_INDENT,
+  MODULE_BAND_X_GAP,
+  MODULE_GLYPH_W,
+  ROW_H,
+  TOP_PAD,
+  TYPE_GLYPH_W,
+  TYPE_X_GAP,
+  measureModuleHitWidth,
+  measureTypeHeaderMetrics,
+} from './layout_metrics.ts';
+import {
+  type StableRankPlacement,
+  computeStableRankPlacement,
+  layoutRankOfType,
+  rootXForRank,
+  semanticDepthOf,
+} from './layout_rank_bak.ts';
 import type { ModuleNode, TypeNode } from './module_tree.ts';
 import type { OwnershipIndex } from './ownership.ts';
 import { BUCKET_LABEL, type VisibilityBucket } from './visibility.ts';
 
-export const ROW_H = 26;
-export const FIELD_ROW_H = 18;
-export const INDENT_PX = 16;
-export const LEFT_PAD = 8;
-export const TOP_PAD = 8;
+export { FIELD_ROW_H, INDENT_PX, LEFT_PAD, ROW_H, TOP_PAD } from './layout_metrics.ts';
 
 const COL_W = 200;
-const TYPE_X_GAP = 16;
-const MODULE_BAND_X_GAP = 24;
-const ROOT_SHELF_WRAP_THRESHOLD = 8;
-const ROOT_SHELF_MAX_COLUMNS = 3;
 const CHAR_W = 7;
-const TYPE_GLYPH_W = 32; // chevron room + circle + spacing before label
-const MODULE_GLYPH_W = 18;
-const FIELD_LABEL_INSET = 36;
 // Free-function rows are not nested members of a type. Keep them tucked
 // closer to the function-group header than real field rows.
-const FUNCTION_GROUP_LABEL_INSET = 24;
+const ROUTE_OBSTACLE_PAD = 8;
+const ROUTE_HULL_ROW_WIDTH_LIMIT = 190;
+const ROUTE_LONG_ROW_PROTRUSION = 48;
 // Methods are visually indented past the bucket header to mirror how
 // Rust source nests impl-block bodies. Living in layout (not the
 // renderer) means f.x and f.arrowSourceX both reflect the indent —
 // arrow source endpoints, signature-tail x, and selection-pill bounds
 // all stay in agreement.
-const METHOD_INDENT = 12;
 
 export interface ModuleRow {
   readonly id: string;
   readonly label: string;
   readonly modDepth: number;
   readonly labelX: number;
+  /** Row hit width measured by layout, not the renderer, so module-tree
+   *  redraws avoid synchronous SVG text measurement. */
+  readonly hitWidth: number;
   readonly y: number;
   readonly bandHeight: number;
   readonly expanded: boolean;
@@ -99,6 +128,11 @@ export interface TypeBox {
   readonly x: number;
   readonly y: number; // row center of header
   readonly width: number;
+  /** Header-only hit geometry precomputed by layout. Rendering consumes
+   *  this directly to avoid synchronous SVG text measurement in the click
+   *  path. */
+  readonly headerArrowX: number | null;
+  readonly headerHitWidth: number;
   readonly height: number; // total rows × ROW_H (1 if collapsed)
   readonly hasFields: boolean;
   readonly expanded: boolean;
@@ -154,6 +188,11 @@ export interface Layout {
    *  frozen module pane and the right type pane). Used by the zoom layer
    *  to compute a fit-to-view minimum scale. */
   readonly totalWidth: number;
+  readonly debug?: LayoutDebug;
+}
+
+export interface LayoutDebug {
+  readonly routing: ChannelDebug;
 }
 
 export interface LayoutInputs {
@@ -238,6 +277,7 @@ export function buildLayout(inputs: LayoutInputs): Layout {
   const measureText = inputs.measureText ?? ((s: string) => s.length * CHAR_W);
 
   const globalXStart = computeGlobalXStart(staticRoot);
+  const rankPlacement = computeStableRankPlacement(staticRoot, depth);
 
   // Weighted-longest-path placement: each visible type's x is computed
   // from its widths and per-target gutter demand, in topological order
@@ -269,6 +309,7 @@ export function buildLayout(inputs: LayoutInputs): Layout {
     routingWidthByPath,
     depth,
     globalXStart,
+    rankPlacement,
     null,
   );
 
@@ -299,11 +340,10 @@ export function buildLayout(inputs: LayoutInputs): Layout {
       types: directTypes,
       depth,
       globalXStart,
+      rankPlacement,
       xByPath,
       widthByPath,
       measureText,
-      ownership,
-      incomingMap,
       state,
       bandTopY: cursorY,
       methodsHidden,
@@ -317,6 +357,7 @@ export function buildLayout(inputs: LayoutInputs): Layout {
       label: m.label,
       modDepth,
       labelX,
+      hitWidth: measureModuleHitWidth(m.id, measureText),
       y: cursorY,
       bandHeight: bandH,
       expanded,
@@ -407,6 +448,8 @@ export function buildLayout(inputs: LayoutInputs): Layout {
           }
         }
       }
+      const hasHeaderArrow = p.t.fields.length > 0 || p.t.methodBuckets.length > 0;
+      const headerMetrics = measureTypeHeaderMetrics(p.t.label, hasHeaderArrow, measureText);
       types.push({
         id: p.t.id,
         label: p.t.label,
@@ -418,8 +461,10 @@ export function buildLayout(inputs: LayoutInputs): Layout {
         x: p.x,
         y: headerY,
         width: p.width,
+        headerArrowX: headerMetrics.arrowX,
+        headerHitWidth: headerMetrics.hitWidth,
         height: p.pixelHeight,
-        hasFields: p.t.fields.length > 0 || p.t.methodBuckets.length > 0,
+        hasFields: hasHeaderArrow,
         expanded: p.tExpanded,
         fields: fieldRows,
         totalFieldCount: p.t.fields.length,
@@ -440,13 +485,18 @@ export function buildLayout(inputs: LayoutInputs): Layout {
   for (let i = 0; i < 5; i++) {
     placeAll();
     const tentativeRaw = collectRawArrows(types, drift, ghostArrowsShown);
-    const slotsByTarget = computeIncomingSlotsByTarget(tentativeRaw.filter(isPlacementArrow));
+    const tentativeObstacles = buildRoutingObstacles(types);
+    const slotsByTarget = computeIncomingSlotsByTarget(
+      tentativeRaw.filter(isPlacementArrow),
+      tentativeObstacles,
+    );
     const newXByPath = computeNodeXs(
       visibleTypes,
       incomingMap,
       routingWidthByPath,
       depth,
       globalXStart,
+      rankPlacement,
       slotsByTarget,
     );
     if (sameXMaps(xByPath, newXByPath)) break;
@@ -454,7 +504,8 @@ export function buildLayout(inputs: LayoutInputs): Layout {
   }
   placeAll();
 
-  const arrows = buildArrows(types, drift, ghostArrowsShown);
+  const routed = buildArrows(types, drift, ghostArrowsShown);
+  const arrows = routed.arrows;
 
   // Total horizontal extent: the rightmost edge across (a) the type pane
   // (t.x + t.width) and (b) the frozen module pane (estimated label end).
@@ -472,7 +523,14 @@ export function buildLayout(inputs: LayoutInputs): Layout {
     if (right > totalWidth) totalWidth = right;
   }
 
-  return { modules, types, arrows, totalHeight: cursorY + TOP_PAD, totalWidth };
+  return {
+    modules,
+    types,
+    arrows,
+    totalHeight: cursorY + TOP_PAD,
+    totalWidth,
+    debug: { routing: routed.debug },
+  };
 }
 
 type IncomingMap = ReadonlyMap<string, readonly string[]>;
@@ -497,22 +555,6 @@ function enumerateVisibleTypes(
   return out;
 }
 
-function effectiveDepthOf(t: TypeNode, depth: ReadonlyMap<string, number>): number {
-  if (t.isGhost === true && t.ghostTarget !== undefined) {
-    const targetDepth = depth.get(t.ghostTarget);
-    if (targetDepth !== undefined) return targetDepth;
-  }
-  return depth.get(t.fullPath) ?? 0;
-}
-
-function rankOfType(t: TypeNode, depth: ReadonlyMap<string, number>): number {
-  return t.typeKind === 'function_group' ? 0 : effectiveDepthOf(t, depth) + 1;
-}
-
-function rootXForType(t: TypeNode, globalXStart: number): number {
-  return t.typeKind === 'function_group' ? globalXStart : globalXStart + COL_W;
-}
-
 function buildIncomingMap(
   visibleTypes: readonly TypeNode[],
   ownership: OwnershipIndex,
@@ -524,13 +566,13 @@ function buildIncomingMap(
   const incoming = new Map<string, string[]>();
 
   for (const source of visibleTypes) {
-    const sourceRank = rankOfType(source, depth);
+    const sourceRank = layoutRankOfType(source, depth);
     for (const targetId of ownership.owns.get(source.fullPath) ?? []) {
       if (!visible.has(targetId)) continue;
       if (!isCanonicalTarget(targetId, drift)) continue;
       const target = typeByPath.get(targetId);
       if (!target) continue;
-      if (rankOfType(target, depth) <= sourceRank) continue;
+      if (layoutRankOfType(target, depth) <= sourceRank) continue;
       let list = incoming.get(targetId);
       if (!list) {
         list = [];
@@ -549,23 +591,26 @@ function computeNodeXs(
   widthByPath: ReadonlyMap<string, number>,
   depth: ReadonlyMap<string, number>,
   globalXStart: number,
+  rankPlacement: StableRankPlacement,
   slotsByTarget: ReadonlyMap<string, number> | null,
 ): ReadonlyMap<string, number> {
   const typeByPath = new Map(visibleTypes.map((t) => [t.fullPath, t]));
   const ordered = [...visibleTypes].sort((a, b) => {
-    const ra = rankOfType(a, depth);
-    const rb = rankOfType(b, depth);
+    const ra = layoutRankOfType(a, depth);
+    const rb = layoutRankOfType(b, depth);
     if (ra !== rb) return ra - rb;
     return a.fullPath.localeCompare(b.fullPath);
   });
 
   const xByPath = new Map<string, number>();
   for (const t of ordered) {
-    let x = rootXForType(t, globalXStart);
+    let x = rootXForRank(t, depth, globalXStart, COL_W) + stableRankOffset(t, rankPlacement);
     for (const sourceId of incomingMap.get(t.fullPath) ?? []) {
       const source = typeByPath.get(sourceId);
       if (!source) continue;
-      const sourceX = xByPath.get(sourceId) ?? rootXForType(source, globalXStart);
+      const sourceX =
+        xByPath.get(sourceId) ??
+        rootXForRank(source, depth, globalXStart, COL_W) + stableRankOffset(source, rankPlacement);
       const sourceW = widthByPath.get(sourceId) ?? 0;
       const slotCount = Math.max(1, slotsByTarget?.get(t.fullPath) ?? 1);
       x = Math.max(x, sourceX + sourceW + gutterWidth(slotCount));
@@ -573,6 +618,10 @@ function computeNodeXs(
     xByPath.set(t.fullPath, x);
   }
   return xByPath;
+}
+
+function stableRankOffset(t: TypeNode, rankPlacement: StableRankPlacement): number {
+  return rankPlacement.xOffsetByType.get(t.fullPath) ?? 0;
 }
 
 function sameXMaps(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number>): boolean {
@@ -621,6 +670,7 @@ function packBand(args: {
   readonly types: readonly TypeNode[];
   readonly depth: ReadonlyMap<string, number>;
   readonly globalXStart: number;
+  readonly rankPlacement: StableRankPlacement;
   /** Per-type x-positions, computed by `computeNodeXs` from the
    *  weighted-longest-path placement. packBand reads each type's left
    *  edge from this map instead of from a column grid — that's what
@@ -631,11 +681,6 @@ function packBand(args: {
    *  the emitted TypeBox for rendering/routing metadata. */
   readonly widthByPath: ReadonlyMap<string, number>;
   readonly measureText: (text: string) => number;
-  /** Visible structural incoming edges by target. Large collapsed groups
-   *  without incoming constraints are allowed to wrap into shelf columns;
-   *  constrained targets stay at the x assigned by weighted placement. */
-  readonly incomingMap: IncomingMap;
-  readonly ownership: OwnershipIndex;
   readonly state: ViewState;
   /** Per-type barycenter (mean y of incoming-arrow source rows). When
    *  provided alongside `bandTopY`, the second pass uses it to place each
@@ -654,10 +699,10 @@ function packBand(args: {
     types,
     depth,
     globalXStart,
+    rankPlacement,
     xByPath,
     widthByPath,
     measureText,
-    incomingMap,
     state,
     sortKey,
     anchorY,
@@ -665,25 +710,12 @@ function packBand(args: {
     methodsHidden,
   } = args;
 
-  // Effective depth of a type for column placement. Ghost re-exports
-  // borrow their canonical target's depth so the ghost row sits at the
-  // same column as its target — visually reinforcing "this is an alias
-  // for the thing at that depth," and clustering ghost arrows into a
-  // shared lane region instead of all crowding column 1.
-  const effectiveDepth = (t: TypeNode): number => {
-    if (t.isGhost === true && t.ghostTarget !== undefined) {
-      const targetDepth = depth.get(t.ghostTarget);
-      if (targetDepth !== undefined) return targetDepth;
-    }
-    return depth.get(t.fullPath) ?? 0;
-  };
-
   // Sort by depth, then sortKey (target y), then alphabetical. This drives
   // the column-y order in pass 2 — types with similar barycenters land
   // near each other.
   const sorted = [...types].sort((a, b) => {
-    const da = effectiveDepth(a);
-    const db = effectiveDepth(b);
+    const da = semanticDepthOf(a, depth);
+    const db = semanticDepthOf(b, depth);
     if (da !== db) return da - db;
     if (sortKey) {
       const ka = sortKey.get(a.fullPath);
@@ -714,10 +746,10 @@ function packBand(args: {
     shape: CollisionShape;
   };
   const cells: Cell[] = sorted.map((t) => {
-    const d = effectiveDepth(t);
+    const d = semanticDepthOf(t, depth);
     const isFnGroup = t.typeKind === 'function_group';
     const col = isFnGroup ? 0 : d + 1;
-    const x = xByPath.get(t.fullPath) ?? globalXStart;
+    const x = xByPath.get(t.fullPath) ?? globalXStart + stableRankOffset(t, rankPlacement);
     const tExpanded = state.isExpanded(t.id);
     const w =
       widthByPath.get(t.fullPath) ?? computeTypeBoxWidth(t, tExpanded, state, methodsHidden);
@@ -725,28 +757,6 @@ function packBand(args: {
     const shape = buildCollisionShape(t, tExpanded, state, methodsHidden, measureText);
     return { t, tExpanded, col, x, w, h, shape };
   });
-  const shelfGroups = new Map<string, Cell[]>();
-  for (const c of cells) {
-    if (c.tExpanded || c.t.typeKind === 'function_group') continue;
-    if ((incomingMap.get(c.t.fullPath)?.length ?? 0) > 0) continue;
-    const key = c.x.toFixed(3);
-    let group = shelfGroups.get(key);
-    if (!group) {
-      group = [];
-      shelfGroups.set(key, group);
-    }
-    group.push(c);
-  }
-  for (const group of shelfGroups.values()) {
-    if (group.length < ROOT_SHELF_WRAP_THRESHOLD) continue;
-    const cols = Math.min(ROOT_SHELF_MAX_COLUMNS, Math.ceil(Math.sqrt(group.length)));
-    const colW = Math.max(...group.map((c) => c.w)) + TYPE_X_GAP;
-    for (let i = 0; i < group.length; i++) {
-      const c = group[i] as Cell;
-      c.x += (i % cols) * colW;
-    }
-  }
-
   // Pass 1: greedy top-down packing to establish the band's natural height.
   // Used as a hard cap in pass 2 so types don't push the band taller just
   // to land near their barycenter.
@@ -1122,128 +1132,13 @@ interface RawArrow {
   readonly kind: ArrowKind;
 }
 
-interface ObstacleRect {
-  readonly left: number;
-  readonly right: number;
-  readonly top: number;
-  readonly bottom: number;
-}
+type ObstacleRect = ChannelObstacle;
 
-const LANE_BASE_GAP = 12;
-const LANE_SLOT_W = 8;
-/** Minimum target-local gutter width: enough padding to keep one slot off
- *  both edges plus one slot's worth of room. */
-const MIN_GUTTER_W = 2 * LANE_BASE_GAP + LANE_SLOT_W;
-
-function gutterWidth(slotCount: number): number {
-  return Math.max(MIN_GUTTER_W, Math.max(1, slotCount) * LANE_SLOT_W + 2 * LANE_BASE_GAP);
-}
-
-function isCanonicalDriftClass(c: DriftClass): boolean {
-  return c === 'at_lca' || c === 'within_budget';
-}
-
-function isPlacementArrow(a: RawArrow): boolean {
-  return a.kind === 'ownership' && isCanonicalDriftClass(a.driftClass) && a.targetCol > a.sourceCol;
-}
-
-function isReturnArrow(a: RawArrow): boolean {
-  return a.kind === 'ownership' && !isPlacementArrow(a);
-}
-
-function laneGroupKey(a: RawArrow): string {
-  return a.targetX.toFixed(3);
-}
-
-/** Greedy interval coloring on each target-x gutter. Slot 0 is closest
- *  to the target edge; larger slots extend left. Multiple targets can
- *  share the same x, so coloring by target id alone lets their vertical
- *  segments stack. Grouping by target-x makes those targets share one
- *  physical gutter while still keeping x placement local to the path.
- *
- * Structural ownership arrows are colored before optional overlays so
- * the placement-guaranteed slots stay reserved for real ownership edges. */
-function colorIncomingArrows(arrows: readonly RawArrow[]): {
-  readonly slotIdx: ReadonlyMap<RawArrow, number>;
-  readonly slotCount: ReadonlyMap<string, number>;
-} {
-  const byLaneGroup = new Map<string, RawArrow[]>();
-  for (const a of arrows) {
-    const groupKey = laneGroupKey(a);
-    let list = byLaneGroup.get(groupKey);
-    if (!list) {
-      list = [];
-      byLaneGroup.set(groupKey, list);
-    }
-    list.push(a);
-  }
-
-  const slotIdx = new Map<RawArrow, number>();
-  const slotCount = new Map<string, number>();
-  for (const edges of byLaneGroup.values()) {
-    interface Item {
-      readonly e: RawArrow;
-      readonly priority: number;
-      readonly yMin: number;
-      readonly yMax: number;
-    }
-    const items: Item[] = edges.map((e) => ({
-      e,
-      priority: isPlacementArrow(e) ? 0 : 1,
-      yMin: Math.min(e.sourceY, e.targetY),
-      yMax: Math.max(e.sourceY, e.targetY),
-    }));
-    items.sort((p, q) => p.priority - q.priority || p.yMin - q.yMin || p.yMax - q.yMax);
-    const slotIntervals: Array<Array<[number, number]>> = [];
-    for (const item of items) {
-      let chosen = -1;
-      for (let s = 0; s < slotIntervals.length; s++) {
-        const ivs = slotIntervals[s] as Array<[number, number]>;
-        let conflict = false;
-        for (const [lo, hi] of ivs) {
-          if (item.yMin < hi && lo < item.yMax) {
-            conflict = true;
-            break;
-          }
-        }
-        if (!conflict) {
-          chosen = s;
-          break;
-        }
-      }
-      if (chosen === -1) {
-        chosen = slotIntervals.length;
-        slotIntervals.push([]);
-      }
-      (slotIntervals[chosen] as Array<[number, number]>).push([item.yMin, item.yMax]);
-      slotIdx.set(item.e, chosen);
-    }
-    const targets = new Set(edges.map((e) => e.toTypeId));
-    for (const targetId of targets) {
-      slotCount.set(targetId, Math.max(slotCount.get(targetId) ?? 0, slotIntervals.length));
-    }
-  }
-  return { slotIdx, slotCount };
-}
-
-function computeIncomingSlotsByTarget(arrows: readonly RawArrow[]): ReadonlyMap<string, number> {
-  return colorIncomingArrows(arrows).slotCount;
-}
-
-function laneXForIncoming(targetX: number, slotIdx: number): number {
-  return targetX - LANE_BASE_GAP - (slotIdx + 0.5) * LANE_SLOT_W;
-}
-
-function clampLaneToSourceSide(a: RawArrow, laneX: number): number {
-  if (a.sourceLeftX === undefined || a.sourceRightX === undefined || a.sourceSide === undefined) {
-    return laneX;
-  }
-  if (a.sourceSide === 'right') {
-    const minLaneX = a.sourceRightX + LANE_BASE_GAP;
-    const maxLaneX = a.targetX - 1;
-    return minLaneX <= maxLaneX ? Math.max(laneX, minLaneX) : Math.max(a.sourceRightX, maxLaneX);
-  }
-  return Math.min(laneX, a.sourceLeftX - LANE_BASE_GAP);
+function computeIncomingSlotsByTarget(
+  arrows: readonly RawArrow[],
+  obstacles: readonly ObstacleRect[],
+): ReadonlyMap<string, number> {
+  return allocateIncomingChannels(arrows, obstacles).slotCountByTarget;
 }
 
 function sharedReturnRailX(types: readonly TypeBox[]): number {
@@ -1258,32 +1153,50 @@ function buildArrows(
   types: readonly TypeBox[],
   drift: DriftIndex,
   ghostArrowsShown: ReadonlySet<string> | undefined,
-): Arrow[] {
+): { readonly arrows: readonly Arrow[]; readonly debug: ChannelDebug } {
   const raw = collectRawArrows(types, drift, ghostArrowsShown);
-  const { slotIdx } = colorIncomingArrows(raw.filter((r) => !isReturnArrow(r)));
+  const obstacles = buildRoutingObstacles(types);
+  const allocation = allocateIncomingChannels(
+    raw.filter((r) => !isReturnArrow(r)),
+    obstacles,
+  );
   const returnLaneX = sharedReturnRailX(types);
-  const obstacles = buildTextObstacles(types);
   const arrows: Arrow[] = [];
   for (const r of raw) {
-    const laneX = isReturnArrow(r) ? returnLaneX : laneXForIncoming(r.targetX, slotIdx.get(r) ?? 0);
-    arrows.push(makeArrow(r, clampLaneToSourceSide(r, laneX), obstacles));
+    const laneX = isReturnArrow(r)
+      ? returnLaneX
+      : (allocation.laneXByArrow.get(r) ?? fallbackIncomingLaneX(r.targetX, 0));
+    arrows.push(makeArrow(r, laneX, obstacles));
   }
-  return arrows;
+  return { arrows, debug: allocation.debug };
 }
 
-function buildTextObstacles(types: readonly TypeBox[]): readonly ObstacleRect[] {
+function buildRoutingObstacles(types: readonly TypeBox[]): readonly ObstacleRect[] {
   const out: ObstacleRect[] = [];
   for (const t of types) {
+    const top = t.y - ROW_H / 2;
+    const bottom = top + t.height;
+    const headerWidth = TYPE_GLYPH_W + t.label.length * CHAR_W + 4;
+    let hullWidth = Math.max(headerWidth, Math.min(t.width, ROUTE_HULL_ROW_WIDTH_LIMIT));
+    for (const f of t.fields) {
+      const rowWidth = f.arrowSourceX - t.x + 4;
+      if (rowWidth <= ROUTE_HULL_ROW_WIDTH_LIMIT + ROUTE_LONG_ROW_PROTRUSION) {
+        hullWidth = Math.max(hullWidth, rowWidth);
+      }
+    }
+
     out.push({
-      left: t.x - 8,
-      right: t.x + t.width + 8,
-      top: t.y - ROW_H / 2,
-      bottom: t.y + ROW_H / 2,
+      left: t.x - ROUTE_OBSTACLE_PAD,
+      right: t.x + hullWidth + ROUTE_OBSTACLE_PAD,
+      top,
+      bottom,
     });
     for (const f of t.fields) {
+      const rowWidth = f.arrowSourceX - t.x + 4;
+      if (rowWidth <= hullWidth + ROUTE_LONG_ROW_PROTRUSION) continue;
       out.push({
-        left: f.x - 8,
-        right: f.arrowSourceX + 8,
+        left: f.x - ROUTE_OBSTACLE_PAD,
+        right: f.arrowSourceX + ROUTE_OBSTACLE_PAD,
         top: f.y - FIELD_ROW_H / 2,
         bottom: f.y + FIELD_ROW_H / 2,
       });
@@ -1323,19 +1236,25 @@ function collectRawArrows(
           if (!target) continue;
           if (target.fullPath === t.fullPath) continue;
           const driftClass = drift.typeClass.get(target.fullPath) ?? 'at_lca';
-          // Routing direction is decided by columns, not by drift
-          // class. Forward = source's column is strictly left of
-          // target's; the lane lives in `channel[sourceCol]` (right
-          // of source). Drift = target ≤ source; lane lives in
-          // `channel[max(0, targetCol-1)]` (left of target). The
-          // arrow's source endpoint sits on the appropriate side of
-          // its row depending on which way it heads out.
+          // Source side is a physical channel-space decision. A row
+          // may be visually wider than its type header, especially for
+          // method names, so a semantic "target is to the right" test
+          // is only the first gate. If the row text already reaches
+          // into the target column, route from the left side of the row
+          // instead of drawing a horizontal segment through the text.
           const isForward = t.col < target.col;
-          const leavesRight =
-            isForward && (f.kind === 'method' || isCanonicalDriftClass(driftClass));
-          const sourceX = leavesRight ? f.arrowSourceX : f.x - 4;
+          const sourceLeftX = f.x - 4;
+          const sourceRightX = f.arrowSourceX;
+          const canUseForwardChannel =
+            isForward &&
+            (f.kind === 'method' || isCanonicalDriftClass(driftClass)) &&
+            sourceRightX + 2 * LANE_BASE_GAP <= target.x;
+          const sourceSide = canUseForwardChannel ? 'right' : 'left';
           out.push({
-            sourceX,
+            sourceX: sourceSide === 'right' ? sourceRightX : sourceLeftX,
+            sourceLeftX,
+            sourceRightX,
+            sourceSide,
             sourceY: f.y,
             targetX: target.x,
             targetY: target.y,
@@ -1410,7 +1329,7 @@ function makeArrow(
     };
   }
 
-  const laneX = chooseClearLaneX(r, targetLaneX, obstacles);
+  const laneX = targetLaneX;
   const routedSourceX = routeSourceX(r, laneX);
   const sourceClear = trimmedHorizontalClear(
     r.sourceY,
@@ -1486,52 +1405,6 @@ function makeArrow(
     kind: r.kind,
     driftClass: r.driftClass,
   };
-}
-
-function chooseClearLaneX(
-  r: RawArrow,
-  preferredLaneX: number,
-  obstacles: readonly ObstacleRect[],
-): number {
-  const yMin = Math.min(r.sourceY, r.targetY);
-  const yMax = Math.max(r.sourceY, r.targetY);
-  const preferredSourceX = routeSourceX(r, preferredLaneX);
-  const headsRight = preferredLaneX >= preferredSourceX;
-  const laneAllowed = (laneX: number): boolean => {
-    const sourceX = routeSourceX(r, laneX);
-    if (headsRight && laneX < sourceX) return false;
-    if (!headsRight && laneX > sourceX) return false;
-    return laneX <= r.targetX - 1;
-  };
-  if (laneAllowed(preferredLaneX) && verticalClear(preferredLaneX, yMin, yMax, obstacles)) {
-    return preferredLaneX;
-  }
-
-  const maxOffsetSlots = 96;
-  const candidates: number[] = [];
-  for (let i = 1; i <= maxOffsetSlots; i++) {
-    const d = i * LANE_SLOT_W;
-    candidates.push(preferredLaneX + d, preferredLaneX - d);
-  }
-  candidates.sort((a, b) => Math.abs(a - preferredLaneX) - Math.abs(b - preferredLaneX));
-
-  for (const laneX of candidates) {
-    // Ownership and re-export targets are left-edge/dot anchors, so the
-    // final segment must still enter from the left. If the only clear lane
-    // would sit beyond the target, keep the original lane and let the
-    // higher-level x placement reserve more room on the next pass.
-    if (!laneAllowed(laneX)) continue;
-    if (verticalClear(laneX, yMin, yMax, obstacles)) return laneX;
-  }
-
-  return preferredLaneX;
-}
-
-function routeSourceX(r: RawArrow, nextX: number): number {
-  if (r.sourceLeftX === undefined || r.sourceRightX === undefined) return r.sourceX;
-  if (r.sourceSide === 'right') return r.sourceRightX;
-  if (r.sourceSide === 'left') return r.sourceLeftX;
-  return nextX >= r.sourceRightX ? r.sourceRightX : r.sourceLeftX;
 }
 
 function trimmedHorizontalClear(
