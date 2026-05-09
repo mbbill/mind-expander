@@ -10,7 +10,6 @@ import { FactsLoadError, loadFacts } from './data/load.ts';
 import type { Facts } from './data/schema.ts';
 import { buildLayout } from './layout/pipeline.ts';
 import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
-import type { RoutingAlgorithm } from './layout/routing.ts';
 import { ViewState } from './state/view_state.ts';
 import { anchorTranslation } from './view/anchor.ts';
 import { createArrowDisambig } from './view/arrow_disambig.ts';
@@ -42,7 +41,6 @@ const SCALE_MAX = 1.5;
 // Padding factor so content doesn't kiss the viewport edge at the fit scale.
 const FIT_PADDING = 0.95;
 const INPUT_MODE_KEY = 'mind-expander.input-mode';
-const ROUTING_ALGORITHM_KEY = 'mind-expander.routing-algorithm';
 // The layout pipeline is active here. Renderer-facing data contracts live in
 // `analysis/layout_model.ts`; removed algorithm files should not be
 // reintroduced as compatibility shims.
@@ -104,7 +102,6 @@ interface RenderCtx {
 }
 
 let currentCtx: RenderCtx | null = null;
-let routingAlgorithm: RoutingAlgorithm = readStoredRoutingAlgorithm();
 
 void main();
 
@@ -385,10 +382,6 @@ async function main(): Promise<void> {
         fieldArrowsShown,
         methodArrowsShown,
         methodsHidden: currentCtx?.methodsHidden ?? false,
-        // Route strategy is a layout-owned choice. Keeping it in build inputs
-        // lets the renderer consume the same Arrow contract while we compare
-        // the new grid router against the dogleg fallback.
-        routingAlgorithm,
         ...(focus ? { focusModules: focus.modules } : {}),
       };
       lastLayout = buildLayout(buildArgs);
@@ -963,10 +956,9 @@ function setupInputSettings(controller: InputController): void {
   const body = document.querySelector<HTMLElement>('#settings-body');
   const inputModeCheckbox = document.querySelector<HTMLInputElement>('#settings-trackpad-mode');
   const debugLayoutCheckbox = document.querySelector<HTMLInputElement>('#settings-debug-layout');
-  const gridRoutingCheckbox = document.querySelector<HTMLInputElement>('#settings-grid-routing');
   const summary = document.querySelector<HTMLElement>('#settings-input-summary');
   const defaultBadge = document.querySelector<HTMLElement>('#settings-input-default');
-  if (!toggle || !body || !inputModeCheckbox || !gridRoutingCheckbox || !summary || !defaultBadge) {
+  if (!toggle || !body || !inputModeCheckbox || !summary || !defaultBadge) {
     return;
   }
 
@@ -988,14 +980,10 @@ function setupInputSettings(controller: InputController): void {
   const renderDebugLayout = (): void => {
     if (debugLayoutCheckbox) debugLayoutCheckbox.checked = layoutDebugEnabled();
   };
-  const renderRoutingAlgorithm = (): void => {
-    gridRoutingCheckbox.checked = routingAlgorithm === 'grid';
-  };
 
   applyExpanded();
   renderMode();
   renderDebugLayout();
-  renderRoutingAlgorithm();
   toggle.addEventListener('click', () => {
     expanded = !expanded;
     applyExpanded();
@@ -1009,17 +997,6 @@ function setupInputSettings(controller: InputController): void {
     renderDebugLayout();
     currentCtx?.draw();
   });
-  gridRoutingCheckbox.addEventListener('change', () => {
-    routingAlgorithm = gridRoutingCheckbox.checked ? 'grid' : 'dogleg';
-    localStorage.setItem(ROUTING_ALGORITHM_KEY, routingAlgorithm);
-    renderRoutingAlgorithm();
-    currentCtx?.draw();
-  });
-}
-
-function readStoredRoutingAlgorithm(): RoutingAlgorithm {
-  const stored = localStorage.getItem(ROUTING_ALGORITHM_KEY);
-  return stored === 'dogleg' || stored === 'grid' ? stored : 'grid';
 }
 
 function detectDefaultInputMode(): InputMode {

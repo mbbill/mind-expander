@@ -317,15 +317,15 @@ Example in grid cells:
 
 ```text
 A own = 0..10
-LCA layer gap = 2
-block clearance requirement = 2
-B min x = 10 + max(2, 2) = 12
+LCA layer gap = 3
+block clearance requirement = 3
+B min x = 10 + max(3, 3) = 13
 ```
 
-If the block clearance requirement were 3:
+If the block clearance requirement were 4:
 
 ```text
-B min x = 10 + max(2, 3) = 13
+B min x = 10 + max(3, 4) = 14
 ```
 
 So placement should compute the floor from the previous relevant layer's
@@ -354,64 +354,36 @@ representation so diagnostics do not dominate paint cost.
 
 ## Arrow Routing
 
-Arrows route after physical placement. Routing consumes the same obstacle
-rectangles used by placement and must not feed back into it: layout owns block
-positions, routing owns only the path chosen between already-placed endpoints.
+Routing runs after physical placement and does not feed back into placement:
+layout owns block positions, routing owns the already-placed endpoints and the
+per-arrow path around those blocks.
 
-This section lists the hard constraints any routing implementation must
-satisfy. Algorithm choice is open as long as every constraint holds.
+The current router has two routing-owned layers: `routing.ts` collects semantic
+arrow endpoints and explicit source/target stubs, while `routing_field.ts`
+builds the reusable clearance field and scores middle routes through it.
 
-There are three routing classes: **forward LCA**, **backward LCA**, and
-**other** (method, re-export). Constraints below are scoped to forward LCA;
-backward LCA and other classes are deferred and will be specified after the
-forward-LCA contract is settled.
-
-### Forward LCA constraints
-
-Per-arrow constraints (each arrow individually):
-
-1. Visible start = source row's text anchor.
-2. Visible end = target's left side at `target.y`.
-3. All segments are axis-aligned.
-4. Trunk X ≥ `source.right + 0.5` grid cell (corner clearance; no source-side
-   arrowhead).
-5. Trunk X ≤ `target.left − 1.5` grid cells (1 grid for the arrowhead glyph
-   plus 0.5 grid for the corner).
-6. Strict rightward monotonicity: every X coordinate along the path satisfies
-   `source.x ≤ X ≤ target.x`.
-7. The path does not pass through any non-endpoint obstacle rectangle (other
-   types' block + protrusion fragments).
-
-Pairwise constraints (between any two forward-LCA arrows):
-
-8. Two arrows with the same target type may share a trunk column; they must
-   not be forced apart.
-9. Two arrows with different target types whose trunks' y-spans overlap must
-   use trunk Xs at least one minimum-separation apart.
-10. Two arrows with different target types whose trunks' y-spans do not
-    overlap have no positional constraint between them.
-11. No two arrows produce a trunk-vs-trunk crossing (one arrow's vertical
-    segment intersecting the other's vertical, or one's vertical intersecting
-    the other's horizontal stub inside the corridor).
-
-Global constraints:
-
-12. Routing is a pure deterministic function of (geometry, obstacles, route
-    requests): same input → byte-identical output. Tiebreakers are explicit
-    and stable.
-13. Routing does not modify placement.
-14. When a constraint cannot be satisfied (corridor too narrow, unavoidable
-    obstacle, capacity exceeded), the route is still emitted with the
-    violating lane marked `blocked: true` rather than aborting or searching
-    unboundedly.
-
-### Backward LCA constraints
-
-To be defined.
-
-### Other-class constraints
-
-To be defined.
+1. Field and method arrows start at the visible row arrow anchor.
+2. Re-export arrows start at the ghost item's measured edge.
+3. Source arrows may leave either side of the source block.
+4. All arrows end at the target's left edge at `target.y`.
+5. The final target stub is `1.5` grid cells: one grid cell for the arrow head
+   and half a grid cell for the rounded corner.
+6. Middle-route detours run on the boundaries of inflated clearance rectangles:
+   `1.5` grid cells on each block's left side, `0.5` grid cells on the right,
+   top, and bottom.
+7. The initial source stub and final target stub are explicit exceptions that
+   may cross their own block's clearance envelope; the middle route still
+   avoids every inflated clearance rectangle.
+8. The routing field chooses among checked paths by shortest length, then fewer
+   turns, then a stable right-side tie-break.
+9. Obstacles are the real placed fragments from layout, inflated only inside
+   the routing pass.
+10. A visible routed arrow must be one of those checked orthogonal paths. If
+    the target entry or middle route cannot be cleared, the router emits a
+    degenerate path instead of an unchecked diagonal.
+11. Routing does not allocate lanes, avoid arrow overlap, or avoid crossings.
+12. Debug routing still surfaces the real obstacle rectangles and placement
+   grid for inspection.
 
 ## Non-Rank Items
 
@@ -436,14 +408,9 @@ Any significant layout change should add or update tests for these invariants:
 - long field/method type annotations do not affect physical block width
 - debug overlay rectangles cover the actual rendered stable affordances,
   including type expand chevrons
-- debug overlay rectangles match the real placement/routing obstacle model
+- debug overlay rectangles match the real placement obstacle model
 - routing does not change physical block placement
-- the direct grid baseline emits one segment per arrow, starting at the source
-  text anchor and landing on the target left side
-- future orthogonal routing rules preserve target-left landing and, when they
-  add a final horizontal stub, that stub moves rightward into the target
-- future lane-routing rules do not overlap unrelated vertical trunks with
-  overlapping y-ranges unless the router explicitly reports a compressed or
-  overflow condition
-- future obstacle-avoidance rules do not pass through occupied own rectangles
-  unless the router explicitly reports an overflow/debug condition
+- arrows land on the target left side with a left-to-right final stub
+- routed arrows avoid non-source/non-target block fragments
+- routing behavior changes are introduced through explicit contracts with
+  focused invariant tests

@@ -23,7 +23,7 @@ export const INDENT_PX = gridCols(2);
 export const LEFT_PAD = gridCols(1);
 export const TOP_PAD = gridRows(1);
 
-export const TYPE_X_GAP = gridCols(2);
+export const TYPE_X_GAP = gridCols(3);
 export const MODULE_BAND_X_GAP = gridCols(3);
 export const MODULE_GLYPH_W = gridCols(2);
 export const MODULE_LABEL_X = 18;

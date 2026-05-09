@@ -16,12 +16,11 @@ import type {
 import { type Geometry, computeGeometry } from './geometry.ts';
 import { computeObstacles } from './obstacles.ts';
 import { type PlacementLayoutPlan, buildPlacementLayoutPlan } from './placement_plan.ts';
-import { type RoutingAlgorithm, type RoutingResult, routeArrows } from './routing.ts';
+import { type RoutingResult, routeArrows } from './routing.ts';
 import type { PositionedType } from './types.ts';
 
 export interface LayoutBuildInputs extends LayoutInputs {
   readonly placementPlan?: PlacementLayoutPlan;
-  readonly routingAlgorithm?: RoutingAlgorithm;
 }
 
 export function buildLayout(inputs: LayoutBuildInputs): Layout {
@@ -39,10 +38,7 @@ function runLayoutPass(
 ): readonly [Geometry, RoutingResult] {
   const geometry = computeGeometry(inputs, { placementPlan });
   const obstacles = computeObstacles(geometry, measure);
-  const routing =
-    inputs.routingAlgorithm === undefined
-      ? routeArrows(geometry, obstacles, inputs, measure)
-      : routeArrows(geometry, obstacles, inputs, measure, { algorithm: inputs.routingAlgorithm });
+  const routing = routeArrows(geometry, obstacles, inputs, measure);
 
   return [geometry, routing];
 }

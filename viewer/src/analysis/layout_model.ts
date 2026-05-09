@@ -105,24 +105,6 @@ export interface ChannelObstacle {
   readonly bottom: number;
 }
 
-export interface ChannelDebugLane {
-  readonly x: number;
-  readonly yMin: number;
-  readonly yMax: number;
-  readonly fromTypeId: string;
-  readonly toTypeId: string;
-  readonly bundleKey: string;
-  readonly blocked: boolean;
-}
-
-export interface ChannelDebugGroup {
-  readonly id: number;
-  readonly laneCount: number;
-  readonly targetIds: readonly string[];
-  readonly xMin: number;
-  readonly xMax: number;
-}
-
 export interface LayoutDebugLabel {
   readonly id: string;
   readonly x: number;
@@ -140,8 +122,6 @@ export interface LayoutDebugGrid {
 }
 
 export interface ChannelDebug {
-  readonly lanes: readonly ChannelDebugLane[];
-  readonly groups: readonly ChannelDebugGroup[];
   readonly obstacles: readonly ChannelObstacle[];
   readonly layoutLabels?: readonly LayoutDebugLabel[];
   readonly layoutGrid?: LayoutDebugGrid;

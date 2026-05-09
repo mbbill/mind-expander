@@ -1,6 +1,5 @@
-import type { DriftIndex } from '../analysis/drift.ts';
+import type { DriftClass, DriftIndex } from '../analysis/drift.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
-import { classifyOwnershipRouteByDepth } from '../layout/routing_class.ts';
 
 export interface MemberArrowRow {
   readonly rowName: string;
@@ -8,9 +7,8 @@ export interface MemberArrowRow {
 }
 
 // The type-click affordance may reveal extra target modules, but only for
-// ownership arrows that the layout will route through the forward-LCA corridor.
-// This uses routing class strictly as visibility policy; drift remains the
-// color/semantic classification.
+// canonical ownership edges that move from a source to a deeper target. Drift
+// remains the color/semantic classification.
 export function forwardRoutedTargetModulesFor(
   typeId: string,
   ownership: OwnershipIndex,
@@ -28,15 +26,21 @@ export function forwardRoutedTargetModulesFor(
       const targetDepth = depth.get(targetFullPath);
       if (targetDepth === undefined) continue;
       const driftClass = drift.typeClass.get(targetFullPath) ?? 'at_lca';
-      if (classifyOwnershipRouteByDepth(sourceDepth, targetDepth, driftClass) !== 'lca-forward') {
-        continue;
-      }
+      if (!isForwardOwnershipTarget(sourceDepth, targetDepth, driftClass)) continue;
       for (const id of ancestorModuleIds(targetFullPath, crateName)) {
         out.add(id);
       }
     }
   }
   return [...out];
+}
+
+function isForwardOwnershipTarget(
+  sourceDepth: number,
+  targetDepth: number,
+  driftClass: DriftClass,
+): boolean {
+  return (driftClass === 'at_lca' || driftClass === 'within_budget') && targetDepth > sourceDepth;
 }
 
 export function targetModulesForMemberRow(

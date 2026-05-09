@@ -14,6 +14,7 @@ import type { DriftClass } from '../analysis/drift.ts';
 import {
   BASE_FONT_SIZE,
   HIT_MIN_W,
+  LAYOUT_GRID_CELL_W,
   MODULE_LABEL_X,
   TYPE_EXPAND_ARROW_CLOSED,
   TYPE_EXPAND_ARROW_FONT_SIZE,
@@ -361,8 +362,6 @@ function renderLayoutDebug(
     .attr('y', (d) => d.top)
     .attr('width', (d) => d.right - d.left)
     .attr('height', (d) => d.bottom - d.top);
-
-  g.selectAll('line.debug-lane,text.debug-channel').remove();
 
   const labels = routing.layoutLabels ?? [];
   const labelSel = g
@@ -952,7 +951,7 @@ function applyChainHighlight(
     .classed('highlighted', (d) => inChain.has(d));
 }
 
-const CORNER_OFFSET = 8;
+const CORNER_OFFSET = LAYOUT_GRID_CELL_W / 2;
 
 export function polylinePath(waypoints: readonly { x: number; y: number }[]): string {
   const points = compactStraightThroughWaypoints(waypoints);
@@ -1009,9 +1008,9 @@ function compactStraightThroughWaypoints(
     const next = waypoints[i + 1];
     if (!prev || !cur || !next) continue;
 
-    // Routing may add semantic boundary ports that sit on the same straight
-    // stub as the next real dogleg corner. They are important for scoring,
-    // but rounding them as corners visually distorts upward/downward turns.
+    // Some polylines include semantic boundary ports that sit on the same
+    // straight segment as the next real corner. Rounding those as corners
+    // visually distorts upward/downward turns.
     if (isStraightThrough(prev, cur, next)) continue;
     out.push(cur);
   }

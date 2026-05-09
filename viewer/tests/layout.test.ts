@@ -693,10 +693,9 @@ describe('buildLayout — Layout shape', () => {
       typeBoxGeometryFingerprint(toTypeBoxLike(firstGeometry.types)),
     );
     expect(layout.arrows.length).toBeGreaterThan(0);
-    expect(layout.debug?.routing.groups).toEqual([]);
   });
 
-  it('keeps blocked-route fixture geometry unchanged during one-pass routing', () => {
+  it('keeps pressure fixture geometry unchanged during direct arrow emission', () => {
     const inputs = fallbackPressureInputs();
     const firstGeometry = computeGeometry(inputs);
     const layout = buildLayout({ ...inputs, measureText: measure });
@@ -705,7 +704,6 @@ describe('buildLayout — Layout shape', () => {
       typeBoxGeometryFingerprint(toTypeBoxLike(firstGeometry.types)),
     );
     expect(layout.arrows.length).toBeGreaterThan(0);
-    expect(layout.debug?.routing.groups).toEqual([]);
   });
 
   it('keeps the first-pass geometry when routing produces no pressure', () => {
