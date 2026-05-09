@@ -110,22 +110,19 @@ function candidateMiddlePaths(
     out.push([start, goal]);
   }
 
-  for (const x of candidateVerticalXs(start, goal, obstacles)) {
+  const verticalXs = candidateVerticalXs(start, goal, obstacles);
+  const horizontalYs = candidateHorizontalYs(start, goal, obstacles);
+
+  for (const x of verticalXs) {
     out.push([start, { x, y: start.y }, { x, y: goal.y }, goal]);
   }
 
-  for (const y of candidateHorizontalYs(start, goal, obstacles)) {
+  for (const y of horizontalYs) {
     out.push([start, { x: start.x, y }, { x: goal.x, y }, goal]);
   }
 
-  const perimeterXs = uniqueNumbers([
-    ...outerVerticalXs(start, goal, obstacles),
-    ...globalOuterVerticalXs(obstacles),
-  ]);
-  const perimeterYs = uniqueNumbers([
-    ...outerHorizontalYs(start, goal, obstacles),
-    ...globalOuterHorizontalYs(obstacles),
-  ]);
+  const perimeterXs = uniqueNumbers([...verticalXs, ...globalOuterVerticalXs(obstacles)]);
+  const perimeterYs = uniqueNumbers([...horizontalYs, ...globalOuterHorizontalYs(obstacles)]);
   for (const x of perimeterXs) {
     for (const y of perimeterYs) {
       out.push([start, { x, y: start.y }, { x, y }, { x: goal.x, y }, goal]);
@@ -162,28 +159,6 @@ function candidateVerticalXs(
   if (Number.isFinite(outerRight)) candidates.add(outerRight + OUTER_ROUTE_GAP_X);
 
   return [...candidates].sort((a, b) => b - a);
-}
-
-function outerVerticalXs(
-  start: ArrowWaypoint,
-  goal: ArrowWaypoint,
-  obstacles: readonly ClearanceRect[],
-): readonly number[] {
-  const minY = Math.min(start.y, goal.y);
-  const maxY = Math.max(start.y, goal.y);
-  let outerLeft = Number.POSITIVE_INFINITY;
-  let outerRight = Number.NEGATIVE_INFINITY;
-
-  for (const obstacle of obstacles) {
-    if (!rangesOverlap(minY, maxY, obstacle.top, obstacle.bottom)) continue;
-    outerLeft = Math.min(outerLeft, obstacle.left);
-    outerRight = Math.max(outerRight, obstacle.right);
-  }
-
-  const out: number[] = [];
-  if (Number.isFinite(outerRight)) out.push(outerRight + OUTER_ROUTE_GAP_X);
-  if (Number.isFinite(outerLeft)) out.push(outerLeft - OUTER_ROUTE_GAP_X);
-  return out;
 }
 
 function globalOuterVerticalXs(obstacles: readonly ClearanceRect[]): readonly number[] {
@@ -231,28 +206,6 @@ function candidateHorizontalYs(
   if (Number.isFinite(outerBottom)) candidates.add(outerBottom + OUTER_ROUTE_GAP_Y);
 
   return [...candidates].sort((a, b) => Math.abs(a - start.y) - Math.abs(b - start.y) || b - a);
-}
-
-function outerHorizontalYs(
-  start: ArrowWaypoint,
-  goal: ArrowWaypoint,
-  obstacles: readonly ClearanceRect[],
-): readonly number[] {
-  const minX = Math.min(start.x, goal.x);
-  const maxX = Math.max(start.x, goal.x);
-  let outerTop = Number.POSITIVE_INFINITY;
-  let outerBottom = Number.NEGATIVE_INFINITY;
-
-  for (const obstacle of obstacles) {
-    if (!rangesOverlap(minX, maxX, obstacle.left, obstacle.right)) continue;
-    outerTop = Math.min(outerTop, obstacle.top);
-    outerBottom = Math.max(outerBottom, obstacle.bottom);
-  }
-
-  const out: number[] = [];
-  if (Number.isFinite(outerBottom)) out.push(outerBottom + OUTER_ROUTE_GAP_Y);
-  if (Number.isFinite(outerTop)) out.push(outerTop - OUTER_ROUTE_GAP_Y);
-  return out;
 }
 
 function globalOuterHorizontalYs(obstacles: readonly ClearanceRect[]): readonly number[] {

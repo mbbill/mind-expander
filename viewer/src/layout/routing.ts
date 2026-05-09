@@ -37,6 +37,8 @@ interface RouteRequest {
   readonly toTypeId: string;
   readonly kind: 'ownership' | 'reexport' | 'method';
   readonly driftClass: DriftClass;
+  readonly sourceX: number;
+  readonly targetX: number;
   readonly sourceBounds: TypeBounds;
   readonly targetBounds: TypeBounds;
   readonly start: ArrowWaypoint;
@@ -97,6 +99,8 @@ function collectRouteRequests(
             toTypeId: targetId,
             kind: row.kind === 'method' ? 'method' : 'ownership',
             driftClass: drift.typeClass.get(targetId) ?? 'at_lca',
+            sourceX: source.x,
+            targetX: target.x,
             sourceBounds,
             targetBounds,
             start: { x: row.arrowSourceX, y: row.y },
@@ -122,6 +126,8 @@ function collectRouteRequests(
         toTypeId: target.node.id,
         kind: 'reexport',
         driftClass: 'at_lca',
+        sourceX: source.x,
+        targetX: target.x,
         sourceBounds,
         targetBounds,
         start: { x: sourceBounds.right, y: source.y },
@@ -183,10 +189,8 @@ function sourceExitForTarget(request: RouteRequest): RouteExit {
 
   // Source side is endpoint semantics, not a route preference: an arrow leaves
   // the side facing the target, independent of where the member text anchor
-  // sits inside the source block.
-  const sourceCenter = (request.sourceBounds.left + request.sourceBounds.right) / 2;
-  const targetCenter = (request.targetBounds.left + request.targetBounds.right) / 2;
-  return targetCenter < sourceCenter ? left : right;
+  // sits inside the source block or how far expanded rows protrude.
+  return request.targetX < request.sourceX ? left : right;
 }
 
 function compactDuplicateWaypoints(points: readonly ArrowWaypoint[]): readonly ArrowWaypoint[] {

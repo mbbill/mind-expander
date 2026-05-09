@@ -1,11 +1,19 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { computeDrift } from '../src/analysis/drift.ts';
 import { LAYOUT_GRID_CELL_W } from '../src/analysis/layout_metrics.ts';
 import type { LayoutInputs } from '../src/analysis/layout_model.ts';
-import type { TypeNode } from '../src/analysis/module_tree.ts';
+import { rowArrowKey } from '../src/analysis/layout_model.ts';
+import { type TreeNode, type TypeNode, buildModuleTree } from '../src/analysis/module_tree.ts';
+import { buildOwnershipIndex, computeOwnershipDepth } from '../src/analysis/ownership.ts';
+import { canonicalize } from '../src/data/canonicalize.ts';
+import type { Facts } from '../src/data/schema.ts';
 import type { Geometry } from '../src/layout/geometry.ts';
 import type { ObstacleMap } from '../src/layout/obstacles.ts';
+import { buildLayout } from '../src/layout/pipeline.ts';
 import { routeArrows } from '../src/layout/routing.ts';
 import type { Obstacle, PositionedRow, PositionedType } from '../src/layout/types.ts';
+import { ViewState } from '../src/state/view_state.ts';
 
 const measure = (s: string): number => s.length * 7;
 
@@ -75,6 +83,25 @@ describe('routeArrows obstacle routing', () => {
 
     expect(routing.arrows[0]?.waypoints[0]).toEqual({ x: 128, y: 40 });
     expect(routing.arrows[0]?.waypoints[1]).toEqual({ x: 164, y: 40 });
+  });
+
+  it('uses placed type origins rather than protruding bounds for source side', () => {
+    const source = typeBox('Source', { x: 120, y: 120, width: 40 }, [
+      row('right_target', { y: 120, arrowSourceX: 152, target: 'Target' }),
+    ]);
+    const target = typeBox('Target', { x: 240, y: 40, width: 40 });
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 120, y: 108, width: 280, height: 24 }),
+        obstacle('Target', { x: 240, y: 28, width: 40, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    expect(routing.arrows[0]?.waypoints[0]).toEqual({ x: 152, y: 120 });
+    expect(routing.arrows[0]?.waypoints[1]).toEqual({ x: 404, y: 120 });
   });
 
   it('does not use the opposite source exit as a route fallback', () => {
@@ -199,7 +226,86 @@ describe('routeArrows obstacle routing', () => {
       })),
     );
   });
+
+  it('keeps selected drift arrows visible when an intermediate real type expands', () => {
+    const sourceId = 'sf-nano-core::utils::payload::PayloadError';
+    const targetId = 'sf-nano-core::utils::leb128::ReadError';
+    const fieldName = 'InvalidLEB128::.0';
+    const inputs = sfNanoCoreRoutingInputs([
+      'sf-nano-core',
+      'sf-nano-core::utils',
+      'sf-nano-core::utils::leb128',
+      'sf-nano-core::utils::limits',
+      'sf-nano-core::utils::payload',
+      sourceId,
+      'sf-nano-core::utils::limits::LimitsError',
+    ]);
+    const layout = buildLayout({
+      ...inputs,
+      fieldArrowsShown: new Set([rowArrowKey(sourceId, fieldName)]),
+    });
+
+    const arrow = layout.arrows.find(
+      (candidate) =>
+        candidate.fromTypeId === sourceId &&
+        candidate.fromFieldName === fieldName &&
+        candidate.toTypeId === targetId,
+    );
+    expect(arrow).toBeDefined();
+    expect(arrow?.waypoints.length).toBeGreaterThan(1);
+    expectAxisAlignedSegments(arrow?.waypoints ?? []);
+  });
 });
+
+function sfNanoCoreRoutingInputs(expandedIds: readonly string[]): LayoutInputs {
+  const raw = JSON.parse(readFileSync('./data/facts.json', 'utf8')) as Facts;
+  const facts = canonicalize(raw);
+  const crate = facts.crates['sf-nano-core'];
+  if (crate === undefined) {
+    throw new Error('sf-nano-core facts missing from test data.');
+  }
+
+  const staticRoot = buildModuleTree(crate);
+  const ownership = buildOwnershipIndex(facts, 'sf-nano-core');
+  const typeModule = collectTypeModule(staticRoot);
+  const drift = computeDrift(ownership, typeModule);
+  const depth = computeOwnershipDepth(ownership, collectTypeIds(staticRoot), drift);
+
+  return {
+    staticRoot,
+    ownership,
+    depth,
+    drift,
+    state: new ViewState(expandedIds),
+    measureText: measure,
+  };
+}
+
+function collectTypeIds(root: TreeNode): string[] {
+  const out: string[] = [];
+  const walk = (node: TreeNode): void => {
+    if (node.kind === 'type') {
+      out.push(node.fullPath);
+      return;
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return out;
+}
+
+function collectTypeModule(root: TreeNode): Map<string, string> {
+  const out = new Map<string, string>();
+  const walk = (node: TreeNode): void => {
+    if (node.kind === 'type') {
+      out.set(node.fullPath, node.modulePath);
+      return;
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  return out;
+}
 
 function typeBox(
   id: string,
