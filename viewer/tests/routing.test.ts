@@ -9,6 +9,7 @@ import {
 } from '../src/layout/geometry.ts';
 import { computeObstacles } from '../src/layout/obstacles.ts';
 import { routeArrows } from '../src/layout/routing.ts';
+import { routeArrowsDogleg } from '../src/layout/routing_dogleg.ts';
 import type { PlacedFragmentRect, PositionedType } from '../src/layout/types.ts';
 import { buildInputs, crateFacts, edge, mod, ty } from './fixtures/builders.ts';
 
@@ -237,6 +238,152 @@ function multiTargetRoutingGeometry(targetCount: number): Geometry {
   };
 }
 
+function mixedFanInRoutingInputs() {
+  const c = crateFacts('c', [
+    mod('m', [
+      ty('c', 'm', 'SourceA', [
+        { name: 'targetA1', ty_text: 'TargetA' },
+        { name: 'targetB', ty_text: 'TargetB' },
+      ]),
+      ty('c', 'm', 'SourceB', [{ name: 'targetA2', ty_text: 'TargetA' }]),
+      ty('c', 'm', 'TargetA'),
+      ty('c', 'm', 'TargetB'),
+    ]),
+  ]);
+  return buildInputs(
+    c,
+    [
+      edge('c::m::SourceA', 'c::m::TargetA', 'field targetA1'),
+      edge('c::m::SourceA', 'c::m::TargetB', 'field targetB'),
+      edge('c::m::SourceB', 'c::m::TargetA', 'field targetA2'),
+    ],
+    [],
+  );
+}
+
+function mixedFanInRoutingGeometry(): Geometry {
+  const sourceAId = 'c::m::SourceA';
+  const sourceBId = 'c::m::SourceB';
+  const targetAId = 'c::m::TargetA';
+  const targetBId = 'c::m::TargetB';
+  const sourceX = 20;
+  const sourceWidth = 80;
+  const targetX = 240;
+  const sourceARows = [
+    {
+      name: 'targetA1',
+      tyText: 'TargetA',
+      ownership: 'owned' as const,
+      x: sourceX + 24,
+      y: 180,
+      arrowSourceX: sourceX + 60,
+      targets: [targetAId],
+      kind: 'field' as const,
+      bucketId: null,
+    },
+    {
+      name: 'targetB',
+      tyText: 'TargetB',
+      ownership: 'owned' as const,
+      x: sourceX + 24,
+      y: 204,
+      arrowSourceX: sourceX + 60,
+      targets: [targetBId],
+      kind: 'field' as const,
+      bucketId: null,
+    },
+  ];
+  const sourceBRows = [
+    {
+      name: 'targetA2',
+      tyText: 'TargetA',
+      ownership: 'owned' as const,
+      x: sourceX + 24,
+      y: 280,
+      arrowSourceX: sourceX + 60,
+      targets: [targetAId],
+      kind: 'field' as const,
+      bucketId: null,
+    },
+  ];
+  const sourceA: PositionedType = {
+    node: { id: sourceAId, label: 'SourceA' } as PositionedType['node'],
+    bandId: 'c::m',
+    bandOrder: 0,
+    indexInBandOrder: 0,
+    x: sourceX,
+    y: 150,
+    width: sourceWidth,
+    headerArrowX: sourceX + 38,
+    headerHitWidth: sourceWidth,
+    height: ROW_H + sourceARows.length * FIELD_ROW_H,
+    depth: 0,
+    subrank: 0,
+    rank: 0,
+    expanded: true,
+    visibleRows: sourceARows,
+  };
+  const sourceB: PositionedType = {
+    ...sourceA,
+    node: { id: sourceBId, label: 'SourceB' } as PositionedType['node'],
+    y: 250,
+    height: ROW_H + sourceBRows.length * FIELD_ROW_H,
+    visibleRows: sourceBRows,
+  };
+  const targetA: PositionedType = {
+    node: { id: targetAId, label: 'TargetA' } as PositionedType['node'],
+    bandId: 'c::m',
+    bandOrder: 1,
+    indexInBandOrder: 0,
+    x: targetX,
+    y: 100,
+    width: 80,
+    headerArrowX: null,
+    headerHitWidth: 80,
+    height: ROW_H,
+    depth: 1,
+    subrank: 0,
+    rank: 1,
+    expanded: false,
+    visibleRows: [],
+  };
+  const targetB: PositionedType = {
+    ...targetA,
+    node: { id: targetBId, label: 'TargetB' } as PositionedType['node'],
+    y: 140,
+    indexInBandOrder: 1,
+  };
+  return {
+    types: [sourceA, sourceB, targetA, targetB],
+    modules: [],
+    placedFragments: [
+      placedFragment(sourceAId, sourceX, 150 - ROW_H / 2, sourceWidth, sourceA.height, 0, 0),
+      placedFragment(sourceBId, sourceX, 250 - ROW_H / 2, sourceWidth, sourceB.height, 0, 1),
+      placedFragment(targetAId, targetX, 100 - ROW_H / 2, 80, ROW_H, 1, 0),
+      placedFragment(targetBId, targetX, 140 - ROW_H / 2, 80, ROW_H, 1, 1),
+    ],
+    ranks: new Map(),
+    typesById: new Map([
+      [sourceAId, sourceA],
+      [sourceBId, sourceB],
+      [targetAId, targetA],
+      [targetBId, targetB],
+    ]),
+    debugGrid: {
+      originX: 0,
+      originY: 0,
+      cellWidth: BAND_GRID_CELL_W,
+      cellHeight: BAND_GRID_CELL_H,
+      width: targetX + 80,
+      height: 320,
+    },
+    globalXStart: 0,
+    columnStride: 160,
+    totalWidth: targetX + 80,
+    totalHeight: 320,
+  };
+}
+
 function orderedTwoTargetGeometry(): Geometry {
   const sourceId = 'c::m::Source';
   const upperTargetId = 'c::m::UpperTarget';
@@ -376,6 +523,16 @@ function routeIntersectsRect(
   return false;
 }
 
+function routeIsOrthogonal(waypoints: readonly { readonly x: number; readonly y: number }[]) {
+  for (let index = 1; index < waypoints.length; index += 1) {
+    const from = waypoints[index - 1];
+    const to = waypoints[index];
+    if (from === undefined || to === undefined) continue;
+    if (from.x !== to.x && from.y !== to.y) return false;
+  }
+  return true;
+}
+
 function verticalSegmentIntersectsRect(
   x: number,
   fromY: number,
@@ -416,6 +573,20 @@ function verticalTrunkX(waypoints: readonly { readonly x: number; readonly y: nu
   throw new Error(`No vertical trunk in ${JSON.stringify(waypoints)}.`);
 }
 
+function finalTargetApproachStartX(
+  waypoints: readonly { readonly x: number; readonly y: number }[],
+): number {
+  const end = waypoints[waypoints.length - 1];
+  const previous = waypoints[waypoints.length - 2];
+  if (end === undefined || previous === undefined) {
+    throw new Error(`No final approach in ${JSON.stringify(waypoints)}.`);
+  }
+  if (previous.y !== end.y || previous.x > end.x) {
+    throw new Error(`Expected final target approach from the left: ${JSON.stringify(waypoints)}.`);
+  }
+  return previous.x;
+}
+
 function routePairCrosses(
   leftWaypoints: readonly { readonly x: number; readonly y: number }[],
   rightWaypoints: readonly { readonly x: number; readonly y: number }[],
@@ -449,6 +620,589 @@ function horizontalVerticalCrosses(
     horizontalFrom.y < Math.max(verticalFrom.y, verticalTo.y)
   );
 }
+
+function offsetSourcesInputs() {
+  const c = crateFacts('c', [
+    mod('m', [
+      ty('c', 'm', 'SourceLeft', [{ name: 'fieldA', ty_text: 'TargetA' }]),
+      ty('c', 'm', 'SourceRight', [{ name: 'fieldB', ty_text: 'TargetB' }]),
+      ty('c', 'm', 'TargetA'),
+      ty('c', 'm', 'TargetB'),
+    ]),
+  ]);
+  return buildInputs(
+    c,
+    [
+      edge('c::m::SourceLeft', 'c::m::TargetA', 'field fieldA'),
+      edge('c::m::SourceRight', 'c::m::TargetB', 'field fieldB'),
+    ],
+    [],
+  );
+}
+
+function offsetSourcesGeometry(): Geometry {
+  // Two forward arrows from sources at different X positions onto targets
+  // sharing the same column. The leftmost source's trunk window extends
+  // further left than the rightmost source's; with edge-anchored lane
+  // assignment the leftmost trunk must hug its own source.right + 0.5g
+  // rather than wasting that clearance by anchoring inside the batch's
+  // common corridor.
+  const sourceLeftId = 'c::m::SourceLeft';
+  const sourceRightId = 'c::m::SourceRight';
+  const targetAId = 'c::m::TargetA';
+  const targetBId = 'c::m::TargetB';
+  const sourceLeftX = 20;
+  const sourceLeftWidth = 60;
+  const sourceRightX = 140;
+  const sourceRightWidth = 40;
+  const targetX = 300;
+  const targetWidth = 80;
+  const sourceLeftRow = {
+    name: 'fieldA',
+    tyText: 'TargetA',
+    ownership: 'owned' as const,
+    x: sourceLeftX + 24,
+    y: 200,
+    arrowSourceX: sourceLeftX + sourceLeftWidth - 12,
+    targets: [targetAId],
+    kind: 'field' as const,
+    bucketId: null,
+  };
+  const sourceRightRow = {
+    name: 'fieldB',
+    tyText: 'TargetB',
+    ownership: 'owned' as const,
+    x: sourceRightX + 8,
+    y: 220,
+    arrowSourceX: sourceRightX + sourceRightWidth - 4,
+    targets: [targetBId],
+    kind: 'field' as const,
+    bucketId: null,
+  };
+  const sourceLeft: PositionedType = {
+    node: { id: sourceLeftId, label: 'SourceLeft' } as PositionedType['node'],
+    bandId: 'c::m',
+    bandOrder: 0,
+    indexInBandOrder: 0,
+    x: sourceLeftX,
+    y: 180,
+    width: sourceLeftWidth,
+    headerArrowX: sourceLeftX + 38,
+    headerHitWidth: sourceLeftWidth,
+    height: ROW_H + FIELD_ROW_H,
+    depth: 0,
+    subrank: 0,
+    rank: 0,
+    expanded: true,
+    visibleRows: [sourceLeftRow],
+  };
+  const sourceRight: PositionedType = {
+    ...sourceLeft,
+    node: { id: sourceRightId, label: 'SourceRight' } as PositionedType['node'],
+    indexInBandOrder: 1,
+    x: sourceRightX,
+    y: 200,
+    width: sourceRightWidth,
+    headerArrowX: sourceRightX + 18,
+    headerHitWidth: sourceRightWidth,
+    visibleRows: [sourceRightRow],
+  };
+  const targetA: PositionedType = {
+    node: { id: targetAId, label: 'TargetA' } as PositionedType['node'],
+    bandId: 'c::m',
+    bandOrder: 1,
+    indexInBandOrder: 0,
+    x: targetX,
+    y: 100,
+    width: targetWidth,
+    headerArrowX: null,
+    headerHitWidth: targetWidth,
+    height: ROW_H,
+    depth: 1,
+    subrank: 0,
+    rank: 1,
+    expanded: false,
+    visibleRows: [],
+  };
+  const targetB: PositionedType = {
+    ...targetA,
+    node: { id: targetBId, label: 'TargetB' } as PositionedType['node'],
+    indexInBandOrder: 1,
+    y: 140,
+  };
+  return {
+    types: [sourceLeft, sourceRight, targetA, targetB],
+    modules: [],
+    placedFragments: [
+      placedFragment(
+        sourceLeftId,
+        sourceLeftX,
+        180 - ROW_H / 2,
+        sourceLeftWidth,
+        sourceLeft.height,
+        0,
+        0,
+      ),
+      placedFragment(
+        sourceRightId,
+        sourceRightX,
+        200 - ROW_H / 2,
+        sourceRightWidth,
+        sourceRight.height,
+        0,
+        1,
+      ),
+      placedFragment(targetAId, targetX, 100 - ROW_H / 2, targetWidth, ROW_H, 1, 0),
+      placedFragment(targetBId, targetX, 140 - ROW_H / 2, targetWidth, ROW_H, 1, 1),
+    ],
+    ranks: new Map(),
+    typesById: new Map([
+      [sourceLeftId, sourceLeft],
+      [sourceRightId, sourceRight],
+      [targetAId, targetA],
+      [targetBId, targetB],
+    ]),
+    debugGrid: {
+      originX: 0,
+      originY: 0,
+      cellWidth: BAND_GRID_CELL_W,
+      cellHeight: BAND_GRID_CELL_H,
+      width: targetX + targetWidth,
+      height: 280,
+    },
+    globalXStart: 0,
+    columnStride: 160,
+    totalWidth: targetX + targetWidth,
+    totalHeight: 280,
+  };
+}
+
+function transitiveBatchInputs() {
+  const c = crateFacts('c', [
+    mod('m', [
+      ty('c', 'm', 'SourceTop', [{ name: 'aTop', ty_text: 'TargetTop' }]),
+      ty('c', 'm', 'SourceMid', [{ name: 'aMid', ty_text: 'TargetMid' }]),
+      ty('c', 'm', 'SourceBot', [{ name: 'aBot', ty_text: 'TargetBot' }]),
+      ty('c', 'm', 'TargetTop'),
+      ty('c', 'm', 'TargetMid'),
+      ty('c', 'm', 'TargetBot'),
+    ]),
+  ]);
+  return buildInputs(
+    c,
+    [
+      edge('c::m::SourceTop', 'c::m::TargetTop', 'field aTop'),
+      edge('c::m::SourceMid', 'c::m::TargetMid', 'field aMid'),
+      edge('c::m::SourceBot', 'c::m::TargetBot', 'field aBot'),
+    ],
+    [],
+  );
+}
+
+function transitiveBatchGeometry(): Geometry {
+  // Three forward arrows whose y-spans form a transitive conflict: top and
+  // bottom don't y-overlap each other, but middle's span covers both. The
+  // old sequential batcher walked groups by left/targetY and closed top's
+  // batch when middle didn't y-overlap, so when bottom arrived it joined a
+  // *new* batch with middle while top was already alone — leaving top's
+  // lane uncoordinated with the others. Union-find batching must put all
+  // three in one component and assign distinct lanes in barycenter order.
+  const sourceX = 20;
+  const sourceWidth = 60;
+  const targetX = 240;
+  const targetWidth = 80;
+  const ids = [
+    { source: 'c::m::SourceTop', target: 'c::m::TargetTop', sourceRowY: 80, targetY: 100 },
+    { source: 'c::m::SourceMid', target: 'c::m::TargetMid', sourceRowY: 90, targetY: 250 },
+    { source: 'c::m::SourceBot', target: 'c::m::TargetBot', sourceRowY: 300, targetY: 200 },
+  ];
+  const types: PositionedType[] = [];
+  const placedFragments: PlacedFragmentRect[] = [];
+  const typesByIdEntries: [string, PositionedType][] = [];
+
+  ids.forEach((info, index) => {
+    const row = {
+      name: `a${info.target.split('::').pop()}`,
+      tyText: info.target.split('::').pop() ?? '',
+      ownership: 'owned' as const,
+      x: sourceX + 24,
+      y: info.sourceRowY,
+      arrowSourceX: sourceX + sourceWidth - 12,
+      targets: [info.target],
+      kind: 'field' as const,
+      bucketId: null,
+    };
+    const source: PositionedType = {
+      node: { id: info.source, label: info.source } as PositionedType['node'],
+      bandId: 'c::m',
+      bandOrder: 0,
+      indexInBandOrder: index,
+      x: sourceX,
+      y: info.sourceRowY - 20,
+      width: sourceWidth,
+      headerArrowX: sourceX + 38,
+      headerHitWidth: sourceWidth,
+      height: ROW_H + FIELD_ROW_H,
+      depth: 0,
+      subrank: 0,
+      rank: 0,
+      expanded: true,
+      visibleRows: [row],
+    };
+    const target: PositionedType = {
+      node: { id: info.target, label: info.target } as PositionedType['node'],
+      bandId: 'c::m',
+      bandOrder: 1,
+      indexInBandOrder: index,
+      x: targetX,
+      y: info.targetY,
+      width: targetWidth,
+      headerArrowX: null,
+      headerHitWidth: targetWidth,
+      height: ROW_H,
+      depth: 1,
+      subrank: 0,
+      rank: 1,
+      expanded: false,
+      visibleRows: [],
+    };
+    types.push(source, target);
+    placedFragments.push(
+      placedFragment(
+        info.source,
+        sourceX,
+        source.y - ROW_H / 2,
+        sourceWidth,
+        source.height,
+        0,
+        index,
+      ),
+      placedFragment(info.target, targetX, info.targetY - ROW_H / 2, targetWidth, ROW_H, 1, index),
+    );
+    typesByIdEntries.push([info.source, source], [info.target, target]);
+  });
+
+  return {
+    types,
+    modules: [],
+    placedFragments,
+    ranks: new Map(),
+    typesById: new Map(typesByIdEntries),
+    debugGrid: {
+      originX: 0,
+      originY: 0,
+      cellWidth: BAND_GRID_CELL_W,
+      cellHeight: BAND_GRID_CELL_H,
+      width: targetX + targetWidth,
+      height: 360,
+    },
+    globalXStart: 0,
+    columnStride: 160,
+    totalWidth: targetX + targetWidth,
+    totalHeight: 360,
+  };
+}
+
+describe('routeArrows strategy selection', () => {
+  it('keeps dogleg as the default backup strategy', () => {
+    const inputs = manualRoutingInputs();
+    const geometry = manualRoutingGeometry();
+    const obstacles = computeObstacles(geometry, measure);
+
+    expect(routeArrows(geometry, obstacles, inputs, measure).arrows).toEqual(
+      routeArrowsDogleg(geometry, obstacles, inputs, measure).arrows,
+    );
+  });
+});
+
+describe('routeArrows grid routing', () => {
+  it('routes forward LCA arrows through a batched monotone lane', () => {
+    const inputs = manualRoutingInputs();
+    const geometry = manualRoutingGeometry();
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const source = geometry.typesById.get('c::m::Source');
+    const target = geometry.typesById.get('c::m::Target');
+    const row = source?.visibleRows.find((candidate) => candidate.name === 'target');
+    const arrow = routing.arrows.find((candidate) => candidate.toTypeId === 'c::m::Target');
+    const [start, sourceStub, targetStub, end] = arrow?.waypoints ?? [];
+
+    expect(arrow?.waypoints).toHaveLength(4);
+    expect(start).toEqual({ x: row?.arrowSourceX, y: row?.y });
+    expect(sourceStub?.y).toBe(row?.y);
+    expect(targetStub?.y).toBe(target?.y);
+    expect(sourceStub?.x).toBe(targetStub?.x);
+    expect(sourceStub?.x ?? 0).toBeGreaterThanOrEqual(
+      (source?.x ?? 0) + (source?.width ?? 0) + BAND_GRID_CELL_W * 0.5,
+    );
+    expect(end).toEqual({ x: target?.x, y: target?.y });
+    expect((end?.x ?? 0) - (targetStub?.x ?? 0)).toBeGreaterThanOrEqual(BAND_GRID_CELL_W * 1.5);
+    expect(targetStub?.x).toBeCloseTo((target?.x ?? 0) - BAND_GRID_CELL_W * 1.5);
+  });
+
+  it('starts left-exiting fallback rows at the source text anchor', () => {
+    const inputs = manualRoutingInputs();
+    const geometry = manualRoutingGeometry(null, ['target'], {
+      sourceDepth: 1,
+      sourceX: 220,
+      sourceWidth: 120,
+      targetDepth: 0,
+      targetX: 40,
+    });
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const arrow = routing.arrows.find((candidate) => candidate.toTypeId === 'c::m::Target');
+    const source = geometry.typesById.get('c::m::Source');
+    const row = source?.visibleRows.find((candidate) => candidate.name === 'target');
+
+    // Visible arrows originate from the member text anchor. Later routing
+    // rules may use block boundaries as ports, but the rendered start remains
+    // tied to the row that owns the relationship.
+    expect(arrow?.waypoints[0]).toEqual({ x: row?.x, y: row?.y });
+    expect(routeIsOrthogonal(arrow?.waypoints ?? [])).toBe(true);
+  });
+
+  it('moves a forward LCA lane away from a non-endpoint obstacle', () => {
+    const inputs = manualRoutingInputs();
+    const wall = placedFragment('c::m::Wall', 128, 112, 40, 32, 0, 2);
+    const geometry = manualRoutingGeometry(wall);
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const arrow = routing.arrows.find((candidate) => candidate.toTypeId === 'c::m::Target');
+
+    // This is still monotone lane routing rather than maze routing: it keeps
+    // the dogleg shape, but the lane scorer must avoid obvious blockers.
+    expect(routeIntersectsRect(arrow?.waypoints ?? [], wall)).toBe(false);
+  });
+
+  it('keeps two y-overlapping arrows on distinct columns when both stubs hit the same obstacle', () => {
+    // Regression: when several arrows in one batch have their stubs blocked
+    // by the same obstacle, the per-group lane scorer used to push every
+    // affected lane to that obstacle's right edge — collapsing them onto a
+    // single column even though their y-spans clearly overlap. Visual
+    // collision (a y-overlapping pair within MIN_LANE_SEP) must outweigh an
+    // obstacle-crossing fallback so the lanes spread apart even at the cost
+    // of one cutting through the wall.
+    const inputs = manualRoutingInputs();
+    // Wall sits between source and target with y range covering target.y =
+    // 160. Both rows route to the same target, but to expose the
+    // convergence bug we use distinct targets at the same x; here the test
+    // uses two same-target field rows which previously collapsed onto one
+    // lane only because both stubs hit the wall, not because they merged
+    // by toTypeId. Use the multi-target geometry with two rows + wall.
+    const wall = placedFragment('c::m::Wall', 130, 96, 30, 96, 0, 4);
+    const base = multiTargetRoutingGeometry(2);
+    const geometry: Geometry = { ...base, placedFragments: [...base.placedFragments, wall] };
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const trunkXs = routing.arrows
+      .map((arrow) => verticalTrunkX(arrow.waypoints))
+      .sort((a, b) => a - b);
+
+    // Two arrows, two distinct trunks. Without the y-overlap-aware scorer
+    // both used to land on wall.right + 0.5g.
+    expect(routing.arrows).toHaveLength(2);
+    expect(new Set(trunkXs).size).toBe(2);
+    expect((trunkXs[1] ?? 0) - (trunkXs[0] ?? 0)).toBeGreaterThanOrEqual(BAND_GRID_CELL_W);
+  });
+
+  it('prefers a 1-collision detour over cutting through an obstacle on the target stub', () => {
+    // Regression for the "blue arrow cuts through arrowheads" case (the
+    // user's image #7): two arrows from one source share the corridor, and
+    // only one alternative X (the target-side escape) is obstacle-free.
+    // Putting the second trunk at its preferred X would route its target
+    // stub through a non-endpoint block; tolerating one stacked collision
+    // with the first arrow keeps both stubs clean. Quadratic collision
+    // cost makes this trade flip from "OK" at one collision to "not OK"
+    // at two.
+    const inputs = multiTargetRoutingInputs(2);
+    // Wall sits at the second target's y-row level; a trunk anywhere left
+    // of wall.right would have its target stub at target1.y cut through.
+    const wall = placedFragment('c::m::Wall', 130, 88, 60, 8, 0, 4);
+    const base = multiTargetRoutingGeometry(2);
+    const geometry: Geometry = { ...base, placedFragments: [...base.placedFragments, wall] };
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    for (const arrow of routing.arrows) {
+      // Constraint #7: no segment crosses a non-endpoint obstacle. Even
+      // the second arrow (which would prefer a leftward trunk) must reach
+      // a clean column rather than slicing through the wall on its stub.
+      expect(routeIntersectsRect(arrow.waypoints, wall)).toBe(false);
+    }
+  });
+
+  it('routes the horizontal target stub around a non-endpoint obstacle at target.y', () => {
+    // Regression: the lane scorer used to consider only the vertical-trunk
+    // crossing. A wall sharing target.y between source and target was
+    // sidestepped by the trunk (which moved off the wall's column) but the
+    // horizontal target stub at target.y still ran straight through the
+    // wall on its way east. Constraint #7 covers the whole path, so the
+    // scorer must reject any candidate whose stub crosses the obstacle and
+    // pick a column east of the wall instead.
+    const inputs = manualRoutingInputs();
+    // target.y in manualRoutingGeometry is 160; wall y-range [148, 172]
+    // covers it. Wall x-range [130, 160] sits inside the corridor between
+    // source (right=90) and target (left=200), so a leftward-pushed trunk
+    // would cleanly pass the vertical check but leave the stub crossing.
+    const wall = placedFragment('c::m::Wall', 130, 148, 30, 24, 0, 2);
+    const geometry = manualRoutingGeometry(wall);
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const arrow = routing.arrows.find((candidate) => candidate.toTypeId === 'c::m::Target');
+    const trunkX = verticalTrunkX(arrow?.waypoints ?? []);
+
+    expect(arrow).toBeDefined();
+    expect(routeIntersectsRect(arrow?.waypoints ?? [], wall)).toBe(false);
+    // The trunk is pushed east of the wall (with the 0.5g corner clearance)
+    // so the target stub clears it; without the stub-aware scorer the trunk
+    // would land on the wall's left edge and cut through.
+    expect(trunkX).toBeGreaterThanOrEqual(wall.x + wall.width);
+  });
+
+  it('routes around incompatible source and target stub blockers with extra bends', () => {
+    // A single-dogleg router cannot clear both blockers: a left trunk keeps
+    // the source stub clean but cuts through WallB at target.y, while a right
+    // trunk keeps the target stub clean but cuts through WallA at source.y.
+    // Grid routing owns obstacle avoidance, so it should emit an orthogonal
+    // detour through open grid space instead of marking either cut as normal.
+    const inputs = manualRoutingInputs();
+    const wallA = placedFragment('c::m::WallA', 140, 88, 48, 24, 0, 2);
+    const wallB = placedFragment('c::m::WallB', 220, 148, 48, 24, 0, 3);
+    const base = manualRoutingGeometry(null, ['target'], { sourceWidth: 80, targetX: 320 });
+    const geometry: Geometry = {
+      ...base,
+      placedFragments: [...base.placedFragments, wallA, wallB],
+    };
+
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const arrow = routing.arrows.find((candidate) => candidate.toTypeId === 'c::m::Target');
+
+    expect(arrow).toBeDefined();
+    expect(arrow?.waypoints.length ?? 0).toBeGreaterThan(4);
+    expect(routeIntersectsRect(arrow?.waypoints ?? [], wallA)).toBe(false);
+    expect(routeIntersectsRect(arrow?.waypoints ?? [], wallB)).toBe(false);
+    expect(finalTargetApproachStartX(arrow?.waypoints ?? [])).toBeLessThanOrEqual(
+      320 - BAND_GRID_CELL_W * 1.5,
+    );
+    expect(routing.debug.routing.lanes.some((lane) => lane.blocked)).toBe(false);
+  });
+
+  it('merges same-target forward LCA rows onto one vertical lane', () => {
+    const inputs = manualRoutingInputs();
+    const geometry = manualRoutingGeometry(null, ['first', 'second', 'third'], {
+      sourceWidth: 80,
+      targetX: 160,
+    });
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const trunkXs = routing.arrows.map((arrow) => verticalTrunkX(arrow.waypoints));
+
+    expect(routing.arrows).toHaveLength(3);
+    expect(new Set(trunkXs).size).toBe(1);
+  });
+
+  it('splits different forward LCA targets into deterministic corridor lanes', () => {
+    const inputs = multiTargetRoutingInputs(4);
+    const geometry = multiTargetRoutingGeometry(4);
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const trunkXs = routing.arrows
+      .map((arrow) => verticalTrunkX(arrow.waypoints))
+      .sort((a, b) => a - b);
+
+    expect(routing.arrows).toHaveLength(4);
+    expect(new Set(trunkXs).size).toBe(4);
+    expect(trunkXs).toEqual([164, 172, 180, 188]);
+  });
+
+  it('shares lanes by target without collapsing different targets into that lane', () => {
+    const inputs = mixedFanInRoutingInputs();
+    const geometry = mixedFanInRoutingGeometry();
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const targetATrunks = routing.arrows
+      .filter((arrow) => arrow.toTypeId === 'c::m::TargetA')
+      .map((arrow) => verticalTrunkX(arrow.waypoints));
+    const targetBTrunks = routing.arrows
+      .filter((arrow) => arrow.toTypeId === 'c::m::TargetB')
+      .map((arrow) => verticalTrunkX(arrow.waypoints));
+
+    expect(targetATrunks).toHaveLength(2);
+    expect(targetBTrunks).toHaveLength(1);
+    expect(new Set(targetATrunks).size).toBe(1);
+    expect(Math.abs((targetBTrunks[0] ?? 0) - (targetATrunks[0] ?? 0))).toBeGreaterThanOrEqual(
+      BAND_GRID_CELL_W,
+    );
+  });
+
+  it('right-packs lanes unless a non-endpoint obstacle forces an escape lane', () => {
+    // SourceLeft's right-packed stub would cut through SourceRight's block.
+    // The router should keep SourceRight's clear right-packed lane, while
+    // routing SourceLeft on an escape lane that avoids the non-endpoint block.
+    const inputs = offsetSourcesInputs();
+    const geometry = offsetSourcesGeometry();
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const targetA = geometry.typesById.get('c::m::TargetA');
+    const arrowToA = routing.arrows.find((a) => a.toTypeId === 'c::m::TargetA');
+    const arrowToB = routing.arrows.find((a) => a.toTypeId === 'c::m::TargetB');
+    const trunkToA = verticalTrunkX(arrowToA?.waypoints ?? []);
+    const trunkToB = verticalTrunkX(arrowToB?.waypoints ?? []);
+    const sourceRightObstacle = geometry.placedFragments.find(
+      (fragment) => fragment.typeId === 'c::m::SourceRight',
+    );
+    if (sourceRightObstacle === undefined) throw new Error('missing SourceRight obstacle');
+
+    const targetLeft = targetA?.x ?? 0;
+    expect(trunkToB).toBeCloseTo(targetLeft - BAND_GRID_CELL_W * 1.5);
+    expect(trunkToA).toBeLessThan(sourceRightObstacle.x);
+    expect(routeIntersectsRect(arrowToA?.waypoints ?? [], sourceRightObstacle)).toBe(false);
+  });
+
+  it('batches transitive y-conflicts so all three lanes coordinate', () => {
+    // Regression: the old sequential batcher walked groups left-to-right
+    // and could close a batch before reaching a later group that conflicted
+    // with both the current and previous batch. Top and bottom arrows here
+    // don't y-overlap each other but middle's y-span covers both — so all
+    // three must share one batch and assign distinct lanes in barycenter
+    // order. Without union-find batching, top would land alone at its
+    // singleton centerline while middle and bottom shared a separate
+    // corridor, and top's lane would not respect the others.
+    const inputs = transitiveBatchInputs();
+    const geometry = transitiveBatchGeometry();
+    const routing = routeArrows(geometry, computeObstacles(geometry, measure), inputs, measure, {
+      algorithm: 'grid',
+    });
+    const trunkTop = verticalTrunkX(
+      routing.arrows.find((a) => a.toTypeId === 'c::m::TargetTop')?.waypoints ?? [],
+    );
+    const trunkMid = verticalTrunkX(
+      routing.arrows.find((a) => a.toTypeId === 'c::m::TargetMid')?.waypoints ?? [],
+    );
+    const trunkBot = verticalTrunkX(
+      routing.arrows.find((a) => a.toTypeId === 'c::m::TargetBot')?.waypoints ?? [],
+    );
+
+    // Barycenters still define deterministic processing order, but lanes are
+    // now right-packed next to the target column: Top gets the rightmost lane,
+    // Mid one lane left, Bot the next lane left.
+    expect(trunkTop).toBe(228);
+    expect(trunkMid).toBe(220);
+    expect(trunkBot).toBe(212);
+  });
+});
 
 describe('routeArrows dogleg routing', () => {
   it('routes LCA-forward ownership as source right to target left', () => {

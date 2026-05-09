@@ -354,109 +354,64 @@ representation so diagnostics do not dominate paint cost.
 
 ## Arrow Routing
 
-Arrows route after physical placement. Routing should consume the same
-obstacle rectangles used by placement, but it must not feed back into physical
-placement. Layout owns block positions. Routing owns only the path chosen
-between already-placed endpoints.
+Arrows route after physical placement. Routing consumes the same obstacle
+rectangles used by placement and must not feed back into it: layout owns block
+positions, routing owns only the path chosen between already-placed endpoints.
 
-Every arrow uses one dogleg shape:
+This section lists the hard constraints any routing implementation must
+satisfy. Algorithm choice is open as long as every constraint holds.
 
-```text
-source -> horizontal stub -> vertical trunk -> horizontal stub -> target
-```
+There are three routing classes: **forward LCA**, **backward LCA**, and
+**other** (method, re-export). Constraints below are scoped to forward LCA;
+backward LCA and other classes are deferred and will be specified after the
+forward-LCA contract is settled.
 
-For expanded row arrows, the row anchor and the route port are distinct. The
-row anchor stays at the field/method text so focus and hit behavior stays
-semantic. The dogleg may leave from either side of that member row depending
-on the route class and geometry; its route port is on the chosen source-side
-boundary. Only the short connector from the row anchor to that boundary is
-allowed to touch the source block; the vertical trunk must still be scored
-against source occupancy. This prevents long upward/downward routes from
-cutting through an expanded source block's text.
+### Forward LCA constraints
 
-Do not add maze routing, multi-detour paths, or a second placement pass for
-routing pressure. This keeps routing deterministic and makes bad routes visible
-as route quality/debug data instead of hiding them by moving blocks.
+Per-arrow constraints (each arrow individually):
 
-There are three routing classes:
+1. Visible start = source row's text anchor.
+2. Visible end = target's left side at `target.y`.
+3. All segments are axis-aligned.
+4. Trunk X ≥ `source.right + 0.5` grid cell (corner clearance; no source-side
+   arrowhead).
+5. Trunk X ≤ `target.left − 1.5` grid cells (1 grid for the arrowhead glyph
+   plus 0.5 grid for the corner).
+6. Strict rightward monotonicity: every X coordinate along the path satisfies
+   `source.x ≤ X ≤ target.x`.
+7. The path does not pass through any non-endpoint obstacle rectangle (other
+   types' block + protrusion fragments).
 
-- **LCA forward arrows**: ownership edges that must travel forward. They start
-  from the source right side and end on the target left side.
-- **LCA backward arrows**: ownership/cyclic edges that do not have the forward
-  LCA source-side constraint. They may leave from either side of the source
-  member row, but they still end on the target left side.
-- **Other arrows**: non-LCA edges such as function relationships. They may use
-  either source member-row side based on the current relative source/target
-  positions, but they still end on the target left side.
+Pairwise constraints (between any two forward-LCA arrows):
 
-Target landing is invariant across all route classes: the final horizontal
-stub must move rightward into the target's left side. Do not land on the
-target's right side, because that makes the route cut across the target block
-from right to left.
+8. Two arrows with the same target type may share a trunk column; they must
+   not be forced apart.
+9. Two arrows with different target types whose trunks' y-spans overlap must
+   use trunk Xs at least one minimum-separation apart.
+10. Two arrows with different target types whose trunks' y-spans do not
+    overlap have no positional constraint between them.
+11. No two arrows produce a trunk-vs-trunk crossing (one arrow's vertical
+    segment intersecting the other's vertical, or one's vertical intersecting
+    the other's horizontal stub inside the corridor).
 
-The edge class decides which side pairs are legal. The scorer then chooses the
-best vertical trunk for the legal side pair:
+Global constraints:
 
-```text
-classify edge
-produce legal side-pair candidates
-score dogleg trunk candidates against grid occupancy
-choose the lowest-cost deterministic candidate
-emit route quality/debug metadata
-```
+12. Routing is a pure deterministic function of (geometry, obstacles, route
+    requests): same input → byte-identical output. Tiebreakers are explicit
+    and stable.
+13. Routing does not modify placement.
+14. When a constraint cannot be satisfied (corridor too narrow, unavoidable
+    obstacle, capacity exceeded), the route is still emitted with the
+    violating lane marked `blocked: true` rather than aborting or searching
+    unboundedly.
 
-For LCA-forward arrows, direction is a hard invariant. A forward LCA route
-must leave the source's right side, keep moving right, and enter the target's
-left side from the left. If the physical positions leave no legal monotonic
-dogleg interval, report a routing/layout violation. Do not silently flip the
-side pair to make the edge draw.
+### Backward LCA constraints
 
-For backward and other arrows, choose the source side from physical geometry:
+To be defined.
 
-- target clearly right of source: try source-right first
-- target clearly left of source: try source-left first
-- overlapping or ambiguous x-ranges: score both source sides and choose the
-  lower-cost route, while preserving target-left landing
+### Other-class constraints
 
-Dogleg trunk selection should operate primarily in grid cells. Candidate trunks
-are scored by how much they cut through occupied space and how much ambiguity
-they create:
-
-- crossing a box's own grid cells is expensive
-- crossing a row/text own area is expensive
-- crossing clearance-only space is cheap, because clearance is routing space
-- crossing another arrow is expensive unless the intersection is a shared
-  endpoint/corner; ordered source/target rows should keep their doglegs ordered
-  instead of cutting through each other
-- overlapping another vertical trunk with an overlapping y-range is expensive,
-  especially for LCA forward arrows, unless both routes enter the same target
-- sharing or nearly sharing horizontal stubs at the same source or target is
-  allowed and should be cheap
-
-If multiple doglegs still need the same vertical trunk lane, or the scorer
-pushes them into neighboring lanes inside the same narrow corridor, keep that
-as one routing decision and assign small deterministic visual subtracks inside
-the corridor. Different-target subtracks should use real grid-lane spacing
-when the corridor has room; falling back to tiny pixel offsets should be an
-overflow condition, not the normal case. The subtracks are a readability step
-only and must not feed back into block placement or cause a new routing pass.
-
-Same-target fan-in arrows are allowed to reuse the same dogleg lane. They still
-pay normal obstacle cost, but they should not count as arrow-crossing or
-vertical-trunk conflicts against each other, because overlapping routes with
-the same destination are intentional fan-in rather than ambiguous competing
-paths. Same-target reuse should happen inside normal route candidate scoring,
-not as a separate rendering-only bundle.
-
-The router may still cut through occupied cells when no clean dogleg exists.
-In that case it must choose the least-bad route deterministically and expose
-the cut cost in debug output. Cutting through blocks is an overflow condition,
-not the normal case.
-
-Rounded dogleg corners consume space. With a two-grid-cell object clearance,
-the default corner radius should be one grid cell. Candidate horizontal stubs
-must have enough room for that radius; otherwise the route should be scored as
-bad or reported as a violation.
+To be defined.
 
 ## Non-Rank Items
 
@@ -483,13 +438,12 @@ Any significant layout change should add or update tests for these invariants:
   including type expand chevrons
 - debug overlay rectangles match the real placement/routing obstacle model
 - routing does not change physical block placement
-- LCA forward arrows always start from the source right side, end on the target
-  left side, and remain forward-monotonic
-- LCA backward arrows and other arrows may choose either source member-row side
-  from physical source/target positions, but still end on the target left side
-- every arrow's final horizontal segment enters the target from the left and
-  moves rightward into the target
-- arrow vertical trunks do not overlap other vertical trunks with overlapping
-  y-ranges unless the router explicitly reports a compressed/overflow condition
-- arrows do not pass through occupied own rectangles unless the router
-  explicitly reports an overflow/debug condition
+- the direct grid baseline emits one segment per arrow, starting at the source
+  text anchor and landing on the target left side
+- future orthogonal routing rules preserve target-left landing and, when they
+  add a final horizontal stub, that stub moves rightward into the target
+- future lane-routing rules do not overlap unrelated vertical trunks with
+  overlapping y-ranges unless the router explicitly reports a compressed or
+  overflow condition
+- future obstacle-avoidance rules do not pass through occupied own rectangles
+  unless the router explicitly reports an overflow/debug condition

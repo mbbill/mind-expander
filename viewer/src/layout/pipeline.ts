@@ -16,11 +16,12 @@ import type {
 import { type Geometry, computeGeometry } from './geometry.ts';
 import { computeObstacles } from './obstacles.ts';
 import { type PlacementLayoutPlan, buildPlacementLayoutPlan } from './placement_plan.ts';
-import { type RoutingResult, routeArrows } from './routing.ts';
+import { type RoutingAlgorithm, type RoutingResult, routeArrows } from './routing.ts';
 import type { PositionedType } from './types.ts';
 
 export interface LayoutBuildInputs extends LayoutInputs {
   readonly placementPlan?: PlacementLayoutPlan;
+  readonly routingAlgorithm?: RoutingAlgorithm;
 }
 
 export function buildLayout(inputs: LayoutBuildInputs): Layout {
@@ -38,7 +39,10 @@ function runLayoutPass(
 ): readonly [Geometry, RoutingResult] {
   const geometry = computeGeometry(inputs, { placementPlan });
   const obstacles = computeObstacles(geometry, measure);
-  const routing = routeArrows(geometry, obstacles, inputs, measure);
+  const routing =
+    inputs.routingAlgorithm === undefined
+      ? routeArrows(geometry, obstacles, inputs, measure)
+      : routeArrows(geometry, obstacles, inputs, measure, { algorithm: inputs.routingAlgorithm });
 
   return [geometry, routing];
 }
@@ -101,5 +105,10 @@ function toTypeBoxes(geometry: Geometry): TypeBox[] {
 
 function buildFieldRows(t: PositionedType): FieldRow[] {
   if (!t.expanded) return [];
-  return t.visibleRows.map((r): FieldRow => ({ ...r }));
+  return t.visibleRows.map(
+    (r): FieldRow => ({
+      ...r,
+      memberDriftClass: r.memberDriftClass ?? null,
+    }),
+  );
 }

@@ -1,5 +1,5 @@
 import { computeDrift } from './analysis/drift.ts';
-import type { Layout } from './analysis/layout_model.ts';
+import { type Layout, rowArrowKey } from './analysis/layout_model.ts';
 import { type TreeNode, buildModuleTree } from './analysis/module_tree.ts';
 import {
   type OwnershipIndex,
@@ -10,6 +10,7 @@ import { FactsLoadError, loadFacts } from './data/load.ts';
 import type { Facts } from './data/schema.ts';
 import { buildLayout } from './layout/pipeline.ts';
 import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
+import type { RoutingAlgorithm } from './layout/routing.ts';
 import { ViewState } from './state/view_state.ts';
 import { anchorTranslation } from './view/anchor.ts';
 import { createArrowDisambig } from './view/arrow_disambig.ts';
@@ -27,6 +28,12 @@ import {
   renderEdgeShadows,
   renderTree,
 } from './view/tree.ts';
+import {
+  ancestorModuleIds,
+  forwardRoutedTargetModulesFor,
+  memberArrowRowsForType,
+  targetModulesForMemberRow,
+} from './view/type_expansion.ts';
 import { attachZoom } from './view/zoom.ts';
 
 const FACTS_URL = '/data/facts.json';
@@ -35,6 +42,7 @@ const SCALE_MAX = 1.5;
 // Padding factor so content doesn't kiss the viewport edge at the fit scale.
 const FIT_PADDING = 0.95;
 const INPUT_MODE_KEY = 'mind-expander.input-mode';
+const ROUTING_ALGORITHM_KEY = 'mind-expander.routing-algorithm';
 // The layout pipeline is active here. Renderer-facing data contracts live in
 // `analysis/layout_model.ts`; removed algorithm files should not be
 // reintroduced as compatibility shims.
@@ -96,6 +104,7 @@ interface RenderCtx {
 }
 
 let currentCtx: RenderCtx | null = null;
+let routingAlgorithm: RoutingAlgorithm = readStoredRoutingAlgorithm();
 
 void main();
 
@@ -354,17 +363,15 @@ async function main(): Promise<void> {
       // In focus mode, derive a render-time filter from the current selection.
       // ViewState is left alone — focus is purely a layout-input override.
       const focus = currentCtx?.focusMode ? computeFocus(currentCtx) : null;
-      // Method arrows are opt-in. The set the layout consumes is
-      // simply the method-kind subset of selectedFields, re-keyed as
-      // `${typePath}\x1F${methodName}` (no kind segment, since the
-      // layout already knows the target rows are methods). Field
-      // entries are skipped — fields keep their always-on arrows.
+      // Member arrows are opt-in: selecting a row asks layout to emit that
+      // row's arrow, selecting it again removes the key so redraw hides it.
+      const fieldArrowsShown = new Set<string>();
       const methodArrowsShown = new Set<string>();
       for (const k of selectedFields) {
         const parsed = parseFieldKey(k);
-        if (parsed.kind === 'method') {
-          methodArrowsShown.add(`${parsed.typePath}\x1F${parsed.fieldName}`);
-        }
+        const rowKey = rowArrowKey(parsed.typePath, parsed.fieldName);
+        if (parsed.kind === 'method') methodArrowsShown.add(rowKey);
+        else fieldArrowsShown.add(rowKey);
       }
       const buildArgs = {
         staticRoot,
@@ -375,8 +382,13 @@ async function main(): Promise<void> {
         measureText,
         placementPlan,
         ghostArrowsShown,
+        fieldArrowsShown,
         methodArrowsShown,
         methodsHidden: currentCtx?.methodsHidden ?? false,
+        // Route strategy is a layout-owned choice. Keeping it in build inputs
+        // lets the renderer consume the same Arrow contract while we compare
+        // the new grid router against the dogleg fallback.
+        routingAlgorithm,
         ...(focus ? { focusModules: focus.modules } : {}),
       };
       lastLayout = buildLayout(buildArgs);
@@ -408,7 +420,13 @@ async function main(): Promise<void> {
           const wasExpanded = state.isExpanded(id);
           state.toggle(id);
           if (!wasExpanded && typeIdSet.has(id)) {
-            for (const moduleId of targetModulesFor(id, ownership, crateName)) {
+            for (const moduleId of forwardRoutedTargetModulesFor(
+              id,
+              ownership,
+              depth,
+              drift,
+              crateName,
+            )) {
               state.expand(moduleId);
             }
           }
@@ -422,10 +440,52 @@ async function main(): Promise<void> {
             layers.translateBy(delta.dx, delta.dy, true);
           }
         },
+        onToggleTypeMembers: (typePath) => {
+          const before = lookupPoint(lastLayout, typePath);
+          const wasExpanded = state.isExpanded(typePath);
+          state.toggle(typePath);
+          const rows = memberArrowRowsForType(typePath, ownership);
+          if (wasExpanded) {
+            for (const row of rows)
+              selectedFields.delete(fieldKey(typePath, row.rowName, row.rowKind));
+          } else {
+            // Chevron-open means "open this type for inspection": show every
+            // member arrow and expand each target module so the arrows have
+            // visible endpoints immediately.
+            for (const row of rows) {
+              selectedFields.add(fieldKey(typePath, row.rowName, row.rowKind));
+              for (const moduleId of targetModulesForMemberRow(
+                typePath,
+                row.rowName,
+                row.rowKind,
+                ownership,
+                crateName,
+              )) {
+                state.expand(moduleId);
+              }
+            }
+          }
+          draw();
+          const after = lookupPoint(lastLayout, typePath);
+          const delta = anchorTranslation(before, after);
+          if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
+        },
         onSelectField: (typePath, fieldName, kind) => {
           const key = fieldKey(typePath, fieldName, kind);
-          if (selectedFields.has(key)) selectedFields.delete(key);
-          else selectedFields.add(key);
+          if (selectedFields.has(key)) {
+            selectedFields.delete(key);
+          } else {
+            selectedFields.add(key);
+            for (const moduleId of targetModulesForMemberRow(
+              typePath,
+              fieldName,
+              kind,
+              ownership,
+              crateName,
+            )) {
+              state.expand(moduleId);
+            }
+          }
           draw();
         },
         onShowOwners: (typePath, getDotScreenPos) => {
@@ -465,15 +525,18 @@ async function main(): Promise<void> {
             ghostArrowsShown.add(ghostId);
             for (const m of ancestorModuleIds(target, crateName)) state.expand(m);
             state.expand(target);
-            // Mirror onToggle's "auto-expand owned modules" step. When the
-            // target type expands, its field arrows want to land on the
-            // types it owns; without this, those modules stay collapsed
-            // and the arrows can't be drawn until the user toggles the
-            // type expansion themselves. (Reproducer: re-export `Instance`
-            // — first follow shows Instance.fields but no arrow on
-            // `store`; collapse-then-expand fills it in via onToggle.)
+            // Mirror type-toggle's forward-LCA target expansion so a followed
+            // ghost exposes the same routeable forward ownership arrows as a
+            // direct click on the canonical type, without opening backward or
+            // drift target modules.
             if (typeIdSet.has(target)) {
-              for (const moduleId of targetModulesFor(target, ownership, crateName)) {
+              for (const moduleId of forwardRoutedTargetModulesFor(
+                target,
+                ownership,
+                depth,
+                drift,
+                crateName,
+              )) {
                 state.expand(moduleId);
               }
             }
@@ -698,47 +761,18 @@ function computeFocus(ctx: RenderCtx): { modules: ReadonlySet<string> } {
   }
 
   for (const k of selectedFields) {
-    const sep = k.lastIndexOf('::');
-    const typePath = k.slice(0, sep);
-    const fieldName = k.slice(sep + 2);
-    addAncestors(typePath);
-    const targets = ownership.fieldTargets.get(typePath)?.get(fieldName);
+    const parsed = parseFieldKey(k);
+    addAncestors(parsed.typePath);
+    const targets =
+      parsed.kind === 'method'
+        ? ownership.methodTargets.get(parsed.typePath)?.get(parsed.fieldName)
+        : ownership.fieldTargets.get(parsed.typePath)?.get(parsed.fieldName);
     if (targets) {
       for (const t of targets) addAncestors(t);
     }
   }
 
   return { modules };
-}
-
-// All module ids on the path to (and including) every field target's owning
-// module — these need to be expanded for arrow targets to appear in the layout.
-function targetModulesFor(typeId: string, ownership: OwnershipIndex, crateName: string): string[] {
-  const out = new Set<string>();
-  const fields = ownership.fieldTargets.get(typeId);
-  if (!fields) return [];
-  for (const targets of fields.values()) {
-    for (const targetFullPath of targets) {
-      for (const id of ancestorModuleIds(targetFullPath, crateName)) {
-        out.add(id);
-      }
-    }
-  }
-  return [...out];
-}
-
-// `crate::a::b::Type` → [`crate`, `crate::a`, `crate::a::b`].
-function ancestorModuleIds(typeFullPath: string, crateName: string): string[] {
-  const segments = typeFullPath.split('::');
-  if (segments[0] !== crateName || segments.length < 2) return [];
-  const ids = [crateName];
-  let path = '';
-  for (let i = 1; i < segments.length - 1; i++) {
-    const seg = segments[i] ?? '';
-    path = path === '' ? seg : `${path}::${seg}`;
-    ids.push(`${crateName}::${path}`);
-  }
-  return ids;
 }
 
 function lookupY(layout: Layout | null, id: string): number | null {
@@ -929,9 +963,12 @@ function setupInputSettings(controller: InputController): void {
   const body = document.querySelector<HTMLElement>('#settings-body');
   const inputModeCheckbox = document.querySelector<HTMLInputElement>('#settings-trackpad-mode');
   const debugLayoutCheckbox = document.querySelector<HTMLInputElement>('#settings-debug-layout');
+  const gridRoutingCheckbox = document.querySelector<HTMLInputElement>('#settings-grid-routing');
   const summary = document.querySelector<HTMLElement>('#settings-input-summary');
   const defaultBadge = document.querySelector<HTMLElement>('#settings-input-default');
-  if (!toggle || !body || !inputModeCheckbox || !summary || !defaultBadge) return;
+  if (!toggle || !body || !inputModeCheckbox || !gridRoutingCheckbox || !summary || !defaultBadge) {
+    return;
+  }
 
   let expanded = sessionStorage.getItem('mind-expander.settings.expanded') === '1';
   const applyExpanded = (): void => {
@@ -951,10 +988,14 @@ function setupInputSettings(controller: InputController): void {
   const renderDebugLayout = (): void => {
     if (debugLayoutCheckbox) debugLayoutCheckbox.checked = layoutDebugEnabled();
   };
+  const renderRoutingAlgorithm = (): void => {
+    gridRoutingCheckbox.checked = routingAlgorithm === 'grid';
+  };
 
   applyExpanded();
   renderMode();
   renderDebugLayout();
+  renderRoutingAlgorithm();
   toggle.addEventListener('click', () => {
     expanded = !expanded;
     applyExpanded();
@@ -968,6 +1009,17 @@ function setupInputSettings(controller: InputController): void {
     renderDebugLayout();
     currentCtx?.draw();
   });
+  gridRoutingCheckbox.addEventListener('change', () => {
+    routingAlgorithm = gridRoutingCheckbox.checked ? 'grid' : 'dogleg';
+    localStorage.setItem(ROUTING_ALGORITHM_KEY, routingAlgorithm);
+    renderRoutingAlgorithm();
+    currentCtx?.draw();
+  });
+}
+
+function readStoredRoutingAlgorithm(): RoutingAlgorithm {
+  const stored = localStorage.getItem(ROUTING_ALGORITHM_KEY);
+  return stored === 'dogleg' || stored === 'grid' ? stored : 'grid';
 }
 
 function detectDefaultInputMode(): InputMode {

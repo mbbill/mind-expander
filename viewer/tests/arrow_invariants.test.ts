@@ -13,6 +13,7 @@ import { canonicalize } from '../src/data/canonicalize.ts';
 import type { Facts } from '../src/data/schema.ts';
 import { computeGeometry } from '../src/layout/geometry.ts';
 import { type ObstacleMap, computeObstacles } from '../src/layout/obstacles.ts';
+import { buildLayout } from '../src/layout/pipeline.ts';
 import { type RoutingResult, routeArrows } from '../src/layout/routing.ts';
 import type { Obstacle } from '../src/layout/types.ts';
 import { ViewState } from '../src/state/view_state.ts';
@@ -321,5 +322,57 @@ describe('arrow direction invariants — sf-nano-core crate', () => {
     // fallback lanes. This assertion keeps those explicit: ordinary routes
     // must clear obstacles, and any crossing without fallback metadata fails.
     expect(unexpected).toEqual([]);
+  });
+
+  it('grid router stays bounded on the fully expanded sf-nano-core graph', () => {
+    // The grid router is experimental, but it still owns interaction latency
+    // when enabled. This regression catches accidental dense full-screen
+    // searches over the real crate graph.
+    const started = performance.now();
+    const layout = buildLayout({ ...inputs, routingAlgorithm: 'grid' });
+    const elapsedMs = performance.now() - started;
+
+    expect(layout.arrows.length).toBeGreaterThan(0);
+    expect(elapsedMs).toBeLessThan(1_000);
+  });
+
+  it('grid router keeps different-target forward lanes separate in the module entity corridor', () => {
+    const layout = buildLayout({ ...inputs, routingAlgorithm: 'grid' });
+    // Reproduces the real graph corridor where separate Module collection
+    // fields currently collapse onto the same vertical lane even though they
+    // point at different targets and their vertical spans overlap.
+    const memoryArrow = layout.arrows.find(
+      (a) =>
+        a.fromTypeId === 'sf-nano-core::module::Module' &&
+        a.fromFieldName === 'memories' &&
+        a.toTypeId === 'sf-nano-core::module::entities::Memory',
+    );
+    const tagArrow = layout.arrows.find(
+      (a) =>
+        a.fromTypeId === 'sf-nano-core::module::Module' &&
+        a.fromFieldName === 'tags' &&
+        a.toTypeId === 'sf-nano-core::module::entities::Tag',
+    );
+
+    expect(memoryArrow).toBeDefined();
+    expect(tagArrow).toBeDefined();
+
+    const memoryTrunk = verticalTrunkSegment(memoryArrow?.waypoints ?? []);
+    const tagTrunk = verticalTrunkSegment(tagArrow?.waypoints ?? []);
+    if (memoryTrunk === null || tagTrunk === null) {
+      throw new Error('expected both fixture arrows to have vertical routing trunks');
+    }
+
+    const [memoryFrom, memoryTo] = memoryTrunk;
+    const [tagFrom, tagTo] = tagTrunk;
+    expect(
+      rangesOverlap(
+        Math.min(memoryFrom.y, memoryTo.y),
+        Math.max(memoryFrom.y, memoryTo.y),
+        Math.min(tagFrom.y, tagTo.y),
+        Math.max(tagFrom.y, tagTo.y),
+      ),
+    ).toBe(true);
+    expect(memoryFrom.x).not.toBe(tagFrom.x);
   });
 });

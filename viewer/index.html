@@ -35,11 +35,10 @@
       #tree.viewport-dragging:active {
         cursor: move;
       }
-      /* Arrows render subdued by default so dense diagrams stay readable;
-         hover or selection brings them forward via the .highlighted class
-         (see tree.ts for class-toggling). The widened contrast between
-         default and highlighted makes "what am I currently examining"
-         pop without losing the arrow set's structure.
+      /* Arrows render subdued by default so dense diagrams stay readable.
+         Selection brings them forward via opacity and, for canonical arrows,
+         color only. Width is reserved for hover so clicking a member does not
+         make the route jump visually.
          path.visible carries the visual stroke; path.hit is a transparent
          wider sibling that catches clicks (see tree.ts). pointer-events
          is split so only .hit reacts — no double-fires. */
@@ -52,22 +51,23 @@
       }
       #tree g.arrows path.visible.highlighted {
         opacity: 1;
-        stroke-width: 1.5;
+      }
+      /* Canonical ownership arrows are structural background. Keep them
+         shallower at idle; selection still promotes them to full-opacity blue,
+         while drift/re-export/method arrows keep their own emphasis. */
+      #tree g.arrows path.visible.canonical:not(.method):not(.reexport):not(.highlighted) {
+        opacity: 0.45;
       }
       /* Method-reference arrows render dashed (`2 2`): roughly half the
          pixel coverage of solid lines, so default 0.7 opacity makes
-         them faint. Boost idle visibility, then boost more when
-         highlighted — without this, the `.method` rule's stroke-width
-         silently overrides the `.highlighted` rule (same specificity,
-         later in the file), so chain selection ends up barely
-         visible on method rows. */
+         them faint. Boost idle visibility; selection only changes opacity
+         and color, matching ownership arrows. */
       #tree g.arrows path.visible.method {
         opacity: 0.95;
         stroke-width: 1.25;
       }
       #tree g.arrows path.visible.method.highlighted {
         opacity: 1;
-        stroke-width: 1.75;
         /* Methods always render canonical-grey at idle (drift class
            describes structural placement, irrelevant for use-relations),
            and the `.canonical.highlighted` blue rule only fires when
@@ -82,23 +82,22 @@
       }
       /* Hover affordance: when the cursor is over an arrow's wide hit
          overlay, the whole arrow group is hovered, so we can safely
-         bump the visible path's weight via CSS. The marker glyph
-         scales with stroke-width (markerUnits defaults to
-         "strokeWidth"), so the arrowhead enlarges in proportion —
-         turning the entire arrow into an obvious clickable target.
+         bump the visible path's weight via CSS. Hover switches to a
+         fixed-size marker so the arrowhead grows more modestly than the line.
          Opacity also nudges up so faint dotted method arrows announce
          themselves under the cursor. */
       #tree g.arrows g.arrow:hover path.visible {
         opacity: 1;
         stroke-width: 1.75;
+        marker-end: url(#sf-arrow-hover);
       }
       #tree g.arrows g.arrow:hover path.visible.method {
         stroke-width: 2;
       }
       /* Canonical arrows are slate-500 grey by default (background context);
-         when highlighted, restore the original blue so "the chain I'm
-         examining" stands out by colour, not just intensity. The arrowhead
-         picks up the same colour via marker fill="context-stroke". */
+         when highlighted, use blue so "the chain I'm examining" stands out
+         by colour, not by size. The arrowhead picks up the same colour via
+         marker fill="context-stroke". */
       #tree g.arrows path.visible.canonical.highlighted {
         stroke: #3b82f6;
       }
@@ -627,9 +626,7 @@
     <svg width="0" height="0" aria-hidden="true" style="position: absolute" focusable="false">
       <defs>
         <!-- markerUnits="userSpaceOnUse" pins the arrowhead size to a
-             constant 8×8 in user-space, regardless of the line's
-             stroke-width. The "selected" legend entry therefore reads
-             as "thicker line" without also turning into a bigger head. -->
+             constant 8×8 in user-space, regardless of line stroke width. -->
         <marker
           id="legend-arrow-marker"
           viewBox="0 -4 8 8"
@@ -680,6 +677,10 @@
             <input id="settings-debug-layout" type="checkbox" />
             <span>debug overlay</span>
           </label>
+          <label class="settings-row" title="Use the grid pathfinding arrow router">
+            <input id="settings-grid-routing" type="checkbox" />
+            <span>grid routing</span>
+          </label>
           <div class="settings-summary" id="settings-input-summary"></div>
           <div class="settings-default" id="settings-input-default"></div>
         </div>
@@ -719,7 +720,7 @@
                     x2="28"
                     y2="5"
                     stroke="#3b82f6"
-                    stroke-width="1.5"
+                    stroke-width="1"
                     marker-end="url(#legend-arrow-marker)"
                   />
                 </svg>

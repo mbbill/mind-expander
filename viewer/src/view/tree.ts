@@ -70,13 +70,12 @@ const COLOR_FIELD_TY = '#94a3b8'; // slate-400, grey for the on-hover type hint
 // COLOR_FIELD_TY so method names actually stand out instead of fading.
 const COLOR_METHOD_NAME = '#64748b';
 const TY_HIDE_DELAY = 0; // ms — type-hint hides immediately on mouse-out (only the 200ms fade-out transition still plays)
-const COLOR_FOCUS_BG = '#bfdbfe'; // blue-200, soft fill behind selected fields
-const FOCUS_BG_RADIUS = 5;
-const FOCUS_BG_PAD_X = 4;
-const FOCUS_BG_PAD_Y_FIELD = 3;
+const TY_TEXT_GAP = 4;
+const TY_BG_PAD_X = 4;
+const TY_BG_PAD_Y = 2;
+const COLOR_TY_BG = '#ffffff';
 const METHOD_BUCKET_CHEVRON_OFFSET = 12;
 const METHOD_BUCKET_CHEVRON_FONT_SIZE = 14;
-const FOCUS_FILTER_ID = 'sf-feather';
 const EDGE_SHADOW_GRADIENT_ID = 'sf-edge-shadow';
 const EDGE_SHADOW_W = 16; // data-units; scales with zoom (small but visible)
 const COLOR_ARROW_CANONICAL = '#94a3b8'; // slate-400: at_lca / within_budget — neutral context
@@ -85,6 +84,8 @@ const COLOR_ARROW_CANONICAL = '#94a3b8'; // slate-400: at_lca / within_budget �
 // arrowhead can pick it up via context-stroke without per-state JS.
 const COLOR_ARROW_SOFT = '#f59e0b'; // amber: drift_below
 const COLOR_ARROW_HARD = '#ef4444'; // red:   drift_above / drift_sideways
+const COLOR_MEMBER_CANONICAL = '#3b82f6'; // blue-500: canonical ownership member
+const COLOR_MEMBER_DRIFT_BELOW = '#d97706'; // amber-600: deeper label for drift_below
 // Re-exports get their own dedicated color and dashed style so they read
 // as a separate edge category — they're not ownership, they're naming.
 // The violet stroke alone is enough identity, so re-exports can afford
@@ -118,6 +119,49 @@ function arrowColor(a: Layout['arrows'][number]): string {
   if (c === 'at_lca' || c === 'within_budget') return COLOR_ARROW_CANONICAL;
   if (c === 'drift_below') return COLOR_ARROW_SOFT;
   return COLOR_ARROW_HARD;
+}
+
+export function memberRowColorForArrows(
+  arrows: readonly Layout['arrows'][number][],
+): string | null {
+  let strongest: Layout['arrows'][number] | null = null;
+  let strongestRank = 0;
+  for (const arrow of arrows) {
+    if (arrow.kind !== 'ownership') continue;
+    const rank = driftSeverity(arrow.driftClass);
+    if (rank > strongestRank) {
+      strongest = arrow;
+      strongestRank = rank;
+    }
+  }
+  return strongest === null ? null : memberColorForDriftClass(strongest.driftClass);
+}
+
+export function memberColorForDriftClass(driftClass: DriftClass | null): string | null {
+  if (driftClass === null) return null;
+  switch (driftClass) {
+    case 'at_lca':
+    case 'within_budget':
+      return COLOR_MEMBER_CANONICAL;
+    case 'drift_below':
+      return COLOR_MEMBER_DRIFT_BELOW;
+    case 'drift_above':
+    case 'drift_sideways':
+      return COLOR_ARROW_HARD;
+  }
+}
+
+function driftSeverity(driftClass: DriftClass): number {
+  switch (driftClass) {
+    case 'drift_above':
+    case 'drift_sideways':
+      return 3;
+    case 'drift_below':
+      return 2;
+    case 'at_lca':
+    case 'within_budget':
+      return 1;
+  }
 }
 
 /** One-character kind marker rendered between the visibility dot and the
@@ -158,6 +202,9 @@ export interface TreeRenderOptions {
   /** Single-row click on a module or type → toggle expansion. Expansion is
    *  the only "focus" concept — there is no separate selected-types set. */
   readonly onToggle: (id: string) => void;
+  /** Click on a type header chevron → toggle expansion and select/deselect
+   *  every member row that can emit an arrow for that type. */
+  readonly onToggleTypeMembers: (typePath: string) => void;
   /** Click on a field name → toggle its selection. */
   readonly onSelectField: (typePath: string, fieldName: string, kind: FieldKeyKind) => void;
   /** Set of "typePath::fieldName" keys currently selected. */
@@ -718,45 +765,34 @@ function sizeFrozenBackdrop(
 }
 
 function ensureArrowMarker(layer: Selection<SVGGElement, unknown, null, undefined>): void {
-  // Idempotent: skip if we've already set up <defs>. Markers and the focus
-  // filter live there.
+  // Idempotent: skip if we've already set up <defs>. Markers live there.
   if (!layer.select('defs').empty()) return;
 
   const defs = layer.append('defs');
-  const define = (id: string): void => {
+  const define = (
+    id: string,
+    options: { readonly markerUnits?: 'userSpaceOnUse'; readonly size?: number } = {},
+  ): void => {
     // `context-stroke` makes the arrowhead's fill follow the path's
     // current stroke color. So when a canonical path's stroke is overridden
     // (grey by default → blue when .highlighted), the arrowhead changes
     // colour with it — no need to swap marker-end via JS.
-    defs
+    const marker = defs
       .append('marker')
       .attr('id', id)
       .attr('viewBox', '0 -4 8 8')
       .attr('refX', 7)
       .attr('refY', 0)
-      .attr('markerWidth', 8)
-      .attr('markerHeight', 8)
-      .attr('orient', 'auto')
-      .append('path')
-      .attr('d', 'M0,-4L8,0L0,4Z')
-      .attr('fill', 'context-stroke');
+      .attr('markerWidth', options.size ?? 8)
+      .attr('markerHeight', options.size ?? 8)
+      .attr('orient', 'auto');
+    if (options.markerUnits !== undefined) marker.attr('markerUnits', options.markerUnits);
+    marker.append('path').attr('d', 'M0,-4L8,0L0,4Z').attr('fill', 'context-stroke');
   };
   define('sf-arrow-canonical');
   define('sf-arrow-soft');
   define('sf-arrow-hard');
-
-  // Soft-edge filter applied to focus-background rects so the pill fades
-  // smoothly into the band tint instead of having a hard rectangular edge.
-  // The filter region is expanded so the Gaussian blur isn't clipped at the
-  // rect's bounds.
-  const filter = defs
-    .append('filter')
-    .attr('id', FOCUS_FILTER_ID)
-    .attr('x', '-10%')
-    .attr('y', '-40%')
-    .attr('width', '120%')
-    .attr('height', '180%');
-  filter.append('feGaussianBlur').attr('stdDeviation', '0.6');
+  define('sf-arrow-hover', { markerUnits: 'userSpaceOnUse', size: 10 });
 
   // Edge-shadow gradient — used by per-band shadows on the frozen pane's
   // right edge to signal "this band has type content currently hidden
@@ -1179,6 +1215,14 @@ function renderTypes(
     .attr('height', ROW_H)
     .attr('fill', 'transparent');
 
+  enter
+    .filter((d) => d.hasFields)
+    .append('rect')
+    .attr('class', 'expand-arrow-hit')
+    .attr('y', 0)
+    .attr('height', ROW_H)
+    .attr('fill', 'transparent');
+
   // Dot is appended LAST so it sits on top of the expand-hit rect for
   // pointer events — that lets hover on the dot fire owner-popover
   // handlers separately from row-level expand clicks. Click on the dot
@@ -1221,7 +1265,7 @@ function renderTypes(
     .select<SVGTextElement>('text.expand-arrow')
     .text((d) => (d.expanded ? TYPE_EXPAND_ARROW_OPEN : TYPE_EXPAND_ARROW_CLOSED));
 
-  // Refresh click handler each draw. Row-click semantics:
+  // Refresh click handler each draw. Name/header click semantics:
   //   - real type with fields → toggle expansion (current behaviour)
   //   - ghost re-export → reveal canonical target so the violet arrow
   //     becomes visible (same action as the dot click)
@@ -1236,6 +1280,16 @@ function renderTypes(
       } else if (d.hasFields) {
         opts.onToggle(d.id);
       }
+    });
+
+  // Chevron click is intentionally stronger than name click: it toggles the
+  // type and selects/deselects all member rows that can emit arrows.
+  merged
+    .select<SVGRectElement>('rect.expand-arrow-hit')
+    .attr('cursor', 'pointer')
+    .on('click', (event: MouseEvent, d) => {
+      event.stopPropagation();
+      if (d.hasFields) opts.onToggleTypeMembers(d.fullPath);
     });
 
   // Refresh dot handlers each draw. Click semantics:
@@ -1326,6 +1380,15 @@ function renderFieldsForType(
     .attr('y', (f) => f.y - groupTopY);
 
   enter
+    .append('rect')
+    .attr('class', 'field-ty-bg')
+    .attr('rx', 3)
+    .attr('ry', 3)
+    .attr('fill', COLOR_TY_BG)
+    .style('opacity', 0)
+    .style('pointer-events', 'none');
+
+  enter
     .append('text')
     .attr('class', 'field-ty')
     .attr('dy', '0.32em')
@@ -1368,12 +1431,11 @@ function renderFieldsForType(
     const display = fieldRowDisplayParts(f, opts.expandedBucketIds);
     const fontWeight = isBucketHeader ? 600 : isSelected ? 600 : 400;
     const fontStyle = isMethod ? 'italic' : isBorrow ? 'italic' : 'normal';
-    // Method names use a slightly darker slate than the type-text hint
-    // colour so the italic methods stay readable while still reading as
-    // subordinate to fields and bucket headers (which use the bolder
-    // COLOR_FIELD_NAME). Slate-400 was too washed out, especially for
-    // long names paired with thin dotted arrows.
-    const fillColor = isMethod ? COLOR_METHOD_NAME : COLOR_FIELD_NAME;
+    // Field rows expose drift at the member label. Canonical arrows stay
+    // subdued grey in the canvas, but canonical members use blue so normal
+    // ownership rows stand out from rows with no emitted ownership arrow.
+    const memberColor = f.kind === 'field' ? memberColorForDriftClass(f.memberDriftClass) : null;
+    const fillColor = isMethod ? COLOR_METHOD_NAME : (memberColor ?? COLOR_FIELD_NAME);
     // Method indent is baked into f.x by the layout, so localX already
     // reflects it — no renderer-side offset to apply.
 
@@ -1413,11 +1475,7 @@ function renderFieldsForType(
       .attr('x', f.arrowSourceX - d.x)
       .attr('y', localY)
       .text(f.tyText);
-    // Selected rows pin the signature/type-hint open. Hover still toggles
-    // for unselected rows; mouseleave below also bails out without
-    // hiding when the row is selected, so once you click a method the
-    // signature stays visible until you click again to deselect.
-    if (isSelected) tyText.style('opacity', 1);
+    const tyBg = fg.select<SVGRectElement>('rect.field-ty-bg');
 
     const handleRowClick = (event: MouseEvent): void => {
       event.stopPropagation();
@@ -1451,50 +1509,47 @@ function renderFieldsForType(
         clearTimeout(node.__sfTyTimer);
         node.__sfTyTimer = undefined;
       }
+      tyText.attr('x', hoveredTextRight(text) + TY_TEXT_GAP);
+      sizeTypeHintBackground(tyText, tyBg);
+      tyBg.transition('ty').duration(120).style('opacity', 1);
       tyText.transition('ty').duration(120).style('opacity', 1);
     });
     text.on('mouseleave', () => {
       applyChainHighlight(zoomLayer, opts.selectedArrows);
       if (!node) return;
       if (node.__sfTyTimer !== undefined) clearTimeout(node.__sfTyTimer);
-      // Selected rows pin the signature open. Skip the hide timer
-      // entirely so click-to-stay survives mouseleave without a
-      // momentary fade-out flicker.
-      if (isSelected) {
-        node.__sfTyTimer = undefined;
-        return;
-      }
       node.__sfTyTimer = window.setTimeout(() => {
+        tyBg.transition('ty').duration(200).style('opacity', 0);
         tyText.transition('ty').duration(200).style('opacity', 0);
         node.__sfTyTimer = undefined;
       }, TY_HIDE_DELAY);
     });
 
-    // Selection pill — present only when isSelected. Insert before the text
-    // so it draws beneath. Sized from the rendered text bbox.
-    let bg = fg.select<SVGRectElement>('rect.focus-bg');
-    if (isSelected) {
-      if (bg.empty()) {
-        bg = fg
-          .insert('rect', 'text')
-          .attr('class', 'focus-bg')
-          .attr('rx', FOCUS_BG_RADIUS)
-          .attr('ry', FOCUS_BG_RADIUS)
-          .attr('fill', COLOR_FOCUS_BG)
-          .attr('filter', `url(#${FOCUS_FILTER_ID})`);
-      }
-      const node = text.node();
-      if (node) {
-        const bbox = node.getBBox();
-        bg.attr('x', bbox.x - FOCUS_BG_PAD_X)
-          .attr('y', bbox.y - FOCUS_BG_PAD_Y_FIELD)
-          .attr('width', bbox.width + 2 * FOCUS_BG_PAD_X)
-          .attr('height', bbox.height + 2 * FOCUS_BG_PAD_Y_FIELD);
-      }
-    } else if (!bg.empty()) {
-      bg.remove();
-    }
+    // Selection now matches hover: bold text plus selected arrows, without a
+    // background pill competing with the member's drift color.
+    fg.select<SVGRectElement>('rect.focus-bg').remove();
   });
+}
+
+function hoveredTextRight(text: Selection<SVGTextElement, unknown, null, undefined>): number {
+  const node = text.node();
+  if (!node) return 0;
+  const bbox = node.getBBox();
+  return bbox.x + bbox.width;
+}
+
+function sizeTypeHintBackground(
+  tyText: Selection<SVGTextElement, unknown, null, undefined>,
+  tyBg: Selection<SVGRectElement, unknown, null, undefined>,
+): void {
+  const node = tyText.node();
+  if (!node) return;
+  const bbox = node.getBBox();
+  tyBg
+    .attr('x', bbox.x - TY_BG_PAD_X)
+    .attr('y', bbox.y - TY_BG_PAD_Y)
+    .attr('width', bbox.width + 2 * TY_BG_PAD_X)
+    .attr('height', bbox.height + 2 * TY_BG_PAD_Y);
 }
 
 function sizeTypeHits(
@@ -1507,7 +1562,12 @@ function sizeTypeHits(
     const gg = select(this);
     if (d.headerArrowX !== null) {
       gg.select<SVGTextElement>('text.expand-arrow').attr('x', d.headerArrowX);
+      gg.select<SVGRectElement>('rect.expand-hit').attr('width', d.headerArrowX);
+      gg.select<SVGRectElement>('rect.expand-arrow-hit')
+        .attr('x', d.headerArrowX)
+        .attr('width', Math.max(16, d.headerHitWidth - d.headerArrowX));
+    } else {
+      gg.select<SVGRectElement>('rect.expand-hit').attr('width', d.headerHitWidth);
     }
-    gg.select<SVGRectElement>('rect.expand-hit').attr('width', d.headerHitWidth);
   });
 }

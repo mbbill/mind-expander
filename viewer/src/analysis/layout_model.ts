@@ -21,6 +21,11 @@ export interface ModuleRow {
 }
 
 export type RowKind = 'field' | 'method_bucket' | 'method';
+export const ROW_ARROW_KEY_SEP = '\x1F';
+
+export function rowArrowKey(typePath: string, rowName: string): string {
+  return `${typePath}${ROW_ARROW_KEY_SEP}${rowName}`;
+}
 
 export interface FieldRow {
   readonly name: string;
@@ -32,6 +37,11 @@ export interface FieldRow {
   readonly targets: readonly string[];
   readonly kind: RowKind;
   readonly bucketId: string | null;
+  /** Strongest target drift for structural ownership targets on this row.
+   *  Null means no ownership target; rendering uses this for member text color
+   *  even when the target module is not currently expanded enough to emit an
+   *  arrow. */
+  readonly memberDriftClass: DriftClass | null;
 }
 
 export interface TypeBox {
@@ -147,6 +157,13 @@ export interface LayoutInputs {
   readonly focusModules?: ReadonlySet<string>;
   readonly ghostArrowsShown?: ReadonlySet<string>;
   readonly methodsHidden?: boolean;
+  /** Selected field ownership arrows to emit. Omitted means emit all visible
+   *  field arrows; an empty set means emit none. Keys are rowArrowKey(typePath,
+   *  fieldName). */
+  readonly fieldArrowsShown?: ReadonlySet<string>;
+  /** Selected method-reference arrows to emit. Omitted means emit all visible
+   *  method arrows; an empty set means emit none. Keys are rowArrowKey(typePath,
+   *  methodName). */
   readonly methodArrowsShown?: ReadonlySet<string>;
   /** Legacy callers can still pass these while layout ignores them. Keeping
    *  the properties in the contract avoids UI call-site churn during removal

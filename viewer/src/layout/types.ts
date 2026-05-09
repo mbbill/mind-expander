@@ -1,6 +1,7 @@
 // Internal types for the layout pipeline. The pipeline's final output is the
 // renderer-facing `Layout` shape from analysis/layout_model.ts.
 
+import type { DriftClass } from '../analysis/drift.ts';
 import type { ModuleNode, TypeNode } from '../analysis/module_tree.ts';
 import type { Ownership } from '../data/schema.ts';
 import type { LayoutBoxFragmentKind } from './box_fragments.ts';
@@ -68,6 +69,7 @@ export interface PositionedRow {
   readonly targets: readonly string[];
   readonly kind: PositionedRowKind;
   readonly bucketId: string | null;
+  readonly memberDriftClass?: DriftClass | null;
 }
 
 export interface PositionedModule {

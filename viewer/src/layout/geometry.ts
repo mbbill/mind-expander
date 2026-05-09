@@ -3,6 +3,7 @@
 // module measures visible items, places snapped rectangles, and adapts them to
 // renderer-facing boxes.
 
+import type { DriftClass, DriftIndex } from '../analysis/drift.ts';
 import {
   FIELD_LABEL_INSET,
   FIELD_ROW_H,
@@ -22,7 +23,12 @@ import {
   measureModuleHitWidth,
   measureTypeHeaderMetrics,
 } from '../analysis/layout_metrics.ts';
-import type { LayoutDebugGrid, LayoutDebugLabel, LayoutInputs } from '../analysis/layout_model.ts';
+import {
+  type LayoutDebugGrid,
+  type LayoutDebugLabel,
+  type LayoutInputs,
+  rowArrowKey,
+} from '../analysis/layout_model.ts';
 import type { ModuleNode, TreeNode, TypeNode } from '../analysis/module_tree.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
 import { BUCKET_LABEL, type VisibilityBucket } from '../analysis/visibility.ts';
@@ -65,7 +71,6 @@ export { TYPE_X_GAP } from '../analysis/layout_metrics.ts';
 export const DEPTH_COLUMN_CAP = 3;
 export const MIN_BOX_W = MIN_TYPE_BOX_W;
 export { TYPE_GLYPH_W } from '../analysis/layout_metrics.ts';
-const METHOD_ARROW_KEY_SEP = '\x1F';
 /** Approximate character width used as a fallback when no measureText is
  *  provided (tests). Real renders pass a canvas-backed measurer. */
 export const CHAR_W = 7;
@@ -118,7 +123,9 @@ export function computeGeometry(inputs: LayoutInputs, options: GeometryOptions =
     inputs.state,
     inputs.focusModules,
     inputs.ownership,
+    inputs.drift,
     inputs.methodsHidden ?? false,
+    inputs.fieldArrowsShown,
     inputs.methodArrowsShown,
     placementPlan,
     measure,
@@ -224,7 +231,9 @@ function collectVisibleModuleBands(
   state: ViewState,
   focusModules: ReadonlySet<string> | undefined,
   ownership: OwnershipIndex,
+  drift: DriftIndex,
   methodsHidden: boolean,
+  fieldArrowsShown: ReadonlySet<string> | undefined,
   methodArrowsShown: ReadonlySet<string> | undefined,
   placementPlan: PlacementLayoutPlan,
   measure: (s: string) => number,
@@ -246,7 +255,9 @@ function collectVisibleModuleBands(
       placementPlan,
       state,
       ownership,
+      drift,
       methodsHidden,
+      fieldArrowsShown,
       methodArrowsShown,
       measure,
     );
@@ -275,7 +286,9 @@ function collectVisibleModuleBands(
           state,
           focusModules,
           ownership,
+          drift,
           methodsHidden,
+          fieldArrowsShown,
           methodArrowsShown,
           placementPlan,
           measure,
@@ -453,14 +466,25 @@ function buildSemanticBandItems(
   placementPlan: PlacementLayoutPlan,
   state: ViewState,
   ownership: OwnershipIndex,
+  drift: DriftIndex,
   methodsHidden: boolean,
+  fieldArrowsShown: ReadonlySet<string> | undefined,
   methodArrowsShown: ReadonlySet<string> | undefined,
   measure: (s: string) => number,
 ): readonly SemanticBandItem[] {
   return types.map((node): SemanticBandItem => {
     const expanded = state.isExpanded(node.id);
     const rowSpecs = expanded
-      ? buildRowSpecs(node, state, ownership, methodsHidden, methodArrowsShown, measure)
+      ? buildRowSpecs(
+          node,
+          state,
+          ownership,
+          drift,
+          methodsHidden,
+          fieldArrowsShown,
+          methodArrowsShown,
+          measure,
+        )
       : [];
     const hasHeaderArrow = node.fields.length > 0 || node.methodBuckets.length > 0;
     const headerMetrics = measureTypeHeaderMetrics(node.label, hasHeaderArrow, measure);
@@ -548,28 +572,41 @@ interface LocalRowSpec {
   readonly targets: readonly string[];
   readonly kind: 'field' | 'method_bucket' | 'method';
   readonly bucketId: string | null;
+  readonly memberDriftClass: DriftClass | null;
 }
 
 function buildRowSpecs(
   t: TypeNode,
   state: ViewState,
   ownership: OwnershipIndex,
+  drift: DriftIndex,
   methodsHidden: boolean,
+  fieldArrowsShown: ReadonlySet<string> | undefined,
   methodArrowsShown: ReadonlySet<string> | undefined,
   measure: (s: string) => number,
 ): LocalRowSpec[] {
   const rows: LocalRowSpec[] = [];
   const fieldTargets = ownership.fieldTargets.get(t.fullPath);
   for (const f of t.fields) {
+    const targets = fieldTargets?.get(f.name) ?? [];
+    const memberDriftClass = strongestDriftClassForTargets(targets, drift);
+    // Canonical ownership arrows are background structure and remain visible
+    // by default. Drifted member arrows stay opt-in so orange/red routes only
+    // appear when the user asks to inspect that anomalous row.
+    const showThisArrow =
+      fieldArrowsShown === undefined ||
+      isCanonicalMemberDrift(memberDriftClass) ||
+      fieldArrowsShown.has(rowArrowKey(t.fullPath, f.name));
     rows.push({
       name: f.name,
       tyText: f.ty_text,
       ownership: f.ownership,
       labelInset: labelInsetForRows(t),
       textWidth: measure(f.name),
-      targets: fieldTargets?.get(f.name) ?? [],
+      targets: showThisArrow ? targets : [],
       kind: 'field',
       bucketId: null,
+      memberDriftClass,
     });
   }
   if (methodsHidden) return rows;
@@ -586,13 +623,13 @@ function buildRowSpecs(
       targets: [],
       kind: 'method_bucket',
       bucketId,
+      memberDriftClass: null,
     });
     if (!state.isExpanded(bucketId)) continue;
     const methodTargets = ownership.methodTargets.get(t.fullPath);
     for (const fn of mb.methods) {
       const showThisArrow =
-        methodArrowsShown === undefined ||
-        methodArrowsShown.has(`${t.fullPath}${METHOD_ARROW_KEY_SEP}${fn.name}`);
+        methodArrowsShown === undefined || methodArrowsShown.has(rowArrowKey(t.fullPath, fn.name));
       rows.push({
         name: fn.name,
         tyText: formatMethodSignature(fn),
@@ -602,10 +639,45 @@ function buildRowSpecs(
         targets: showThisArrow ? (methodTargets?.get(fn.name) ?? []) : [],
         kind: 'method',
         bucketId: null,
+        memberDriftClass: null,
       });
     }
   }
   return rows;
+}
+
+function strongestDriftClassForTargets(
+  targets: readonly string[],
+  drift: DriftIndex,
+): DriftClass | null {
+  let strongest: DriftClass | null = null;
+  let strongestRank = 0;
+  for (const target of targets) {
+    const driftClass = drift.typeClass.get(target) ?? 'at_lca';
+    const rank = driftSeverity(driftClass);
+    if (rank > strongestRank) {
+      strongest = driftClass;
+      strongestRank = rank;
+    }
+  }
+  return strongest;
+}
+
+function isCanonicalMemberDrift(driftClass: DriftClass | null): boolean {
+  return driftClass === 'at_lca' || driftClass === 'within_budget';
+}
+
+function driftSeverity(driftClass: DriftClass): number {
+  switch (driftClass) {
+    case 'drift_above':
+    case 'drift_sideways':
+      return 3;
+    case 'drift_below':
+      return 2;
+    case 'at_lca':
+    case 'within_budget':
+      return 1;
+  }
 }
 
 function positionRows(
@@ -627,6 +699,7 @@ function positionRows(
       targets: spec.targets,
       kind: spec.kind,
       bucketId: spec.bucketId,
+      memberDriftClass: spec.memberDriftClass,
     });
     rowY += FIELD_ROW_H;
   }

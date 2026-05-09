@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TypeBox } from '../src/analysis/layout_model.ts';
+import { rowArrowKey } from '../src/analysis/layout_model.ts';
 import {
   BAND_GRID_CELL_H,
   BAND_GRID_CELL_W,
@@ -485,6 +486,83 @@ describe('computeGeometry — basic placement', () => {
     // debug rectangle and collision shape match what the user sees.
     expect(box?.width ?? 0).toBeGreaterThan(label.length * 10 + 48);
     expect(fragment?.width ?? 0).toBeGreaterThanOrEqual(box?.width ?? 0);
+  });
+
+  it('keeps member drift class on rows even when the target type is hidden', () => {
+    const c = crateFacts('c', [
+      mod('x::a', [ty('c', 'x::a', 'OwnerA', [{ name: 'target', ty_text: 'T' }])]),
+      mod('x::b', [ty('c', 'x::b', 'OwnerB', [{ name: 'target', ty_text: 'T' }])]),
+      mod('y', [ty('c', 'y', 'T')]),
+    ]);
+    const inputs = buildInputs(
+      c,
+      [
+        edge('c::x::a::OwnerA', 'c::y::T', 'field target'),
+        edge('c::x::b::OwnerB', 'c::y::T', 'field target'),
+      ],
+      ['c', 'c::x', 'c::x::a', 'c::x::a::OwnerA'],
+    );
+    const layout = buildLayout(inputs);
+    const owner = layout.types.find((t) => t.fullPath === 'c::x::a::OwnerA');
+    const row = owner?.fields.find((f) => f.name === 'target');
+
+    expect(layout.types.find((t) => t.fullPath === 'c::y::T')).toBeUndefined();
+    expect(layout.arrows).toHaveLength(0);
+    expect(row?.memberDriftClass).toBe('drift_sideways');
+  });
+
+  it('keeps canonical field ownership arrows visible when field arrow keys are provided', () => {
+    const c = crateFacts('c', [
+      mod('m', [
+        ty('c', 'm', 'Owner', [
+          { name: 'first', ty_text: 'TargetA' },
+          { name: 'second', ty_text: 'TargetB' },
+        ]),
+        ty('c', 'm', 'TargetA'),
+        ty('c', 'm', 'TargetB'),
+      ]),
+    ]);
+    const inputs = buildInputs(
+      c,
+      [
+        edge('c::m::Owner', 'c::m::TargetA', 'field first'),
+        edge('c::m::Owner', 'c::m::TargetB', 'field second'),
+      ],
+      ['c', 'c::m', 'c::m::Owner'],
+    );
+    const none = buildLayout({ ...inputs, fieldArrowsShown: new Set() });
+    const firstOnly = buildLayout({
+      ...inputs,
+      fieldArrowsShown: new Set([rowArrowKey('c::m::Owner', 'first')]),
+    });
+
+    expect(none.arrows.map((a) => a.fromFieldName).sort()).toEqual(['first', 'second']);
+    expect(firstOnly.arrows.map((a) => a.fromFieldName).sort()).toEqual(['first', 'second']);
+  });
+
+  it('emits drifted field ownership arrows only for selected field arrow keys', () => {
+    const c = crateFacts('c', [
+      mod('x::a', [ty('c', 'x::a', 'OwnerA', [{ name: 'target', ty_text: 'T' }])]),
+      mod('x::b', [ty('c', 'x::b', 'OwnerB', [{ name: 'target', ty_text: 'T' }])]),
+      mod('y', [ty('c', 'y', 'T')]),
+    ]);
+    const inputs = buildInputs(
+      c,
+      [
+        edge('c::x::a::OwnerA', 'c::y::T', 'field target'),
+        edge('c::x::b::OwnerB', 'c::y::T', 'field target'),
+      ],
+      ['c', 'c::x', 'c::x::a', 'c::x::a::OwnerA', 'c::y'],
+    );
+    const hidden = buildLayout({ ...inputs, fieldArrowsShown: new Set() });
+    const shown = buildLayout({
+      ...inputs,
+      fieldArrowsShown: new Set([rowArrowKey('c::x::a::OwnerA', 'target')]),
+    });
+
+    expect(hidden.arrows).toHaveLength(0);
+    expect(shown.arrows.map((a) => a.fromTypeId)).toEqual(['c::x::a::OwnerA']);
+    expect(shown.arrows.map((a) => a.driftClass)).toEqual(['drift_sideways']);
   });
 
   it('emits measured visual fragment bounds instead of snapped packing width', () => {
