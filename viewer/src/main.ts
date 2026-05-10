@@ -1,3 +1,4 @@
+import { zoomTransform } from 'd3';
 import { computeDrift } from './analysis/drift.ts';
 import { type Layout, rowArrowKey } from './analysis/layout_model.ts';
 import { type TreeNode, buildModuleTree } from './analysis/module_tree.ts';
@@ -24,7 +25,6 @@ import {
   fieldKey,
   layoutDebugEnabled,
   parseFieldKey,
-  renderEdgeShadows,
   renderTree,
 } from './view/tree.ts';
 import {
@@ -135,6 +135,9 @@ async function main(): Promise<void> {
   // element, one font binding, results memoized per string. Field names
   // recur across crates and re-renders so the cache pays back many times.
   const measureText = createTextMeasurer(`${FONT_SIZE_FIELD}px ${FONT_FAMILY}`);
+  // Companion bold measurer for module label chip widths — the crate-root
+  // leaf renders bold, and bold text is wider than non-bold at the same size.
+  const measureBoldText = createTextMeasurer(`bold ${FONT_SIZE_FIELD}px ${FONT_FAMILY}`);
 
   let minimap: Minimap | null = null;
   const layers = attachZoom(svg, (t) => {
@@ -146,17 +149,60 @@ async function main(): Promise<void> {
     // Arrow disambig is anchored to the original click point — once the
     // canvas moves it's pointing at the wrong arrows. Dismiss it.
     arrowDisambig.hide();
-    // Per-band edge shadows on the frozen pane: which bands have hidden
-    // type content depends on the current transform, so refresh every
-    // pan/zoom event.
-    if (currentCtx?.lastLayout) {
-      renderEdgeShadows(layers, currentCtx.lastLayout, { x: t.x, k: t.k });
-    }
     minimap?.update(currentCtx?.lastLayout ?? null);
   });
   const inputController = installInputControls(svg, layers);
   if (minimapRoot) minimap = createMinimap(minimapRoot, svg, layers);
   updateScaleIndicator(1);
+
+  // Cursor tracking + overview-toggle state. Space presses cycle between
+  // the user's current view and a fit-all overview; the second press snaps
+  // to k=1 with the data point under the cursor as the anchor. Any user
+  // pan/zoom gesture in between resets the toggle so the next space press
+  // re-enters overview rather than acting on stale state.
+  const cursor = { x: 0, y: 0, inside: false };
+  let overviewActive = false;
+  svg.addEventListener('pointermove', (e) => {
+    const rect = svg.getBoundingClientRect();
+    cursor.x = e.clientX - rect.left;
+    cursor.y = e.clientY - rect.top;
+    cursor.inside = true;
+  });
+  svg.addEventListener('pointerleave', () => {
+    cursor.inside = false;
+  });
+  const resetOverview = (): void => {
+    overviewActive = false;
+  };
+  svg.addEventListener('pointerdown', resetOverview);
+  svg.addEventListener('wheel', resetOverview, { passive: true });
+
+  const handleSpace = (): void => {
+    const layout = currentCtx?.lastLayout;
+    if (!layout) return;
+    const w = svg.clientWidth;
+    const h = svg.clientHeight;
+    if (w <= 0 || h <= 0 || layout.totalWidth <= 0 || layout.totalHeight <= 0) return;
+    if (!overviewActive) {
+      // Enter overview: scale-to-fit centred on the content.
+      const fit = Math.min(w / layout.totalWidth, h / layout.totalHeight) * FIT_PADDING;
+      const tx = w / 2 - (layout.totalWidth / 2) * fit;
+      const ty = h / 2 - (layout.totalHeight / 2) * fit;
+      layers.setTransform(fit, tx, ty, true);
+      overviewActive = true;
+    } else {
+      // Exit overview: k=1, with the data point currently under the cursor
+      // staying under the cursor (or the screen centre if the cursor is
+      // outside the SVG).
+      const sx = cursor.inside ? cursor.x : w / 2;
+      const sy = cursor.inside ? cursor.y : h / 2;
+      const t = zoomTransform(svg);
+      const dataX = (sx - t.x) / t.k;
+      const dataY = (sy - t.y) / t.k;
+      layers.setTransform(1, sx - dataX, sy - dataY, true);
+      overviewActive = false;
+    }
+  };
 
   // The owner popover is a single global instance reused across crates.
   // Click-to-navigate routes through currentCtx so it picks up the right
@@ -258,6 +304,14 @@ async function main(): Promise<void> {
   // legend/shortcuts dialog.
   window.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.code === 'Space') {
+      // Don't fire on auto-repeat — the toggle should require deliberate
+      // taps. Prevent default so the page doesn't scroll on focus elsewhere.
+      if (e.repeat) return;
+      e.preventDefault();
+      handleSpace();
+      return;
+    }
     if (e.key === 'f') toggleFocus();
     else if (e.key === 'm') toggleMethods();
     else if (e.key === 's') layers.resetScale(true);
@@ -305,6 +359,7 @@ async function main(): Promise<void> {
     });
   }
 
+  applyLabelStyle(readStoredLabelStyle());
   setupInputSettings(inputController);
 
   // Mouse bindings — clicking any keybinding chip triggers its action.
@@ -316,6 +371,8 @@ async function main(): Promise<void> {
   if (scaleHint) scaleHint.addEventListener('click', () => layers.resetScale(true));
   const resetHint = document.querySelector<HTMLElement>('#hint-reset');
   if (resetHint) resetHint.addEventListener('click', () => currentCtx?.resetAll());
+  const overviewHint = document.querySelector<HTMLElement>('#hint-overview');
+  if (overviewHint) overviewHint.addEventListener('click', () => handleSpace());
 
   // Window resize: viewport changes, so the fit-to-view minimum changes.
   // Debounce so a drag-resize doesn't fire dozens of times.
@@ -377,6 +434,7 @@ async function main(): Promise<void> {
         state,
         drift,
         measureText,
+        measureBoldText,
         placementPlan,
         ghostArrowsShown,
         fieldArrowsShown,
@@ -387,6 +445,15 @@ async function main(): Promise<void> {
       lastLayout = buildLayout(buildArgs);
       if (currentCtx) currentCtx.lastLayout = lastLayout;
       applyFitScaleExtent(svg, layers, lastLayout);
+      // Pan-constraint bounds: cover the whole content rect so the screen
+      // centre is always over something. Origin is (0,0); the diagram is
+      // laid out in the positive quadrant from there.
+      layers.setContentBounds({
+        x0: 0,
+        y0: 0,
+        x1: lastLayout.totalWidth,
+        y1: lastLayout.totalHeight,
+      });
       // Compute the union of arrow chains for every selected field. These are
       // drawn highlighted by default; hover unions a transient chain on top.
       const selectedFieldRefs = [...selectedFields].map((k) => parseFieldKey(k));
@@ -951,11 +1018,31 @@ function installInputControls(
   return controller;
 }
 
+const LABEL_STYLE_KEY = 'mind-expander.labelStyle';
+const LABEL_STYLES = ['halo', 'border', 'shadow', 'blue'] as const;
+type LabelStyle = (typeof LABEL_STYLES)[number];
+const DEFAULT_LABEL_STYLE: LabelStyle = 'border';
+
+function applyLabelStyle(style: LabelStyle): void {
+  const svg = document.getElementById('tree');
+  if (!svg) return;
+  for (const s of LABEL_STYLES) svg.classList.remove(`label-style-${s}`);
+  svg.classList.add(`label-style-${style}`);
+}
+
+function readStoredLabelStyle(): LabelStyle {
+  const stored = localStorage.getItem(LABEL_STYLE_KEY);
+  return (LABEL_STYLES as readonly string[]).includes(stored ?? '')
+    ? (stored as LabelStyle)
+    : DEFAULT_LABEL_STYLE;
+}
+
 function setupInputSettings(controller: InputController): void {
   const toggle = document.querySelector<HTMLButtonElement>('.settings-toggle');
   const body = document.querySelector<HTMLElement>('#settings-body');
   const inputModeCheckbox = document.querySelector<HTMLInputElement>('#settings-trackpad-mode');
   const debugLayoutCheckbox = document.querySelector<HTMLInputElement>('#settings-debug-layout');
+  const labelStyleSelect = document.querySelector<HTMLSelectElement>('#settings-label-style');
   const summary = document.querySelector<HTMLElement>('#settings-input-summary');
   const defaultBadge = document.querySelector<HTMLElement>('#settings-input-default');
   if (!toggle || !body || !inputModeCheckbox || !summary || !defaultBadge) {
@@ -997,6 +1084,15 @@ function setupInputSettings(controller: InputController): void {
     renderDebugLayout();
     currentCtx?.draw();
   });
+  if (labelStyleSelect) {
+    const current = readStoredLabelStyle();
+    labelStyleSelect.value = current;
+    labelStyleSelect.addEventListener('change', () => {
+      const next = labelStyleSelect.value as LabelStyle;
+      localStorage.setItem(LABEL_STYLE_KEY, next);
+      applyLabelStyle(next);
+    });
+  }
 }
 
 function detectDefaultInputMode(): InputMode {

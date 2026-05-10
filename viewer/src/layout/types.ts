@@ -2,6 +2,7 @@
 // renderer-facing `Layout` shape from analysis/layout_model.ts.
 
 import type { DriftClass } from '../analysis/drift.ts';
+import type { LeafBgSegment, PrefixSegment } from '../analysis/layout_metrics.ts';
 import type { ModuleNode, TypeNode } from '../analysis/module_tree.ts';
 import type { Ownership } from '../data/schema.ts';
 import type { LayoutBoxFragmentKind } from './box_fragments.ts';
@@ -81,6 +82,8 @@ export interface PositionedModule {
   readonly hitWidth: number;
   readonly hasChildren: boolean;
   readonly expanded: boolean;
+  readonly prefixSegments: readonly PrefixSegment[];
+  readonly leafBg: LeafBgSegment;
 }
 
 /** Pixel-space visual/routing rectangle for one fragment anchored at its

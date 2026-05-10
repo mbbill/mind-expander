@@ -1,6 +1,9 @@
-// Two-area renderer: indented module tree on the left, per-module type bands
-// on the right. Layout is precomputed by layout; this module
-// translates Layout objects into SVG and wires click handlers.
+// Two-area renderer: module tree floats as a transparent overlay on the left,
+// per-module type bands fill the canvas on the right. Layout is precomputed
+// by layout; this module translates Layout objects into SVG and wires click
+// handlers. There is no opaque pane between the two — module labels overlay
+// the diagram and rely on a white text halo for legibility where they cross
+// type content.
 //
 // Rendering uses a persistent DOM with d3 data-join and stable keys so that
 // elements existing in both the previous and current render *tween* between
@@ -56,14 +59,46 @@ export const FONT_SIZE_FIELD = BASE_FONT_SIZE;
 // Stays within the grid-derived band height — at 14px the
 // cap-height plus descender comfortably fits.
 const FONT_SIZE_MODULE_LEAF = 14;
-const FONT_SIZE_MODULE_PREFIX = 11; // smaller than the leaf, to keep the row tight
+const FONT_SIZE_MODULE_PREFIX = 12; // base size — bumped to read clearly when the label sits over diagram content
 const FONT_SIZE_MODULE_CHEVRON = 14; // bumped above the base + bold so the
 // "+/-" expand affordance reads clearly without changing direction-neutral
 // semantics (modules expand both vertically and horizontally).
 
 const COLOR_LABEL = '#1e293b';
-const COLOR_MODULE_PREFIX = '#60a5fa'; // blue-400, dimmed parent path
+const COLOR_MODULE_PREFIX = '#475569'; // slate-600, dark grey for the dimmed parent path
+// Light blue card behind each module row's chevron + label. Required since
+// the overlay is transparent — without this, type labels and arrows panning
+// underneath blend with the floating module text. Matched to the alternating
+// band tint family so the overlay still reads as part of the same column.
+const COLOR_MODULE_BG = '#dbeafe'; // blue-100
+
+// Pastel palette for the per-segment chip colours behind the dimmed prefix.
+// Each ancestor name (`vm`, `middle`, `ssa_ir`, ...) hashes into one slot so
+// adjacent rows that share a parent share a colour. Tints are light enough
+// for the slate-600 prefix text to stay readable.
+const SEGMENT_PALETTE: readonly string[] = [
+  '#99f6e4', // teal-200
+  '#bae6fd', // sky-200
+  '#c7d2fe', // indigo-200
+  '#ddd6fe', // violet-200
+  '#fbcfe8', // pink-200
+  '#a7f3d0', // emerald-200
+  '#fde68a', // amber-200
+  '#fecdd3', // rose-200
+];
+
+function colorForSegment(name: string): string {
+  // djb2-style hash; we only need stable distribution across the palette.
+  let h = 5381;
+  for (let i = 0; i < name.length; i++) h = ((h << 5) + h) ^ name.charCodeAt(i);
+  const idx = (h >>> 0) % SEGMENT_PALETTE.length;
+  return SEGMENT_PALETTE[idx] ?? SEGMENT_PALETTE[0]!;
+}
 const COLOR_CHEVRON = '#94a3b8';
+// `+` (expand) reads as add → green; `-` (collapse) reads as remove → red.
+// Colours match the visibility legend swatches used elsewhere in the UI.
+const COLOR_CHEVRON_EXPAND = '#22c55e'; // green-500
+const COLOR_CHEVRON_COLLAPSE = '#ef4444'; // red-500
 const COLOR_FIELD_NAME = '#334155';
 const COLOR_FIELD_TY = '#94a3b8'; // slate-400, grey for the on-hover type hint
 // Slate-500 — readable italic but visually subordinate to field rows
@@ -77,8 +112,6 @@ const TY_BG_PAD_Y = 2;
 const COLOR_TY_BG = '#ffffff';
 const METHOD_BUCKET_CHEVRON_OFFSET = 12;
 const METHOD_BUCKET_CHEVRON_FONT_SIZE = 14;
-const EDGE_SHADOW_GRADIENT_ID = 'sf-edge-shadow';
-const EDGE_SHADOW_W = 16; // data-units; scales with zoom (small but visible)
 const COLOR_ARROW_CANONICAL = '#94a3b8'; // slate-400: at_lca / within_budget — neutral context
 // Highlighted-canonical color (#3b82f6 blue) is applied via CSS in
 // index.html (`.canonical.highlighted { stroke: ... }`) so the marker
@@ -317,17 +350,13 @@ export function renderTree(layers: ZoomLayers, layout: Layout, opts: TreeRenderO
   const arrowG = ensureGroup(zoomLayer, 'arrows');
   arrowG.attr('fill', 'none').attr('stroke-width', 1);
   const typeG = ensureGroup(zoomLayer, 'types');
-  const frozenBandG = ensureGroup(frozenLayer, 'frozen-band-bg');
   const moduleG = ensureGroup(frozenLayer, 'modules');
 
   renderBandBackgrounds(bandG, layout);
   renderLayoutDebug(debugG, layout);
-  renderFrozenBandBackgrounds(frozenBandG, layout);
   renderArrows(arrowG, layout, opts.selectedArrows);
   renderTypes(typeG, zoomLayer, layout, opts);
   renderModules(moduleG, layout, opts);
-  sizeFrozenBackdrop(layers.backdrop, frozenLayer, layout);
-  renderEdgeShadowsImpl(frozenLayer, layout);
   installArrowClickHandler(layers, layout, opts);
 }
 
@@ -562,102 +591,6 @@ function installArrowClickHandler(
   });
 }
 
-/**
- * Per-band edge shadow on the frozen pane's right edge. Shows up only on
- * bands whose types have any portion hidden behind the frozen module
- * column. Caller invokes this from both `renderTree` (after layout) and
- * from the zoom callback (after each pan/zoom). Cheap: O(types) per call.
- */
-export function renderEdgeShadows(
-  layers: ZoomLayers,
-  layout: Layout,
-  transform: { x: number; k: number },
-): void {
-  renderEdgeShadowsImpl(select(layers.frozenLayer), layout, transform);
-}
-
-function renderEdgeShadowsImpl(
-  frozenLayer: Selection<SVGGElement, unknown, null, undefined>,
-  layout: Layout,
-  transform?: { x: number; k: number },
-): void {
-  // Read the frozen pane's right-edge data-x from the separator line
-  // (sizeFrozenBackdrop has set it just before this call). If no
-  // separator exists yet (very first draw before sizeFrozenBackdrop ran)
-  // bail — there are no shadows to render meaningfully.
-  const sepLine = frozenLayer.select<SVGLineElement>('line.frozen-separator');
-  if (sepLine.empty()) return;
-  const rightEdge = Number(sepLine.attr('x1'));
-  if (!Number.isFinite(rightEdge)) return;
-
-  // If transform isn't supplied (called from renderTree's first pass
-  // before zoom has fired), fall back to identity. The zoom callback
-  // will refresh shadows shortly after with the real transform.
-  const tx = transform?.x ?? 0;
-  const tk = transform?.k ?? 1;
-  if (tk <= 0) return;
-
-  // Data-x at which the frozen pane's right edge sits (back-projected
-  // from the screen). Anything to the LEFT of this is hidden.
-  // Frozen layer transform is `translate(0, t.y) scale(t.k)` so the
-  // frozen pane's right edge in screen space is at `rightEdge * tk`.
-  // For the zoom layer (transform `translate(t.x, t.y) scale(t.k)`), a
-  // type at data-x px renders at screen-x `px * tk + tx`. A type is fully
-  // hidden if its right edge `(px + w) * tk + tx < rightEdge * tk`, which
-  // simplifies to `(px + w) < rightEdge - tx/tk`.
-  const viewLeftDataX = rightEdge - tx / tk;
-
-  // Per-module: minimum type-right-edge. If the leftmost-finishing type
-  // is still right of viewLeftDataX, no type is hidden in this band.
-  const minRightByPath = new Map<string, number>();
-  for (const t of layout.types) {
-    const right = t.x + t.width;
-    const cur = minRightByPath.get(t.modulePath);
-    if (cur === undefined || right < cur) minRightByPath.set(t.modulePath, right);
-  }
-
-  // Module rows have id = `crate::path` (or just `crate` for the root);
-  // types' modulePath = `path` (no crate prefix). Strip the crate prefix
-  // off of the row id to join the two.
-  const cratePrefixIdx = (id: string): string => {
-    const idx = id.indexOf('::');
-    return idx >= 0 ? id.slice(idx + 2) : '';
-  };
-
-  // d3 join keyed on the module id. Width is constant in data-units
-  // (scales with zoom — fine, the cue stays proportional). Visibility
-  // is toggled via `visibility` rather than DOM add/remove so transitions
-  // don't fire on every zoom event.
-  const shadowG = ensureGroup(frozenLayer, 'edge-shadows');
-  const sel = shadowG
-    .selectAll<SVGRectElement, Layout['modules'][number]>('rect.edge-shadow')
-    .data(layout.modules, (m) => m.id);
-
-  sel.exit().remove();
-
-  const enter = sel
-    .enter()
-    .append('rect')
-    .attr('class', 'edge-shadow')
-    .attr('x', rightEdge)
-    .attr('width', EDGE_SHADOW_W)
-    .attr('fill', `url(#${EDGE_SHADOW_GRADIENT_ID})`)
-    .attr('pointer-events', 'none');
-
-  const merged = enter.merge(sel);
-  merged
-    .attr('x', rightEdge)
-    .attr('width', EDGE_SHADOW_W)
-    .attr('y', (m) => m.y)
-    .attr('height', (m) => m.bandHeight)
-    .style('visibility', (m) => {
-      const path = cratePrefixIdx(m.id);
-      const minRight = minRightByPath.get(path);
-      if (minRight === undefined) return 'hidden';
-      return minRight < viewLeftDataX ? 'visible' : 'hidden';
-    });
-}
-
 function ensureGroup(
   parent: Selection<SVGGElement, unknown, null, undefined>,
   className: string,
@@ -665,36 +598,6 @@ function ensureGroup(
   let g = parent.select<SVGGElement>(`g.${className}`);
   if (g.empty()) g = parent.append('g').attr('class', className);
   return g;
-}
-
-function renderFrozenBandBackgrounds(
-  g: Selection<SVGGElement, unknown, null, undefined>,
-  layout: Layout,
-): void {
-  // Mirror the zoom-layer alternating tint inside the frozen module column so
-  // bands flow visually uninterrupted across the separator. Width is a
-  // placeholder here; sizeFrozenBackdrop later trims it to the backdrop's
-  // right edge.
-  const tinted = layout.modules.filter((_m, i) => i % 2 === 1);
-  const sel = g
-    .selectAll<SVGRectElement, Layout['modules'][number]>('rect')
-    .data(tinted, (m) => m.id);
-  sel.exit().transition('exit').duration(ANIM_MS).style('opacity', 0).remove();
-  const enter = sel
-    .enter()
-    .append('rect')
-    .attr('x', -10000)
-    .attr('y', (m) => m.y)
-    .attr('width', 20000)
-    .attr('height', (m) => m.bandHeight)
-    .attr('fill', '#f1f5f9')
-    .style('opacity', 0);
-  enter.transition('enter').duration(ANIM_MS).style('opacity', 1);
-  sel
-    .transition('move')
-    .duration(ANIM_MS)
-    .attr('y', (m) => m.y)
-    .attr('height', (m) => m.bandHeight);
 }
 
 function renderBandBackgrounds(
@@ -727,42 +630,6 @@ function renderBandBackgrounds(
     .attr('height', (m) => m.bandHeight);
 }
 
-function sizeFrozenBackdrop(
-  backdrop: SVGRectElement,
-  frozen: Selection<SVGGElement, unknown, null, undefined>,
-  layout: Layout,
-): void {
-  let maxX = 0;
-  for (const m of layout.modules) {
-    const right = m.labelX + m.hitWidth;
-    if (right > maxX) maxX = right;
-  }
-  const rightEdge = Math.max(maxX + 12, 80);
-  backdrop.setAttribute('width', String(rightEdge + 10000));
-
-  // Trim the alternating-tint rects to the same right edge so they end at
-  // the separator line and don't bleed into the type area.
-  frozen
-    .selectAll<SVGRectElement, unknown>('g.frozen-band-bg rect')
-    .attr('width', rightEdge + 10000);
-
-  // Separator line at the right edge of the frozen pane. `non-scaling-stroke`
-  // keeps the line 1px regardless of zoom level. Persistent: created once,
-  // updated in place so tweens keep working across draws.
-  let sep = frozen.select<SVGLineElement>('line.frozen-separator');
-  if (sep.empty()) {
-    sep = frozen
-      .append('line')
-      .attr('class', 'frozen-separator')
-      .attr('y1', -10000)
-      .attr('y2', 10000)
-      .attr('stroke', '#cbd5e1')
-      .attr('stroke-width', 1)
-      .attr('vector-effect', 'non-scaling-stroke');
-  }
-  sep.attr('x1', rightEdge).attr('x2', rightEdge);
-}
-
 function ensureArrowMarker(layer: Selection<SVGGElement, unknown, null, undefined>): void {
   // Idempotent: skip if we've already set up <defs>. Markers live there.
   if (!layer.select('defs').empty()) return;
@@ -792,19 +659,6 @@ function ensureArrowMarker(layer: Selection<SVGGElement, unknown, null, undefine
   define('sf-arrow-soft');
   define('sf-arrow-hard');
   define('sf-arrow-hover', { markerUnits: 'userSpaceOnUse', size: 10 });
-
-  // Edge-shadow gradient — used by per-band shadows on the frozen pane's
-  // right edge to signal "this band has type content currently hidden
-  // behind the column."
-  const grad = defs
-    .append('linearGradient')
-    .attr('id', EDGE_SHADOW_GRADIENT_ID)
-    .attr('x1', '0')
-    .attr('y1', '0')
-    .attr('x2', '1')
-    .attr('y2', '0');
-  grad.append('stop').attr('offset', '0').attr('stop-color', 'rgba(15,23,42,0.22)');
-  grad.append('stop').attr('offset', '1').attr('stop-color', 'rgba(15,23,42,0)');
 }
 
 function arrowKey(a: Layout['arrows'][number]): string {
@@ -1055,6 +909,25 @@ function renderModules(
     .attr('transform', (d) => `translate(${d.labelX},${d.y})`)
     .style('opacity', 0);
 
+  // Light-blue card behind the row's content. Appended first so it paints
+  // under the chevron and label (SVG paints in document order). Width is
+  // sized after enter via sizeModuleExpandHit, alongside the hit-rect.
+  enter
+    .append('rect')
+    .attr('class', 'bg')
+    .attr('x', 0)
+    .attr('y', 0)
+    .attr('width', 0)
+    .attr('height', ROW_H)
+    .attr('rx', 3)
+    .attr('fill', COLOR_MODULE_BG)
+    .attr('pointer-events', 'none');
+
+  // Per-ancestor colour rects covering the dimmed prefix portion. Painted
+  // on top of `rect.bg` and below the prefix tspan so the prefix text reads
+  // as a coloured chip per parent module.
+  enter.append('g').attr('class', 'prefix-bgs').attr('pointer-events', 'none');
+
   enter
     .filter((d) => d.hasChildren)
     .append('text')
@@ -1112,11 +985,13 @@ function renderModules(
     .duration(ANIM_MS)
     .attr('transform', (d) => `translate(${d.labelX},${d.y})`);
 
-  // Update chevron text (expansion state may have changed).
+  // Update chevron text + colour. Refreshed each draw because expansion
+  // state changes and so should the +/- glyph and its red/green fill.
   merged
     .filter((d) => d.hasChildren)
     .select<SVGTextElement>('text.chevron')
-    .text((d) => (d.expanded ? '-' : '+'));
+    .text((d) => (d.expanded ? '-' : '+'))
+    .attr('fill', (d) => (d.expanded ? COLOR_CHEVRON_COLLAPSE : COLOR_CHEVRON_EXPAND));
 
   // Refresh the module label tspans each draw — content may shift when
   // crates are switched or filters are applied (focus mode collapses
@@ -1137,6 +1012,90 @@ function renderModules(
       if (d.hasChildren) opts.onToggle(d.id);
     });
 
+  // Cluster rendering: a per-row clipPath defines the rounded outer shape;
+  // colored segment rects sit inside that clip so their boundaries between
+  // each parent and the leaf are flush. A single outer border rect with
+  // fill=none + slate-300 stroke draws the rounded chip outline on top.
+  // Outer edges (left of first, right of last) get padding so glyphs don't
+  // sit flush against the rounded border.
+  const SEG_OUTER_PAD = 4;
+  type RowSeg = (Layout['modules'][number]['prefixSegments'][number] | Layout['modules'][number]['leafBg']) & {
+    readonly fill: string;
+  };
+  merged.each(function (d) {
+    const rowG = select(this);
+    const prefixSegs: RowSeg[] = d.prefixSegments.map((s) => ({
+      ...s,
+      fill: colorForSegment(s.name),
+    }));
+    const leafSeg: RowSeg = {
+      ...d.leafBg,
+      // Half-step between slate-100 (band tint) and slate-200 — light enough
+      // to read as "neutral" but distinct from both the white viewport and
+      // the tinted band stripes.
+      fill: d.leafBg.isParent ? colorForSegment(d.leafBg.name) : '#eaeef4',
+    };
+    const all = [...prefixSegs, leafSeg];
+    const lastIdx = all.length - 1;
+    const firstSeg = all[0]!;
+    const lastSeg = all[lastIdx]!;
+    const clusterX = firstSeg.xStart - SEG_OUTER_PAD;
+    const clusterWidth = lastSeg.xStart + lastSeg.width - clusterX + SEG_OUTER_PAD;
+    const clipId = `cc-${d.id.replace(/[^a-zA-Z0-9-]/g, '_')}`;
+
+    // ClipPath: rounded outer cluster shape. The id has to be unique in the
+    // document so the clip-path URL resolves to this row's shape, not some
+    // other row's. Inserted before g.prefix-bgs so the def precedes uses.
+    let clipPath = rowG.select<SVGClipPathElement>('clipPath');
+    if (clipPath.empty()) {
+      clipPath = rowG.insert<SVGClipPathElement>('clipPath', 'g.prefix-bgs');
+      clipPath.append('rect').attr('y', 0).attr('height', ROW_H).attr('rx', 4);
+    }
+    clipPath.attr('id', clipId);
+    clipPath.select<SVGRectElement>('rect').attr('x', clusterX).attr('width', clusterWidth);
+
+    // Inner segment rects: no stroke, no rx — the clipPath handles the
+    // rounded outer shape, and the per-row outer border draws the edge.
+    const segGroup = rowG
+      .select<SVGGElement>('g.prefix-bgs')
+      .attr('clip-path', `url(#${clipId})`);
+    const segs = segGroup
+      .selectAll<SVGRectElement, RowSeg>('rect.seg')
+      .data(all, (s, i) => `${i === lastIdx ? 'leaf' : 'pre'}:${s.name}`);
+    segs.exit().remove();
+    segs
+      .enter()
+      .append('rect')
+      .attr('class', 'seg')
+      .attr('y', 0)
+      .attr('height', ROW_H)
+      .merge(segs)
+      .attr('x', (_s, i) => all[i]!.xStart - (i === 0 ? SEG_OUTER_PAD : 0))
+      .attr(
+        'width',
+        (_s, i) =>
+          all[i]!.width + (i === 0 ? SEG_OUTER_PAD : 0) + (i === lastIdx ? SEG_OUTER_PAD : 0),
+      )
+      .attr('fill', (s) => s.fill);
+
+    // Outer cluster border. Inserted before text.name (always present) so it
+    // paints over the colored zones but under the chevron and label glyphs.
+    let border = rowG.select<SVGRectElement>('rect.cluster-border');
+    if (border.empty()) {
+      border = rowG.insert<SVGRectElement>('rect', 'text.name');
+      border
+        .attr('class', 'cluster-border')
+        .attr('y', 0)
+        .attr('height', ROW_H)
+        .attr('rx', 4)
+        .attr('fill', 'none')
+        .attr('stroke', '#cbd5e1')
+        .attr('stroke-width', 1)
+        .attr('pointer-events', 'none');
+    }
+    border.attr('x', clusterX).attr('width', clusterWidth);
+  });
+
   sizeModuleExpandHit(merged);
 }
 
@@ -1145,8 +1104,12 @@ function sizeModuleExpandHit(
 ): void {
   // Layout owns module label measurement so toggling a band does not force SVG
   // text layout across every visible module row before the animation frame.
+  // Background card and click hit-rect both span the same width; the bg sits
+  // beneath chevron+label, the hit-rect catches clicks on top.
   sel.each(function (d) {
-    select(this).select<SVGRectElement>('rect.expand-hit').attr('width', d.hitWidth);
+    const row = select(this);
+    row.select<SVGRectElement>('rect.bg').attr('width', d.hitWidth);
+    row.select<SVGRectElement>('rect.expand-hit').attr('width', d.hitWidth);
   });
 }
 

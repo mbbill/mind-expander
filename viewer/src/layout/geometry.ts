@@ -17,9 +17,13 @@ import {
   MIN_TYPE_BOX_W,
   MODULE_BAND_X_GAP,
   MODULE_GLYPH_W,
+  type LeafBgSegment,
+  type PrefixSegment,
   ROW_H,
   TOP_PAD,
   TYPE_X_GAP,
+  computeLeafSegment,
+  computePrefixSegments,
   measureModuleHitWidth,
   measureTypeHeaderMetrics,
 } from '../analysis/layout_metrics.ts';
@@ -112,7 +116,8 @@ export function computeGeometry(inputs: LayoutInputs, options: GeometryOptions =
   const allTypes = placementPlan.types;
   const ranks = placementPlan.ranks;
   const measure = inputs.measureText ?? ((s: string) => s.length * CHAR_W);
-  const globalXStart = computeGlobalXStart(inputs.staticRoot, inputs.state, measure);
+  const measureBold = inputs.measureBoldText ?? measure;
+  const globalXStart = computeGlobalXStart(inputs.staticRoot, inputs.state, measure, measureBold);
   const columnStride = computeColumnStride(allTypes, measure);
   const extraGaps = options.extraGaps ?? [];
 
@@ -129,6 +134,7 @@ export function computeGeometry(inputs: LayoutInputs, options: GeometryOptions =
     inputs.methodArrowsShown,
     placementPlan,
     measure,
+    measureBold,
   );
   const preparedBands = prepareVisibleBands(moduleBands);
   const placedGrid = placeGridItemsTopToBottom(
@@ -209,6 +215,8 @@ interface ModuleBandSpec {
   readonly hasChildren: boolean;
   readonly expanded: boolean;
   readonly semanticItems: readonly SemanticBandItem[];
+  readonly prefixSegments: readonly PrefixSegment[];
+  readonly leafBg: LeafBgSegment;
 }
 
 interface PreparedModuleBand extends ModuleBandSpec {
@@ -237,6 +245,7 @@ function collectVisibleModuleBands(
   methodArrowsShown: ReadonlySet<string> | undefined,
   placementPlan: PlacementLayoutPlan,
   measure: (s: string) => number,
+  measureBold: (s: string) => number,
 ): readonly ModuleBandSpec[] {
   if (!parentExpanded || node.kind !== 'module') return [];
   if (focusModules !== undefined && !focusModules.has(node.id)) return [];
@@ -263,15 +272,25 @@ function collectVisibleModuleBands(
     );
   }
 
+  const prefixSegments = computePrefixSegments(node.id, measure);
+  // Every row gets a leaf chip; isParent decides whether the renderer hashes
+  // the leaf name to a palette colour (so parent rows match the prefix in
+  // their descendants) or falls back to a neutral fill for leaf-only rows.
+  const hasModuleChildren =
+    node.kind === 'module' && node.children.some((c) => c.kind === 'module');
+  const leafBg = computeLeafSegment(node.id, prefixSegments, measureBold, hasModuleChildren);
+
   const out: ModuleBandSpec[] = [
     {
       node,
       modDepth,
       labelX,
-      hitWidth: measureModuleHitWidth(node.id, measure),
+      hitWidth: measureModuleHitWidth(node.id, measure, measureBold),
       hasChildren,
       expanded,
       semanticItems,
+      prefixSegments,
+      leafBg,
     },
   ];
 
@@ -292,6 +311,7 @@ function collectVisibleModuleBands(
           methodArrowsShown,
           placementPlan,
           measure,
+          measureBold,
         ),
       );
     }
@@ -366,6 +386,8 @@ function assembleGeometryFromPlacedBands(
       hitWidth: band.hitWidth,
       hasChildren: band.hasChildren,
       expanded: band.expanded,
+      prefixSegments: band.prefixSegments,
+      leafBg: band.leafBg,
     });
 
     const byId = new Map(band.semanticItems.map((item) => [item.node.id, item] as const));
@@ -754,31 +776,21 @@ function computeGlobalXStart(
   root: ModuleNode,
   _state: ViewState,
   measure: (s: string) => number,
+  measureBold: (s: string) => number,
 ): number {
   // Walk the WHOLE module tree (collapsed and all) so the type pane
-  // x doesn't shift when modules are toggled. For each module, compute
-  // the rendered text width including the dimmed parent-path prefix
-  // the renderer injects on rows two-or-more levels below the crate
-  // root — without this, deep paths like `vm::entities::deep` get
-  // measured as just "deep" and the type pane starts inside the
-  // frozen module pane, truncating type labels.
+  // x doesn't shift when modules are toggled. Per row, derive the chip's
+  // right edge the same way measureModuleHitWidth does so the type pane
+  // starts after the widest possible chip.
   let maxLabelEnd = 0;
   const walk = (n: TreeNode, modDepth: number): void => {
     if (n.kind !== 'module') return;
     const labelX = LEFT_PAD + modDepth * INDENT_PX + MODULE_GLYPH_W;
-    const renderedW = measure(renderedModuleText(n));
-    if (labelX + renderedW > maxLabelEnd) maxLabelEnd = labelX + renderedW;
+    const chipWidth = measureModuleHitWidth(n.id, measure, measureBold);
+    if (labelX + chipWidth > maxLabelEnd) maxLabelEnd = labelX + chipWidth;
     for (const c of n.children) walk(c, modDepth + 1);
   };
   walk(root, 0);
   return maxLabelEnd + MODULE_BAND_X_GAP;
 }
 
-/** Mirror of `splitModuleLabel` in view/tree.ts: rows two or more levels
- *  below the crate root are rendered as `parent::path::leaf`, with the
- *  parent path painted dimmed. */
-function renderedModuleText(node: ModuleNode): string {
-  const segs = node.id.split('::');
-  if (segs.length <= 2) return node.label;
-  return `${segs.slice(1, -1).join('::')}::${node.label}`;
-}

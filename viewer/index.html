@@ -118,6 +118,29 @@
         stroke-linejoin: round;
         stroke-linecap: round;
       }
+      /* Module-label background style — switchable via the settings dropdown.
+         The rect.bg geometry is set in tree.ts; appearance comes from these
+         class rules on the parent SVG so we can swap looks without a redraw. */
+      #tree.label-style-halo g.module-row rect.bg {
+        display: none;
+      }
+      #tree.label-style-halo g.module-row text.name,
+      #tree.label-style-halo g.module-row text.chevron {
+        stroke-width: 8px;
+      }
+      #tree.label-style-border g.module-row rect.bg {
+        fill: transparent;
+        stroke: none;
+      }
+      #tree.label-style-shadow g.module-row rect.bg {
+        fill: #ffffff;
+        stroke: none;
+        filter: url(#module-bg-shadow);
+      }
+      #tree.label-style-blue g.module-row rect.bg {
+        fill: #dbeafe;
+        stroke: none;
+      }
       #top-controls {
         position: fixed;
         top: 8px;
@@ -639,6 +662,12 @@
         >
           <path d="M0,-4L8,0L0,4Z" fill="context-stroke" />
         </marker>
+        <!-- Soft drop-shadow used by the 'shadow' module-label style.
+             Reachable from #tree because filter URL fragments resolve
+             document-wide. -->
+        <filter id="module-bg-shadow" x="-20%" y="-50%" width="140%" height="200%">
+          <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#0f172a" flood-opacity="0.12" />
+        </filter>
       </defs>
     </svg>
     <div id="top-controls" aria-label="viewer controls">
@@ -677,6 +706,15 @@
             <input id="settings-debug-layout" type="checkbox" />
             <span>debug overlay</span>
           </label>
+          <div class="settings-row" title="Background style for module labels in the floating left overlay">
+            <span>label style</span>
+            <select id="settings-label-style" style="margin-left: auto; font: inherit; padding: 1px 4px; border: 1px solid #e2e8f0; border-radius: 3px; background: white;">
+              <option value="halo">halo only</option>
+              <option value="border">white + border</option>
+              <option value="shadow">white + shadow</option>
+              <option value="blue">blue (current)</option>
+            </select>
+          </div>
           <div class="settings-summary" id="settings-input-summary"></div>
           <div class="settings-default" id="settings-input-default"></div>
         </div>
@@ -779,6 +817,7 @@
             <div class="row" id="hint-methods" title="Show or hide the per-type method buckets"><kbd>M</kbd><span>methods</span></div>
             <div class="row" id="hint-scale" title="Reset zoom to 100%"><kbd>S</kbd><span>scale</span><span id="scale-value">100%</span></div>
             <div class="row" id="hint-reset" title="Reset everything"><kbd>R</kbd><span>reset</span></div>
+            <div class="row" id="hint-overview" title="Toggle fit-all overview / 100% at cursor"><kbd>Space</kbd><span>overview</span></div>
           </div>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import type { Ownership, TypeKind } from '../data/schema.ts';
 import type { ViewState } from '../state/view_state.ts';
 import type { DriftClass, DriftIndex } from './drift.ts';
+import type { LeafBgSegment, PrefixSegment } from './layout_metrics.ts';
 import type { ModuleNode } from './module_tree.ts';
 import type { OwnershipIndex } from './ownership.ts';
 
@@ -18,6 +19,14 @@ export interface ModuleRow {
   readonly bandHeight: number;
   readonly expanded: boolean;
   readonly hasChildren: boolean;
+  /** Ancestor modules in the dimmed prefix portion. The renderer paints a
+   *  coloured rect per segment so adjacent rows that share a parent share a
+   *  colour. Empty for crate-root and one-level-deep rows (no prefix). */
+  readonly prefixSegments: readonly PrefixSegment[];
+  /** Background segment under the leaf. Always present for module rows so
+   *  every row shows a defined chip; `isParent` tells the renderer whether
+   *  to use the hashed colour (parent of deeper rows) or a neutral white. */
+  readonly leafBg: LeafBgSegment;
 }
 
 export type RowKind = 'field' | 'method_bucket' | 'method';
@@ -134,6 +143,10 @@ export interface LayoutInputs {
   readonly state: ViewState;
   readonly drift: DriftIndex;
   readonly measureText?: (text: string) => number;
+  /** Bold-weight measurer for module label chip width — the crate-root leaf
+   *  renders bold, so non-bold measurements under-fit the chip. Optional;
+   *  falls back to `measureText` if absent. */
+  readonly measureBoldText?: (text: string) => number;
   readonly focusModules?: ReadonlySet<string>;
   readonly ghostArrowsShown?: ReadonlySet<string>;
   readonly methodsHidden?: boolean;

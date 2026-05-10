@@ -66,6 +66,8 @@ function toModuleRows(geometry: Geometry): ModuleRow[] {
       bandHeight: m.bandHeight,
       expanded: m.expanded,
       hasChildren: m.hasChildren,
+      prefixSegments: m.prefixSegments,
+      leafBg: m.leafBg,
     }),
   );
 }

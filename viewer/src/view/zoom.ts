@@ -1,22 +1,23 @@
-// Pan + zoom on the SVG canvas, with a frozen left column for the module
-// tree. d3.zoom drives one shared transform; we project it onto two layers:
+// Pan + zoom on the SVG canvas. d3.zoom drives one shared transform; we
+// project it onto two layers:
 //
 //   • zoomLayer   — full transform (translate(x,y) scale(k)). Holds types,
 //                   field rows, and arrows. Pans/zooms freely.
 //   • frozenLayer — only vertical translate + scale (translate(0,y) scale(k)).
-//                   Holds the module tree. Stays glued to the left edge
-//                   horizontally so module ↔ type-band mapping survives any
-//                   horizontal pan.
+//                   Holds the module-label overlay. Stays glued to the left
+//                   edge horizontally so module ↔ type-band mapping survives
+//                   any horizontal pan. Transparent — no backdrop. The labels
+//                   float over the diagram and rely on a white text halo for
+//                   legibility where they cross type content.
 //
-// The frozen layer is appended LAST so it draws on top of any types that pan
-// underneath it. A backdrop rect fills the column area opaque white so panned
-// types don't bleed through.
+// The frozen layer is appended LAST so its labels draw on top of any types
+// that pan underneath them and so label clicks beat type-box clicks where
+// the two overlap.
 
-import { type ZoomBehavior, select, zoom, zoomIdentity, zoomTransform } from 'd3';
+import { type ZoomBehavior, type ZoomTransform, select, zoom, zoomIdentity, zoomTransform } from 'd3';
 
 const ZOOM_LAYER_CLASS = 'zoom-layer';
 const FROZEN_LAYER_CLASS = 'frozen-layer';
-const BACKDROP_CLASS = 'frozen-backdrop';
 // Permissive bounds at attach time; the real range is set per-draw via
 // setScaleExtent based on the layout's content size and the viewport.
 const SCALE_MIN = 0.01;
@@ -31,10 +32,8 @@ export const ANIM_MS = 250;
 export interface ZoomLayers {
   /** Holds types, field rows, arrows. Full pan + zoom. */
   readonly zoomLayer: SVGGElement;
-  /** Holds the module tree. Locked horizontally; mirrors only y/scale. */
+  /** Holds the module-label overlay. Locked horizontally; mirrors only y/scale. */
   readonly frozenLayer: SVGGElement;
-  /** White backdrop inside the frozen layer; size it to cover the column. */
-  readonly backdrop: SVGRectElement;
   /**
    * Shift the zoom transform by (dx, dy) in data-space units. Used to
    * compensate for layout-induced y movement so the clicked element stays
@@ -78,10 +77,28 @@ export interface ZoomLayers {
    *  Used by the "reset" action so the viewport returns to the same place
    *  as the initial page-load view. */
   readonly resetTransform: (animated?: boolean) => void;
+  /** Set the entire transform to (k, tx, ty) directly. Subject to the same
+   *  constrain function as user gestures, so an out-of-bounds target is
+   *  clamped. Used by the space-bar overview toggle to swap between fit-all
+   *  and a 100%-scale view anchored at the cursor. */
+  readonly setTransform: (k: number, tx: number, ty: number, animated?: boolean) => void;
   /** Decide whether a wheel event should be interpreted as zoom by d3.
    *  Main input-mode handling uses this to make trackpad-mode plain
    *  two-finger scroll pan, while Shift+scroll still zooms. */
   readonly setWheelZoomFilter: (filter: (event: WheelEvent) => boolean) => void;
+  /** Update the content bounds used by the pan constraint. The constraint
+   *  forbids panning the canvas so far that the screen centre falls outside
+   *  these bounds — that keeps at least half the viewport over content and
+   *  prevents the diagram from disappearing entirely off-screen. Pass null
+   *  to disable the constraint (e.g. before any layout has been computed). */
+  readonly setContentBounds: (bounds: ContentBounds | null) => void;
+}
+
+export interface ContentBounds {
+  readonly x0: number;
+  readonly y0: number;
+  readonly x1: number;
+  readonly y1: number;
 }
 
 export function attachZoom(
@@ -92,23 +109,44 @@ export function attachZoom(
 
   let zoomLayer = svg.select<SVGGElement>(`g.${ZOOM_LAYER_CLASS}`);
   let frozen = svg.select<SVGGElement>(`g.${FROZEN_LAYER_CLASS}`);
-  let backdrop = frozen.select<SVGRectElement>(`rect.${BACKDROP_CLASS}`);
   let z: ZoomBehavior<SVGSVGElement, unknown>;
   let wheelZoomFilter =
     (svgEl as { __sfWheelZoomFilter?: (event: WheelEvent) => boolean }).__sfWheelZoomFilter ??
     (() => true);
+  // Recover bounds from the SVG element (per-element so multiple
+  // attachments use the same source of truth).
+  type BoundsHost = { __sfContentBounds?: ContentBounds | null };
+  let contentBounds: ContentBounds | null = (svgEl as BoundsHost).__sfContentBounds ?? null;
+
+  // Pan constraint: screen centre (w/2, h/2) must always sit over content.
+  // Solving `contentLeft*k + tx <= w/2 <= contentRight*k + tx` gives
+  // `w/2 - contentRight*k <= tx <= w/2 - contentLeft*k`, and analogously
+  // for ty. Skip the constraint until bounds are set, or when the content
+  // is so small (e.g. zoomed-out tiny crate) that the lower bound exceeds
+  // the upper one — that's a degenerate case where any pan is fine.
+  const constrain = (
+    transform: ZoomTransform,
+    extent: [[number, number], [number, number]],
+  ): ZoomTransform => {
+    if (contentBounds === null) return transform;
+    const w = extent[1][0] - extent[0][0];
+    const h = extent[1][1] - extent[0][1];
+    const k = transform.k;
+    let tx = transform.x;
+    let ty = transform.y;
+    const txMin = w / 2 - contentBounds.x1 * k;
+    const txMax = w / 2 - contentBounds.x0 * k;
+    if (txMin <= txMax) tx = Math.max(txMin, Math.min(txMax, tx));
+    const tyMin = h / 2 - contentBounds.y1 * k;
+    const tyMax = h / 2 - contentBounds.y0 * k;
+    if (tyMin <= tyMax) ty = Math.max(tyMin, Math.min(tyMax, ty));
+    if (tx === transform.x && ty === transform.y) return transform;
+    return transform.translate((tx - transform.x) / k, (ty - transform.y) / k);
+  };
 
   if (zoomLayer.empty() || frozen.empty()) {
     zoomLayer = svg.append('g').attr('class', ZOOM_LAYER_CLASS);
     frozen = svg.append('g').attr('class', FROZEN_LAYER_CLASS);
-    backdrop = frozen
-      .append('rect')
-      .attr('class', BACKDROP_CLASS)
-      .attr('x', -10000)
-      .attr('y', -10000)
-      .attr('width', 0)
-      .attr('height', 20000)
-      .attr('fill', 'white');
 
     const shouldWheelZoom = (event: WheelEvent): boolean =>
       (
@@ -128,6 +166,7 @@ export function attachZoom(
       // programmatic transforms. main.ts owns right-button viewport panning
       // and decides which wheel events should zoom in each input mode.
       .filter(shouldHandleZoomEvent)
+      .constrain(constrain)
       .on('zoom', (event) => {
         const t = event.transform;
         zoomLayer.attr('transform', t.toString());
@@ -151,14 +190,12 @@ export function attachZoom(
 
   const zoomNode = zoomLayer.node();
   const frozenNode = frozen.node();
-  const backdropNode = backdrop.node();
-  if (!zoomNode || !frozenNode || !backdropNode) {
+  if (!zoomNode || !frozenNode) {
     throw new Error('zoom layers not initialized');
   }
   return {
     zoomLayer: zoomNode,
     frozenLayer: frozenNode,
-    backdrop: backdropNode,
     translateBy: (dx, dy, animated = false) => {
       if (animated) {
         svg.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
@@ -196,12 +233,7 @@ export function attachZoom(
       }
     },
     centerOn: (x, y, animated = false) => {
-      // Same algebra as centerOnY, applied to both axes. Note: the frozen
-      // pane's right edge eats some screen width, but we don't compensate
-      // here — pinning the navigated point to the visual centre tends to
-      // land it nicely in the type pane regardless. If a node ends up
-      // hidden behind the frozen column, the user can pan back; that's
-      // the same trade-off already accepted by centerOnY for vertical.
+      // Same algebra as centerOnY, applied to both axes.
       const t = zoomTransform(svgEl);
       const w = svgEl.clientWidth;
       const h = svgEl.clientHeight;
@@ -253,10 +285,30 @@ export function attachZoom(
         z.transform(svg, zoomIdentity);
       }
     },
+    setTransform: (k, tx, ty, animated = false) => {
+      // ZoomTransform.translate(dx, dy) sets x = x + k*dx, so to land at
+      // (k, tx, ty) starting from identity we apply scale(k) then
+      // translate(tx/k, ty/k).
+      const target = zoomIdentity.scale(k).translate(tx / k, ty / k);
+      if (animated) {
+        svg.transition('zoom').duration(ANIM_MS).call(z.transform, target);
+      } else {
+        z.transform(svg, target);
+      }
+    },
     setWheelZoomFilter: (filter) => {
       wheelZoomFilter = filter;
       (svgEl as { __sfWheelZoomFilter?: (event: WheelEvent) => boolean }).__sfWheelZoomFilter =
         filter;
+    },
+    setContentBounds: (bounds) => {
+      contentBounds = bounds;
+      (svgEl as BoundsHost).__sfContentBounds = bounds;
+      // Re-apply current transform so the constraint kicks in immediately
+      // — without this the diagram could already be panned off-screen and
+      // wouldn't snap back until the next user gesture.
+      const t = zoomTransform(svgEl);
+      z.transform(svg, t);
     },
   };
 }

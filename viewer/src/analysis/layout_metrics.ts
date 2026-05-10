@@ -19,13 +19,19 @@ export function gridRows(rows: number): number {
 
 export const ROW_H = gridRows(3);
 export const FIELD_ROW_H = gridRows(2);
-export const INDENT_PX = gridCols(2);
-export const LEFT_PAD = gridCols(1);
+// The module overlay is transparent and the chevron renders at CHEVRON_X=6
+// inside each row group, so the row's transform-x needs no outer slot for it.
+// LEFT_PAD = 0 lets the depth-0 chevron sit ~6px from the viewport edge.
+// INDENT_PX = 0 because every label carries its full module path, so depth
+// is already conveyed in the text — a per-depth indent would just be visual
+// noise and make the column ragged.
+export const INDENT_PX = 0;
+export const LEFT_PAD = 0;
 export const TOP_PAD = gridRows(1);
 
 export const TYPE_X_GAP = gridCols(3);
 export const MODULE_BAND_X_GAP = gridCols(3);
-export const MODULE_GLYPH_W = gridCols(2);
+export const MODULE_GLYPH_W = 0;
 export const MODULE_LABEL_X = 18;
 export const TYPE_GLYPH_W = gridCols(4);
 export const TYPE_LABEL_X = gridCols(3);
@@ -33,6 +39,9 @@ export const FIELD_LABEL_INSET = gridCols(5);
 export const FUNCTION_GROUP_LABEL_INSET = gridCols(3);
 export const METHOD_INDENT = gridCols(2);
 export const HIT_MIN_W = gridCols(5);
+// Right-side breathing room added to the module label hit-rect / chip
+// background so the chip doesn't end flush against the leaf glyphs.
+export const MODULE_HIT_PAD_RIGHT = 8;
 export const MIN_TYPE_BOX_W = gridCols(12);
 
 export const BASE_FONT_SIZE = 12;
@@ -43,8 +52,7 @@ export const TYPE_EXPAND_ARROW_FONT_SCALE = TYPE_EXPAND_ARROW_FONT_SIZE / BASE_F
 export const TYPE_EXPAND_ARROW_GAP = 6;
 export const TYPE_EXPAND_ARROW_CLOSED = '▸';
 export const TYPE_EXPAND_ARROW_OPEN = '▾';
-export const HIT_PAD_RIGHT = gridCols(1);
-export const MODULE_LABEL_PREFIX_FONT_SCALE = 11 / 12;
+export const MODULE_LABEL_PREFIX_FONT_SCALE = 1;
 export const MODULE_LABEL_LEAF_FONT_SCALE = 14 / 12;
 
 export interface TypeHeaderMetrics {
@@ -79,6 +87,61 @@ export function measureTypeHeaderMetrics(
   return { width, arrowX, hitWidth: width };
 }
 
+/** One ancestor module name in the dimmed prefix portion of a row label.
+ *  E.g. for `crate::vm::middle::ssa_ir::target`, the row gets three segments
+ *  named `vm`, `middle`, `ssa_ir`. The renderer paints a coloured rect of
+ *  width `width` at relative x `xStart` so segment colour groups sibling
+ *  rows under the same parent. */
+export interface PrefixSegment {
+  readonly name: string;
+  readonly xStart: number;
+  readonly width: number;
+}
+
+export function computePrefixSegments(
+  id: string,
+  measureText: (text: string) => number,
+): readonly PrefixSegment[] {
+  const segs = id.split('::');
+  if (segs.length <= 2) return [];
+  const ancestors = segs.slice(1, -1);
+  const out: PrefixSegment[] = [];
+  let x = MODULE_LABEL_X;
+  for (const name of ancestors) {
+    const width = measureText(`${name}::`) * MODULE_LABEL_PREFIX_FONT_SCALE;
+    out.push({ name, xStart: x, width });
+    x += width;
+  }
+  return out;
+}
+
+/** Background segment under the leaf, sized for the bold/leaf font.
+ *  `isParent` is true when the row has at least one module child — so its
+ *  leaf name shows up as a coloured prefix in deeper rows and the renderer
+ *  should use the hashed colour. Otherwise the renderer falls back to a
+ *  neutral fill (white) so leaf-only rows still get a defined chip without
+ *  burning a palette slot on a name that never appears as a prefix. */
+export interface LeafBgSegment {
+  readonly name: string;
+  readonly xStart: number;
+  readonly width: number;
+  readonly isParent: boolean;
+}
+
+export function computeLeafSegment(
+  id: string,
+  prefixSegments: readonly PrefixSegment[],
+  measureBoldText: (text: string) => number,
+  isParent: boolean,
+): LeafBgSegment {
+  const segs = id.split('::');
+  const leaf = segs[segs.length - 1] ?? id;
+  const last = prefixSegments[prefixSegments.length - 1];
+  const xStart = last ? last.xStart + last.width : MODULE_LABEL_X;
+  const width = measureBoldText(leaf) * MODULE_LABEL_LEAF_FONT_SCALE;
+  return { name: leaf, xStart, width, isParent };
+}
+
 export function splitModuleDisplayLabel(id: string): { prefix: string; leaf: string } {
   const segs = id.split('::');
   const leaf = segs[segs.length - 1] ?? id;
@@ -86,13 +149,19 @@ export function splitModuleDisplayLabel(id: string): { prefix: string; leaf: str
   return { prefix: `${segs.slice(1, -1).join('::')}::`, leaf };
 }
 
-export function measureModuleHitWidth(id: string, measureText: (text: string) => number): number {
+export function measureModuleHitWidth(
+  id: string,
+  measureText: (text: string) => number,
+  measureBoldText: (text: string) => number = measureText,
+): number {
   const { prefix, leaf } = splitModuleDisplayLabel(id);
-  // Module rows use two font sizes in the renderer. Layout owns this width so
-  // frozen-pane sizing and row hit areas do not need browser getBBox() calls
-  // during expand/collapse redraws.
+  // The leaf is rendered bold for the crate-root row and may render slightly
+  // wider than its non-bold metrics suggest. Always measure the leaf with the
+  // bold font so the chip background and click hit-rect never under-fit the
+  // rendered text. Prefix stays non-bold (matches the renderer).
+  // MODULE_HIT_PAD_RIGHT keeps the chip from ending flush against the glyphs.
   const labelWidth =
     measureText(prefix) * MODULE_LABEL_PREFIX_FONT_SCALE +
-    measureText(leaf) * MODULE_LABEL_LEAF_FONT_SCALE;
-  return Math.max(MODULE_LABEL_X + labelWidth + HIT_PAD_RIGHT, HIT_MIN_W);
+    measureBoldText(leaf) * MODULE_LABEL_LEAF_FONT_SCALE;
+  return MODULE_LABEL_X + labelWidth + MODULE_HIT_PAD_RIGHT;
 }
