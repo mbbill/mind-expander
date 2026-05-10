@@ -14,7 +14,14 @@
 // that pan underneath them and so label clicks beat type-box clicks where
 // the two overlap.
 
-import { type ZoomBehavior, type ZoomTransform, select, zoom, zoomIdentity, zoomTransform } from 'd3';
+import {
+  type ZoomBehavior,
+  type ZoomTransform,
+  select,
+  zoom,
+  zoomIdentity,
+  zoomTransform,
+} from 'd3';
 
 const ZOOM_LAYER_CLASS = 'zoom-layer';
 const FROZEN_LAYER_CLASS = 'frozen-layer';

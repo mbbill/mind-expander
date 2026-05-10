@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { buildFunctionCallIndex } from '../src/analysis/calls.ts';
 import type { TypeBox } from '../src/analysis/layout_model.ts';
 import { rowArrowKey } from '../src/analysis/layout_model.ts';
+import { buildModuleTree } from '../src/analysis/module_tree.ts';
+import type { Facts } from '../src/data/schema.ts';
 import {
   BAND_GRID_CELL_H,
   BAND_GRID_CELL_W,
@@ -682,6 +685,112 @@ describe('buildLayout — Layout shape', () => {
       'method:beta',
     ]);
     expect(thing?.height).toBe(ROW_H + 3 * FIELD_ROW_H);
+  });
+
+  it('renders module function rows from the shared callable row contract', () => {
+    const c = crateFacts('c', [
+      {
+        path: 'm',
+        file: 'src/m.rs',
+        types: [],
+        functions: [
+          {
+            name: 'parse',
+            visibility: 'pub',
+            params: [{ name: 'n', ty_text: 'usize' }],
+            return_ty_text: 'bool',
+          },
+        ],
+      },
+    ]);
+    const fnGroupId = 'c::m::__fn_pub';
+    const layout = buildLayout(buildInputs(c, [], ['c', 'c::m', fnGroupId]));
+    const group = layout.types.find((t) => t.id === fnGroupId);
+
+    expect(group?.fields.map((f) => `${f.kind}:${f.name}:${f.tyText}`)).toEqual([
+      'function:parse:(n: usize) -> bool',
+    ]);
+    expect(group?.fields[0]?.functionFullPath).toBe('c::m::parse');
+    expect(group?.fields[0]?.hasOutgoingCalls).toBe(false);
+    expect(group?.totalFieldCount).toBe(1);
+    expect(group?.height).toBe(ROW_H + FIELD_ROW_H);
+  });
+
+  it('applies call behavior to module function rows through the same layout contract', () => {
+    const c = crateFacts('c', [
+      {
+        path: 'm',
+        file: 'src/m.rs',
+        types: [],
+        functions: [
+          { name: 'local', visibility: 'pub' },
+          { name: 'helper', visibility: 'pub' },
+          { name: 'outbound', visibility: 'pub' },
+          { name: 'unresolved', visibility: 'pub' },
+        ],
+      },
+      {
+        path: 'other',
+        file: 'src/other.rs',
+        types: [],
+        functions: [{ name: 'far', visibility: 'pub' }],
+      },
+    ]);
+    const facts: Facts = {
+      crates: { c },
+      edges: [],
+      call_edges: [
+        {
+          caller: 'c::m::local',
+          callee: 'c::m::helper',
+          kind: 'function',
+          resolution: 'exact',
+          origin: 'helper',
+        },
+        {
+          caller: 'c::m::outbound',
+          callee: 'c::other::far',
+          kind: 'function',
+          resolution: 'exact',
+          origin: 'other::far',
+        },
+        {
+          caller: 'c::m::unresolved',
+          callee: 'c::m::missing',
+          kind: 'function',
+          resolution: 'exact',
+          origin: 'missing',
+        },
+      ],
+    };
+    const root = buildModuleTree(c);
+    const calls = buildFunctionCallIndex(facts, 'c', root);
+    const layout = buildLayout({
+      ...buildInputs(c, [], ['c', 'c::m', 'c::m::__fn_pub', 'c::other']),
+      calls,
+    });
+    const group = layout.types.find((t) => t.id === 'c::m::__fn_pub');
+    const local = group?.fields.find((f) => f.name === 'local');
+    const outbound = group?.fields.find((f) => f.name === 'outbound');
+    const unresolved = group?.fields.find((f) => f.name === 'unresolved');
+
+    expect(local?.callsOutsideModule).toBe(false);
+    expect(local?.hasExternalCalls).toBe(false);
+    expect(local?.hasUnresolvedCalls).toBe(false);
+    expect(local?.hasOutgoingCalls).toBe(true);
+    expect(local?.callTargets.map((target) => target.functionFullPath)).toEqual(['c::m::helper']);
+    expect(outbound?.callsOutsideModule).toBe(true);
+    expect(outbound?.hasExternalCalls).toBe(true);
+    expect(outbound?.hasUnresolvedCalls).toBe(false);
+    expect(outbound?.hasOutgoingCalls).toBe(true);
+    expect(outbound?.callTargets.map((target) => target.functionFullPath)).toEqual([
+      'c::other::far',
+    ]);
+    expect(unresolved?.callsOutsideModule).toBe(true);
+    expect(unresolved?.hasExternalCalls).toBe(false);
+    expect(unresolved?.hasUnresolvedCalls).toBe(true);
+    expect(unresolved?.hasOutgoingCalls).toBe(true);
+    expect(unresolved?.callTargets).toEqual([]);
   });
 
   it('keeps crowded target geometry unchanged during one-pass routing', () => {

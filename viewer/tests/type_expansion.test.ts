@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import type { FunctionCallIndex } from '../src/analysis/calls.ts';
 import type { DriftIndex } from '../src/analysis/drift.ts';
 import type { OwnershipIndex } from '../src/analysis/ownership.ts';
 import {
   ancestorModuleIds,
+  callableBucketIdsForType,
   forwardRoutedTargetModulesFor,
   memberArrowRowsForType,
+  targetExpansionIdsForMemberRow,
   targetModulesForMemberRow,
 } from '../src/view/type_expansion.ts';
 
@@ -14,6 +17,16 @@ function ownership(fieldTargets: OwnershipIndex['fieldTargets']): OwnershipIndex
     ownedBy: new Map(),
     fieldTargets,
     methodTargets: new Map(),
+  };
+}
+
+function calls(rows: FunctionCallIndex['rowsByType'] = new Map()): FunctionCallIndex {
+  return {
+    rowByFunction: new Map(),
+    callTargetsByFunction: new Map(),
+    callsByFunction: new Map(),
+    nonLocalCallers: new Set(),
+    rowsByType: rows,
   };
 }
 
@@ -77,36 +90,173 @@ describe('type expansion target modules', () => {
       ]),
     );
 
-    expect(targetModulesForMemberRow('c::Owner', 'red', 'field', idx, 'c')).toEqual([
+    const callIndex = calls();
+    expect(targetModulesForMemberRow('c::Owner', 'red', 'field', idx, callIndex, 'c')).toEqual([
       'c',
       'c::drifted',
     ]);
-    expect(targetModulesForMemberRow('c::Owner', 'orange', 'field', idx, 'c')).toEqual([
+    expect(targetModulesForMemberRow('c::Owner', 'orange', 'field', idx, callIndex, 'c')).toEqual([
       'c',
       'c::deep',
     ]);
   });
 
-  it('lists member rows that can emit arrows for a type', () => {
-    const idx: OwnershipIndex = {
-      ...ownership(
-        new Map([
+  it('returns callee row expansion ids for selected local function rows', () => {
+    const idx = ownership(new Map());
+    const callIndex: FunctionCallIndex = {
+      rowByFunction: new Map(),
+      callTargetsByFunction: new Map([
+        [
+          'c::src::Owner::caller',
           [
-            'c::Owner',
-            new Map([
-              ['field_a', ['c::TargetA']],
-              ['field_b', ['c::TargetB']],
-            ]),
+            {
+              functionFullPath: 'c::src::Target::callee',
+              typeId: 'c::src::Target',
+              rowName: 'callee',
+              rowKind: 'method',
+              moduleId: 'c::src',
+              bucketId: 'c::src::Target::__methods_pub',
+            },
+            {
+              functionFullPath: 'c::other::Far::callee',
+              typeId: 'c::other::Far',
+              rowName: 'callee',
+              rowKind: 'method',
+              moduleId: 'c::other',
+              bucketId: 'c::other::Far::__methods_pub',
+            },
           ],
-        ]),
-      ),
-      methodTargets: new Map([['c::Owner', new Map([['method_a', ['c::TargetC']]])]]),
+        ],
+      ]),
+      callsByFunction: new Map(),
+      nonLocalCallers: new Set(),
+      rowsByType: new Map([
+        [
+          'c::src::Owner',
+          [
+            {
+              functionFullPath: 'c::src::Owner::caller',
+              typeId: 'c::src::Owner',
+              rowName: 'caller',
+              rowKind: 'method',
+              moduleId: 'c::src',
+              bucketId: 'c::src::Owner::__methods_pub',
+            },
+          ],
+        ],
+      ]),
     };
 
-    expect(memberArrowRowsForType('c::Owner', idx)).toEqual([
+    expect(
+      targetExpansionIdsForMemberRow('c::src::Owner', 'caller', 'method', idx, callIndex, 'c'),
+    ).toEqual([
+      'c',
+      'c::src',
+      'c::src::Target',
+      'c::src::Target::__methods_pub',
+      'c::other',
+      'c::other::Far',
+      'c::other::Far::__methods_pub',
+    ]);
+  });
+
+  it('lists member rows that can emit arrows for a type', () => {
+    const idx = ownership(
+      new Map([
+        [
+          'c::Owner',
+          new Map([
+            ['field_a', ['c::TargetA']],
+            ['field_b', ['c::TargetB']],
+          ]),
+        ],
+      ]),
+    );
+    const callIndex: FunctionCallIndex = {
+      rowByFunction: new Map(),
+      callTargetsByFunction: new Map([
+        [
+          'c::Owner::method_a',
+          [
+            {
+              functionFullPath: 'c::Target::callee',
+              typeId: 'c::Target',
+              rowName: 'callee',
+              rowKind: 'method',
+              moduleId: 'c',
+              bucketId: 'c::Target::__methods_pub',
+            },
+          ],
+        ],
+      ]),
+      callsByFunction: new Map(),
+      nonLocalCallers: new Set(['c::Owner::method_a']),
+      rowsByType: new Map([
+        [
+          'c::Owner',
+          [
+            {
+              functionFullPath: 'c::Owner::method_a',
+              typeId: 'c::Owner',
+              rowName: 'method_a',
+              rowKind: 'method',
+              moduleId: 'c',
+              bucketId: 'c::Owner::__methods_pub',
+            },
+          ],
+        ],
+      ]),
+    };
+
+    expect(memberArrowRowsForType('c::Owner', idx, callIndex)).toEqual([
       { rowName: 'field_a', rowKind: 'field' },
       { rowName: 'field_b', rowKind: 'field' },
       { rowName: 'method_a', rowKind: 'method' },
+    ]);
+  });
+
+  it('lists callable buckets to expand without selecting callable rows', () => {
+    const callIndex: FunctionCallIndex = {
+      rowByFunction: new Map(),
+      callTargetsByFunction: new Map(),
+      callsByFunction: new Map(),
+      nonLocalCallers: new Set(),
+      rowsByType: new Map([
+        [
+          'c::Owner',
+          [
+            {
+              functionFullPath: 'c::Owner::pub_method',
+              typeId: 'c::Owner',
+              rowName: 'pub_method',
+              rowKind: 'method',
+              moduleId: 'c',
+              bucketId: 'c::Owner::__methods_pub',
+            },
+            {
+              functionFullPath: 'c::Owner::private_method',
+              typeId: 'c::Owner',
+              rowName: 'private_method',
+              rowKind: 'method',
+              moduleId: 'c',
+              bucketId: 'c::Owner::__methods_private',
+            },
+            {
+              functionFullPath: 'c::free_function',
+              typeId: 'c::__fn_pub',
+              rowName: 'free_function',
+              rowKind: 'function',
+              moduleId: 'c',
+              bucketId: null,
+            },
+          ],
+        ],
+      ]),
+    };
+
+    expect(callableBucketIdsForType('c::Owner', callIndex)).toEqual([
+      'c::Owner::__methods_pub',
+      'c::Owner::__methods_private',
     ]);
   });
 });

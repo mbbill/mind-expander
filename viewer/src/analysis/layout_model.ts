@@ -1,5 +1,6 @@
 import type { Ownership, TypeKind } from '../data/schema.ts';
 import type { ViewState } from '../state/view_state.ts';
+import type { FunctionCallIndex, FunctionCallRef, FunctionRowRef } from './calls.ts';
 import type { DriftClass, DriftIndex } from './drift.ts';
 import type { LeafBgSegment, PrefixSegment } from './layout_metrics.ts';
 import type { ModuleNode } from './module_tree.ts';
@@ -29,7 +30,7 @@ export interface ModuleRow {
   readonly leafBg: LeafBgSegment;
 }
 
-export type RowKind = 'field' | 'method_bucket' | 'method';
+export type RowKind = 'field' | 'method_bucket' | 'method' | 'function';
 export const ROW_ARROW_KEY_SEP = '\x1F';
 
 export function rowArrowKey(typePath: string, rowName: string): string {
@@ -44,6 +45,13 @@ export interface FieldRow {
   readonly y: number;
   readonly arrowSourceX: number;
   readonly targets: readonly string[];
+  readonly callTargets: readonly FunctionRowRef[];
+  readonly callRefs: readonly FunctionCallRef[];
+  readonly functionFullPath: string | null;
+  readonly callsOutsideModule: boolean;
+  readonly hasExternalCalls: boolean;
+  readonly hasUnresolvedCalls: boolean;
+  readonly hasOutgoingCalls: boolean;
   readonly kind: RowKind;
   readonly bucketId: string | null;
   /** Strongest target drift for structural ownership targets on this row.
@@ -82,14 +90,16 @@ export interface ArrowWaypoint {
   readonly y: number;
 }
 
-export type ArrowKind = 'ownership' | 'reexport' | 'method';
+export type ArrowKind = 'ownership' | 'reexport' | 'call';
 
 export interface Arrow {
   readonly waypoints: readonly ArrowWaypoint[];
   readonly fromTypeId: string;
   readonly fromFieldName: string;
-  readonly fromRowKind: 'field' | 'method';
+  readonly fromRowKind: 'field' | 'method' | 'function';
   readonly toTypeId: string;
+  readonly toFieldName?: string;
+  readonly toRowKind?: 'method' | 'function';
   readonly kind: ArrowKind;
   readonly driftClass: DriftClass;
 }
@@ -149,15 +159,12 @@ export interface LayoutInputs {
   readonly measureBoldText?: (text: string) => number;
   readonly focusModules?: ReadonlySet<string>;
   readonly ghostArrowsShown?: ReadonlySet<string>;
+  readonly calls?: FunctionCallIndex;
   readonly methodsHidden?: boolean;
   /** Selected field ownership arrows to emit. Omitted means emit all visible
    *  field arrows; an empty set means emit none. Keys are rowArrowKey(typePath,
    *  fieldName). */
   readonly fieldArrowsShown?: ReadonlySet<string>;
-  /** Selected method-reference arrows to emit. Omitted means emit all visible
-   *  method arrows; an empty set means emit none. Keys are rowArrowKey(typePath,
-   *  methodName). */
-  readonly methodArrowsShown?: ReadonlySet<string>;
   /** Legacy callers can still pass these while layout ignores them. Keeping
    *  the properties in the contract avoids UI call-site churn during removal
    *  of the old implementation. */

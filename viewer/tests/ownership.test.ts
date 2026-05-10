@@ -55,105 +55,17 @@ describe('buildOwnershipIndex', () => {
   });
 });
 
-describe('buildOwnershipIndex — methodTargets', () => {
-  function methodEdge(
-    from: string,
-    to: string,
-    via: 'fn_param' | 'fn_return',
-    methodName: string,
-    paramName?: string,
-    kind: Edge['kind'] = 'owns',
-  ): Edge {
-    const origin =
-      via === 'fn_return'
-        ? `fn ${methodName} -> ret`
-        : `fn ${methodName} param ${paramName ?? '?'}`;
-    return { from, to, kind, via, origin };
-  }
-
-  it('indexes method targets by parsed method name from origin', () => {
+describe('buildOwnershipIndex — function signature edges', () => {
+  it('does not treat fn_param/fn_return edges as member arrows', () => {
     const idx = buildOwnershipIndex(
       facts([
-        methodEdge('c::Foo', 'c::Bar', 'fn_param', 'do_thing', 'arg'),
-        methodEdge('c::Foo', 'c::Baz', 'fn_return', 'do_thing'),
-        methodEdge('c::Foo', 'c::Qux', 'fn_param', 'helper', 'x'),
+        { from: 'c::Foo', to: 'c::Bar', kind: 'owns', via: 'fn_param', origin: 'fn m param x' },
+        { from: 'c::Foo', to: 'c::Baz', kind: 'owns', via: 'fn_return', origin: 'fn m -> ret' },
       ]),
       'c',
     );
-    // do_thing references both its param type AND its return type — both
-    // surface under the same method-name key.
-    expect(idx.methodTargets.get('c::Foo')?.get('do_thing')).toEqual(['c::Bar', 'c::Baz']);
-    expect(idx.methodTargets.get('c::Foo')?.get('helper')).toEqual(['c::Qux']);
-  });
-
-  it('includes borrow/indirection method-edges (not just owns)', () => {
-    // Methods are inherently uses, not structural composition. A
-    // `&Foo` parameter is still a "this method touches Foo" relation
-    // worth showing as an arrow — unlike fields where borrow-from-
-    // a-field is excluded by design.
-    const idx = buildOwnershipIndex(
-      facts([
-        methodEdge('c::Foo', 'c::Bar', 'fn_param', 'a', 'x', 'borrows_immut'),
-        methodEdge('c::Foo', 'c::Baz', 'fn_param', 'b', 'x', 'borrows_mut'),
-        methodEdge('c::Foo', 'c::Qux', 'fn_param', 'c', 'x', 'indirection'),
-      ]),
-      'c',
-    );
-    expect(idx.methodTargets.get('c::Foo')?.get('a')).toEqual(['c::Bar']);
-    expect(idx.methodTargets.get('c::Foo')?.get('b')).toEqual(['c::Baz']);
-    expect(idx.methodTargets.get('c::Foo')?.get('c')).toEqual(['c::Qux']);
-  });
-
-  it('skips trait_impl edges (they have via=trait_impl_block, not fn_*)', () => {
-    const idx = buildOwnershipIndex(
-      facts([
-        {
-          from: 'c::Foo',
-          to: 'c::SomeTrait',
-          kind: 'trait_impl',
-          via: 'trait_impl_block',
-          origin: 'impl',
-        },
-      ]),
-      'c',
-    );
-    expect(idx.methodTargets.get('c::Foo')).toBeUndefined();
-  });
-
-  it('drops cross-crate method edges (mirrors field-edge behaviour)', () => {
-    const idx = buildOwnershipIndex(
-      facts([
-        methodEdge('c::Foo', 'd::External', 'fn_param', 'm', 'x'),
-        methodEdge('e::Other', 'c::Foo', 'fn_param', 'n', 'x'),
-        methodEdge('c::Foo', 'c::Bar', 'fn_param', 'm', 'x'),
-      ]),
-      'c',
-    );
-    // Only the intra-crate edge survives.
-    expect(idx.methodTargets.get('c::Foo')?.get('m')).toEqual(['c::Bar']);
-  });
-
-  it('dedupes parallel method-targets (param + return both pointing at the same type)', () => {
-    const idx = buildOwnershipIndex(
-      facts([
-        methodEdge('c::Foo', 'c::Bar', 'fn_param', 'roundtrip', 'arg'),
-        methodEdge('c::Foo', 'c::Bar', 'fn_return', 'roundtrip'),
-      ]),
-      'c',
-    );
-    expect(idx.methodTargets.get('c::Foo')?.get('roundtrip')).toEqual(['c::Bar']);
-  });
-
-  it('handles a method with no spaces in its origin (single-word method name)', () => {
-    // Defensive: parseMethodName splits on the first space after `fn `.
-    // Origins are always well-formed by the extractor, but this pins the
-    // edge case so a stray `fn name` (no following grammar) doesn't
-    // produce undefined.
-    const idx = buildOwnershipIndex(
-      facts([{ from: 'c::Foo', to: 'c::Bar', kind: 'owns', via: 'fn_param', origin: 'fn lonely' }]),
-      'c',
-    );
-    expect(idx.methodTargets.get('c::Foo')?.get('lonely')).toEqual(['c::Bar']);
+    expect(idx.methodTargets.size).toBe(0);
+    expect(idx.owns.get('c::Foo')).toBeUndefined();
   });
 });
 

@@ -66,11 +66,6 @@ const FONT_SIZE_MODULE_CHEVRON = 14; // bumped above the base + bold so the
 
 const COLOR_LABEL = '#1e293b';
 const COLOR_MODULE_PREFIX = '#475569'; // slate-600, dark grey for the dimmed parent path
-// Light blue card behind each module row's chevron + label. Required since
-// the overlay is transparent — without this, type labels and arrows panning
-// underneath blend with the floating module text. Matched to the alternating
-// band tint family so the overlay still reads as part of the same column.
-const COLOR_MODULE_BG = '#dbeafe'; // blue-100
 
 // Pastel palette for the per-segment chip colours behind the dimmed prefix.
 // Each ancestor name (`vm`, `middle`, `ssa_ir`, ...) hashes into one slot so
@@ -92,7 +87,7 @@ function colorForSegment(name: string): string {
   let h = 5381;
   for (let i = 0; i < name.length; i++) h = ((h << 5) + h) ^ name.charCodeAt(i);
   const idx = (h >>> 0) % SEGMENT_PALETTE.length;
-  return SEGMENT_PALETTE[idx] ?? SEGMENT_PALETTE[0]!;
+  return SEGMENT_PALETTE[idx] ?? SEGMENT_PALETTE[0] ?? '#e2e8f0';
 }
 const COLOR_CHEVRON = '#94a3b8';
 // `+` (expand) reads as add → green; `-` (collapse) reads as remove → red.
@@ -101,15 +96,13 @@ const COLOR_CHEVRON_EXPAND = '#22c55e'; // green-500
 const COLOR_CHEVRON_COLLAPSE = '#ef4444'; // red-500
 const COLOR_FIELD_NAME = '#334155';
 const COLOR_FIELD_TY = '#94a3b8'; // slate-400, grey for the on-hover type hint
-// Slate-500 — readable italic but visually subordinate to field rows
-// and bucket headers. Lighter than COLOR_FIELD_NAME, darker than
-// COLOR_FIELD_TY so method names actually stand out instead of fading.
-const COLOR_METHOD_NAME = '#64748b';
 const TY_HIDE_DELAY = 0; // ms — type-hint hides immediately on mouse-out (only the 200ms fade-out transition still plays)
 const TY_TEXT_GAP = 4;
 const TY_BG_PAD_X = 4;
 const TY_BG_PAD_Y = 2;
 const COLOR_TY_BG = '#ffffff';
+const DEBUG_PANEL_MARGIN = 8;
+const CALLABLE_DEBUG_MAX_CALLS = 24;
 const METHOD_BUCKET_CHEVRON_OFFSET = 12;
 const METHOD_BUCKET_CHEVRON_FONT_SIZE = 14;
 const COLOR_ARROW_CANONICAL = '#94a3b8'; // slate-400: at_lca / within_budget — neutral context
@@ -143,12 +136,10 @@ const ARROW_MARKER_IDS: Readonly<Record<DriftClass, string>> = {
 
 function arrowColor(a: Layout['arrows'][number]): string {
   if (a.kind === 'reexport') return COLOR_ARROW_REEXPORT;
-  // Method arrows always render in the neutral canonical grey. The
-  // target's drift class describes its STRUCTURAL placement and isn't
-  // a property of the method using it — colouring a method-arrow red
-  // because its target happens to be drift_above misleads the reader
-  // into thinking the method itself is anomalous.
-  if (a.kind === 'method') return COLOR_ARROW_CANONICAL;
+  // Call arrows always render in the neutral canonical grey. The target's
+  // drift class describes structural placement and is not a property of the
+  // executable caller/callee relation.
+  if (a.kind === 'call') return COLOR_ARROW_CANONICAL;
   const c = a.driftClass;
   if (c === 'at_lca' || c === 'within_budget') return COLOR_ARROW_CANONICAL;
   if (c === 'drift_below') return COLOR_ARROW_SOFT;
@@ -183,6 +174,17 @@ export function memberColorForDriftClass(driftClass: DriftClass | null): string 
     case 'drift_sideways':
       return COLOR_ARROW_HARD;
   }
+}
+
+export function callableRowColor(row: {
+  readonly callsOutsideModule: boolean;
+  readonly hasExternalCalls?: boolean;
+  readonly hasUnresolvedCalls?: boolean;
+  readonly hasOutgoingCalls: boolean;
+}): string {
+  if (row.hasExternalCalls ?? row.callsOutsideModule) return '#2563eb';
+  if (row.hasUnresolvedCalls === true) return '#f97316';
+  return row.hasOutgoingCalls ? COLOR_FIELD_NAME : COLOR_FIELD_TY;
 }
 
 function driftSeverity(driftClass: DriftClass): number {
@@ -236,8 +238,9 @@ export interface TreeRenderOptions {
   /** Single-row click on a module or type → toggle expansion. Expansion is
    *  the only "focus" concept — there is no separate selected-types set. */
   readonly onToggle: (id: string) => void;
-  /** Click on a type header chevron → toggle expansion and select/deselect
-   *  every member row that can emit an arrow for that type. */
+  /** Click on a type header chevron → toggle expansion. Opening selects
+   *  field rows by default and expands callable buckets without selecting
+   *  function rows; closing deselects hidden member rows. */
   readonly onToggleTypeMembers: (typePath: string) => void;
   /** Click on a field name → toggle its selection. */
   readonly onSelectField: (typePath: string, fieldName: string, kind: FieldKeyKind) => void;
@@ -286,11 +289,12 @@ export interface TreeRenderOptions {
 // this kind of structural delimiter and never appears in identifiers
 // or extractor output.
 const FIELD_KEY_SEP = '\x1F';
+let callableDebugHideTimer: number | undefined;
 
-/** Row-kind half of a fieldKey. Methods and fields can share names
- *  on the same type (struct field `exn_heap` + method `exn_heap()`),
- *  so the selection key needs both `(typePath, name)` AND the kind. */
-export type FieldKeyKind = 'field' | 'method';
+/** Row-kind half of a fieldKey. Fields, methods, and free-function rows can
+ *  share labels inside different row groups, so the selection key needs both
+ *  `(typePath, name)` AND the kind. */
+export type FieldKeyKind = 'field' | 'method' | 'function';
 
 export function fieldKey(
   typePath: string,
@@ -307,7 +311,10 @@ export function parseFieldKey(key: string): {
 } {
   const parts = key.split(FIELD_KEY_SEP);
   // 3-part key: typePath, kind, fieldName.
-  if (parts.length >= 3 && (parts[1] === 'field' || parts[1] === 'method')) {
+  if (
+    parts.length >= 3 &&
+    (parts[1] === 'field' || parts[1] === 'method' || parts[1] === 'function')
+  ) {
     return {
       typePath: parts[0] ?? '',
       kind: parts[1] as FieldKeyKind,
@@ -323,14 +330,14 @@ export function parseFieldKey(key: string): {
   };
 }
 
-export function chainArrowsFromMany(
+export function directArrowsFromMany(
   layout: Layout,
   fields: ReadonlyArray<{ typePath: string; fieldName: string; kind: FieldKeyKind }>,
 ): Set<Layout['arrows'][number]> {
   const out = new Set<Layout['arrows'][number]>();
   for (const f of fields) {
-    const c = chainArrowsFrom(layout, f.typePath, f.fieldName, f.kind);
-    for (const a of c) out.add(a);
+    const direct = directArrowsFrom(layout, f.typePath, f.fieldName, f.kind);
+    for (const a of direct) out.add(a);
   }
   return out;
 }
@@ -354,6 +361,7 @@ export function renderTree(layers: ZoomLayers, layout: Layout, opts: TreeRenderO
 
   renderBandBackgrounds(bandG, layout);
   renderLayoutDebug(debugG, layout);
+  if (!layoutDebugEnabled()) hideCallableDebugPanelNow();
   renderArrows(arrowG, layout, opts.selectedArrows);
   renderTypes(typeG, zoomLayer, layout, opts);
   renderModules(moduleG, layout, opts);
@@ -670,7 +678,8 @@ function arrowKey(a: Layout['arrows'][number]): string {
   // sharing a name produce distinct DOM elements (otherwise the d3 join
   // would coalesce them and one would silently disappear).
   const ys = a.waypoints.map((w) => `${w.x},${w.y}`).join('|');
-  return `${a.fromTypeId}::${a.fromRowKind}::${a.fromFieldName}::${a.toTypeId}::${ys}`;
+  const toRow = `${a.toRowKind ?? ''}::${a.toFieldName ?? ''}`;
+  return `${a.fromTypeId}::${a.fromRowKind}::${a.fromFieldName}::${a.toTypeId}::${toRow}::${ys}`;
 }
 
 // Width of the transparent "hit" stroke per arrow. Wide enough to make
@@ -719,13 +728,13 @@ function renderArrows(
     .attr('stroke', (a) => arrowColor(a))
     .attr('stroke-dasharray', (a) => {
       if (a.kind === 'reexport') return REEXPORT_DASH;
-      if (a.kind === 'method') return METHOD_DASH;
+      if (a.kind === 'call') return METHOD_DASH;
       return null;
     })
     .attr('marker-end', (a) => `url(#${ARROW_MARKER_IDS[a.driftClass]})`)
     .classed('canonical', (a) => a.driftClass === 'at_lca' || a.driftClass === 'within_budget')
     .classed('reexport', (a) => a.kind === 'reexport')
-    .classed('method', (a) => a.kind === 'method')
+    .classed('call', (a) => a.kind === 'call')
     .classed('highlighted', (a) => selectedArrows.has(a));
 
   enter.transition('enter').duration(ANIM_MS).style('opacity', 1);
@@ -737,64 +746,36 @@ function renderArrows(
     .merge(sel)
     .select<SVGPathElement>('path.visible')
     .classed('highlighted', (a) => selectedArrows.has(a));
+  enter
+    .merge(sel)
+    .select<SVGPathElement>('path.hit')
+    .attr('pointer-events', (a) =>
+      a.kind === 'call' && !selectedArrows.has(a) ? 'none' : 'stroke',
+    );
 }
 
-function chainArrowsFrom(
+function directArrowsFrom(
   layout: Layout,
   fromTypeId: string,
   fieldName: string,
   fromKind: FieldKeyKind,
 ): Set<Layout['arrows'][number]> {
-  const typesByPath = new Map(layout.types.map((t) => [t.fullPath, t]));
-  const arrowsByFrom = new Map<string, Layout['arrows'][number][]>();
+  const out = new Set<Layout['arrows'][number]>();
+  // Match on both name AND row kind so a struct field and a method that share
+  // a name (e.g. `exn_heap` field + `exn_heap()` getter) don't both light up
+  // when only one was selected.
   for (const a of layout.arrows) {
-    let list = arrowsByFrom.get(a.fromTypeId);
-    if (!list) {
-      list = [];
-      arrowsByFrom.set(a.fromTypeId, list);
-    }
-    list.push(a);
-  }
-
-  const inChain = new Set<Layout['arrows'][number]>();
-  const visitedTypes = new Set<string>();
-  const queue: string[] = [];
-
-  // Seed: arrows from the (type, row) the user clicked. Match on
-  // both name AND row kind so a struct field and a method that share
-  // a name (e.g. `exn_heap` field + `exn_heap()` getter) don't both
-  // light up when only one was clicked.
-  for (const a of arrowsByFrom.get(fromTypeId) ?? []) {
+    if (a.fromTypeId !== fromTypeId) continue;
     if (a.fromFieldName !== fieldName) continue;
     if (a.fromRowKind !== fromKind) continue;
-    inChain.add(a);
-    const tgt = typesByPath.get(a.toTypeId);
-    if (tgt?.expanded && !visitedTypes.has(a.toTypeId)) {
-      visitedTypes.add(a.toTypeId);
-      queue.push(a.toTypeId);
-    }
+    out.add(a);
   }
-
-  // Walk the chain through any expanded targets.
-  while (queue.length > 0) {
-    const tid = queue.shift();
-    if (tid === undefined) break;
-    for (const a of arrowsByFrom.get(tid) ?? []) {
-      if (inChain.has(a)) continue;
-      inChain.add(a);
-      const tgt = typesByPath.get(a.toTypeId);
-      if (tgt?.expanded && !visitedTypes.has(a.toTypeId)) {
-        visitedTypes.add(a.toTypeId);
-        queue.push(a.toTypeId);
-      }
-    }
-  }
-  return inChain;
+  return out;
 }
 
-function applyChainHighlight(
+function applyArrowHighlight(
   layer: Selection<SVGGElement, unknown, null, undefined>,
-  inChain: ReadonlySet<Layout['arrows'][number]>,
+  highlighted: ReadonlySet<Layout['arrows'][number]>,
 ): void {
   // Each arrow is a `<g class="arrow">` containing a `.hit` and a
   // `.visible` path. Highlight class lives on the visible path (which
@@ -802,7 +783,7 @@ function applyChainHighlight(
   // doesn't accidentally pick up styling.
   layer
     .selectAll<SVGPathElement, Layout['arrows'][number]>('g.arrows path.visible')
-    .classed('highlighted', (d) => inChain.has(d));
+    .classed('highlighted', (d) => highlighted.has(d));
 }
 
 const CORNER_OFFSET = LAYOUT_GRID_CELL_W / 2;
@@ -909,20 +890,6 @@ function renderModules(
     .attr('transform', (d) => `translate(${d.labelX},${d.y})`)
     .style('opacity', 0);
 
-  // Light-blue card behind the row's content. Appended first so it paints
-  // under the chevron and label (SVG paints in document order). Width is
-  // sized after enter via sizeModuleExpandHit, alongside the hit-rect.
-  enter
-    .append('rect')
-    .attr('class', 'bg')
-    .attr('x', 0)
-    .attr('y', 0)
-    .attr('width', 0)
-    .attr('height', ROW_H)
-    .attr('rx', 3)
-    .attr('fill', COLOR_MODULE_BG)
-    .attr('pointer-events', 'none');
-
   // Per-ancestor colour rects covering the dimmed prefix portion. Painted
   // on top of `rect.bg` and below the prefix tspan so the prefix text reads
   // as a coloured chip per parent module.
@@ -1019,7 +986,10 @@ function renderModules(
   // Outer edges (left of first, right of last) get padding so glyphs don't
   // sit flush against the rounded border.
   const SEG_OUTER_PAD = 4;
-  type RowSeg = (Layout['modules'][number]['prefixSegments'][number] | Layout['modules'][number]['leafBg']) & {
+  type RowSeg = (
+    | Layout['modules'][number]['prefixSegments'][number]
+    | Layout['modules'][number]['leafBg']
+  ) & {
     readonly fill: string;
   };
   merged.each(function (d) {
@@ -1037,8 +1007,9 @@ function renderModules(
     };
     const all = [...prefixSegs, leafSeg];
     const lastIdx = all.length - 1;
-    const firstSeg = all[0]!;
-    const lastSeg = all[lastIdx]!;
+    const firstSeg = all[0];
+    const lastSeg = all[lastIdx];
+    if (firstSeg === undefined || lastSeg === undefined) return;
     const clusterX = firstSeg.xStart - SEG_OUTER_PAD;
     const clusterWidth = lastSeg.xStart + lastSeg.width - clusterX + SEG_OUTER_PAD;
     const clipId = `cc-${d.id.replace(/[^a-zA-Z0-9-]/g, '_')}`;
@@ -1056,9 +1027,7 @@ function renderModules(
 
     // Inner segment rects: no stroke, no rx — the clipPath handles the
     // rounded outer shape, and the per-row outer border draws the edge.
-    const segGroup = rowG
-      .select<SVGGElement>('g.prefix-bgs')
-      .attr('clip-path', `url(#${clipId})`);
+    const segGroup = rowG.select<SVGGElement>('g.prefix-bgs').attr('clip-path', `url(#${clipId})`);
     const segs = segGroup
       .selectAll<SVGRectElement, RowSeg>('rect.seg')
       .data(all, (s, i) => `${i === lastIdx ? 'leaf' : 'pre'}:${s.name}`);
@@ -1070,11 +1039,10 @@ function renderModules(
       .attr('y', 0)
       .attr('height', ROW_H)
       .merge(segs)
-      .attr('x', (_s, i) => all[i]!.xStart - (i === 0 ? SEG_OUTER_PAD : 0))
+      .attr('x', (s, i) => s.xStart - (i === 0 ? SEG_OUTER_PAD : 0))
       .attr(
         'width',
-        (_s, i) =>
-          all[i]!.width + (i === 0 ? SEG_OUTER_PAD : 0) + (i === lastIdx ? SEG_OUTER_PAD : 0),
+        (s, i) => s.width + (i === 0 ? SEG_OUTER_PAD : 0) + (i === lastIdx ? SEG_OUTER_PAD : 0),
       )
       .attr('fill', (s) => s.fill);
 
@@ -1102,14 +1070,11 @@ function renderModules(
 function sizeModuleExpandHit(
   sel: Selection<SVGGElement, Layout['modules'][number], SVGGElement, unknown>,
 ): void {
-  // Layout owns module label measurement so toggling a band does not force SVG
-  // text layout across every visible module row before the animation frame.
-  // Background card and click hit-rect both span the same width; the bg sits
-  // beneath chevron+label, the hit-rect catches clicks on top.
+  // Layout owns module label measurement so toggling a band does not force
+  // SVG text layout across every visible module row before the animation
+  // frame. The hit-rect catches clicks on top of the colored segment chips.
   sel.each(function (d) {
-    const row = select(this);
-    row.select<SVGRectElement>('rect.bg').attr('width', d.hitWidth);
-    row.select<SVGRectElement>('rect.expand-hit').attr('width', d.hitWidth);
+    select(this).select<SVGRectElement>('rect.expand-hit').attr('width', d.hitWidth);
   });
 }
 
@@ -1372,32 +1337,35 @@ function renderFieldsForType(
       f.ownership === 'borrow_mut' ||
       f.ownership === 'indirection';
     // The selection set is keyed by (typePath, rowKind, name) so a
-    // struct field and a method with the same name on the same type
+    // struct field and a method/function with the same name on the same type
     // each toggle independently. f.kind is one of 'field' |
-    // 'method_bucket' | 'method'; only field/method participate in
+    // 'method_bucket' | 'method' | 'function'; only non-bucket rows participate in
     // selection (bucket headers are handled by the bucket-toggle
     // branch above), so coerce method_bucket → 'field' for the
     // lookup (it returns false either way; the explicit narrow keeps
     // TypeScript happy).
-    const rowKind: FieldKeyKind = f.kind === 'method' ? 'method' : 'field';
+    const rowKind: FieldKeyKind =
+      f.kind === 'method' ? 'method' : f.kind === 'function' ? 'function' : 'field';
     const isSelected = opts.selectedFields.has(fieldKey(d.fullPath, f.name, rowKind));
     const isBucketHeader = f.kind === 'method_bucket';
     const isMethod = f.kind === 'method';
+    const isFunction = f.kind === 'function';
+    const isCallable = isMethod || isFunction;
 
     // Visual differentiation by row kind:
     //   - field        → default styling, italic for borrow ownership.
     //   - method_bucket → separate chevron before the aligned label so
     //                     it reads as foldable without shifting the text.
-    //   - method       → italic + slightly dimmer to read as
-    //                     "subordinate to the bucket above."
+    //   - callable     → italic, regardless of whether Rust declared it at
+    //                     module scope or as a type member.
     const display = fieldRowDisplayParts(f, opts.expandedBucketIds);
     const fontWeight = isBucketHeader ? 600 : isSelected ? 600 : 400;
-    const fontStyle = isMethod ? 'italic' : isBorrow ? 'italic' : 'normal';
+    const fontStyle = isCallable ? 'italic' : isBorrow ? 'italic' : 'normal';
     // Field rows expose drift at the member label. Canonical arrows stay
     // subdued grey in the canvas, but canonical members use blue so normal
     // ownership rows stand out from rows with no emitted ownership arrow.
     const memberColor = f.kind === 'field' ? memberColorForDriftClass(f.memberDriftClass) : null;
-    const fillColor = isMethod ? COLOR_METHOD_NAME : (memberColor ?? COLOR_FIELD_NAME);
+    const fillColor = isCallable ? callableRowColor(f) : (memberColor ?? COLOR_FIELD_NAME);
     // Method indent is baked into f.x by the layout, so localX already
     // reflects it — no renderer-side offset to apply.
 
@@ -1443,7 +1411,7 @@ function renderFieldsForType(
       event.stopPropagation();
       if (isBucketHeader) {
         if (f.bucketId !== null) opts.onToggle(f.bucketId);
-      } else if (f.kind === 'field' || f.kind === 'method') {
+      } else if (f.kind === 'field' || f.kind === 'method' || f.kind === 'function') {
         // Method rows participate in selection just like fields. The
         // kind is part of the selection key so a struct field and a
         // method with the same name highlight independently.
@@ -1463,10 +1431,13 @@ function renderFieldsForType(
     // DOM node so it survives re-renders (data-join keeps the same element).
     const node = text.node() as (SVGTextElement & { __sfTyTimer?: number | undefined }) | null;
     text.on('mouseenter', () => {
-      const hover = chainArrowsFrom(layout, d.fullPath, f.name, rowKind);
+      const hover = directArrowsFrom(layout, d.fullPath, f.name, rowKind);
       const union = new Set<Layout['arrows'][number]>(opts.selectedArrows);
       for (const a of hover) union.add(a);
-      applyChainHighlight(zoomLayer, union);
+      applyArrowHighlight(zoomLayer, union);
+      if (isCallable && layoutDebugEnabled()) {
+        showCallableDebugPanel(layout, d, f, rowKind, text.node());
+      }
       if (node?.__sfTyTimer !== undefined) {
         clearTimeout(node.__sfTyTimer);
         node.__sfTyTimer = undefined;
@@ -1477,7 +1448,8 @@ function renderFieldsForType(
       tyText.transition('ty').duration(120).style('opacity', 1);
     });
     text.on('mouseleave', () => {
-      applyChainHighlight(zoomLayer, opts.selectedArrows);
+      applyArrowHighlight(zoomLayer, opts.selectedArrows);
+      if (isCallable) hideCallableDebugPanel();
       if (!node) return;
       if (node.__sfTyTimer !== undefined) clearTimeout(node.__sfTyTimer);
       node.__sfTyTimer = window.setTimeout(() => {
@@ -1498,6 +1470,216 @@ function hoveredTextRight(text: Selection<SVGTextElement, unknown, null, undefin
   if (!node) return 0;
   const bbox = node.getBBox();
   return bbox.x + bbox.width;
+}
+
+function showCallableDebugPanel(
+  layout: Layout,
+  typeNode: Layout['types'][number],
+  row: Layout['types'][number]['fields'][number],
+  rowKind: FieldKeyKind,
+  anchorNode: SVGTextElement | null,
+): void {
+  if (anchorNode === null) return;
+  cancelCallableDebugPanelHide();
+
+  const panel = ensureCallableDebugPanel();
+  panel.replaceChildren();
+
+  appendDiv(
+    panel,
+    'cd-kicker',
+    row.kind === 'method' ? 'method call facts' : 'function call facts',
+  );
+  appendDiv(panel, 'cd-title', row.name);
+  appendDiv(panel, 'cd-path', row.functionFullPath ?? `${typeNode.fullPath}::${row.name}`);
+
+  const summary = appendDiv(panel, 'cd-grid');
+  appendDebugPair(summary, 'signature', row.tyText === '' ? '(none)' : row.tyText);
+  appendDebugPair(summary, 'container', typeNode.fullPath);
+  appendDebugPair(summary, 'module', typeNode.modulePath || '(crate root)');
+  appendDebugPair(summary, 'row kind', rowKind);
+  appendDebugPair(summary, 'text color', callableDebugColorLabel(row));
+  appendDebugPair(summary, 'raw calls', String(row.callRefs.length));
+  appendDebugPair(summary, 'known target rows', String(row.callTargets.length));
+
+  const routedCallArrows = layout.arrows.filter(
+    (arrow) =>
+      arrow.kind === 'call' &&
+      arrow.fromTypeId === typeNode.fullPath &&
+      arrow.fromFieldName === row.name &&
+      arrow.fromRowKind === rowKind,
+  );
+  appendDebugPair(summary, 'routed arrows', String(routedCallArrows.length));
+
+  appendArrowSection(panel, routedCallArrows);
+  appendCallSection(panel, layout, row.callRefs);
+
+  panel.style.display = 'block';
+  positionCallableDebugPanel(panel, anchorNode.getBoundingClientRect());
+}
+
+function hideCallableDebugPanel(): void {
+  if (callableDebugHideTimer !== undefined) clearTimeout(callableDebugHideTimer);
+  callableDebugHideTimer = window.setTimeout(() => {
+    hideCallableDebugPanelNow();
+    callableDebugHideTimer = undefined;
+  }, 80);
+}
+
+function hideCallableDebugPanelNow(): void {
+  const panel = document.getElementById('callable-debug');
+  if (panel instanceof HTMLDivElement) {
+    panel.style.display = 'none';
+  }
+}
+
+function cancelCallableDebugPanelHide(): void {
+  if (callableDebugHideTimer === undefined) return;
+  clearTimeout(callableDebugHideTimer);
+  callableDebugHideTimer = undefined;
+}
+
+function ensureCallableDebugPanel(): HTMLDivElement {
+  const existing = document.getElementById('callable-debug');
+  if (existing instanceof HTMLDivElement) return existing;
+
+  const panel = document.createElement('div');
+  panel.id = 'callable-debug';
+  panel.style.position = 'fixed';
+  panel.style.pointerEvents = 'auto';
+  panel.style.zIndex = '23';
+  panel.style.display = 'none';
+  panel.addEventListener('mouseenter', cancelCallableDebugPanelHide);
+  panel.addEventListener('mouseleave', hideCallableDebugPanelNow);
+  document.body.appendChild(panel);
+  return panel;
+}
+
+function positionCallableDebugPanel(panel: HTMLDivElement, anchor: DOMRect): void {
+  panel.style.left = '0px';
+  panel.style.top = '0px';
+  const rect = panel.getBoundingClientRect();
+
+  let left = anchor.right + DEBUG_PANEL_MARGIN;
+  let top = anchor.top;
+  if (left + rect.width > window.innerWidth - DEBUG_PANEL_MARGIN) {
+    left = Math.max(DEBUG_PANEL_MARGIN, anchor.left - rect.width - DEBUG_PANEL_MARGIN);
+  }
+  if (top + rect.height > window.innerHeight - DEBUG_PANEL_MARGIN) {
+    top = Math.max(DEBUG_PANEL_MARGIN, window.innerHeight - rect.height - DEBUG_PANEL_MARGIN);
+  }
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+}
+
+function appendArrowSection(
+  panel: HTMLDivElement,
+  arrows: readonly Layout['arrows'][number][],
+): void {
+  appendDiv(panel, 'cd-section-title', 'Routed visible call arrows');
+  if (arrows.length === 0) {
+    appendDiv(panel, 'cd-empty', 'none currently routed');
+    return;
+  }
+
+  const list = appendDiv(panel, 'cd-list');
+  for (const arrow of arrows.slice(0, CALLABLE_DEBUG_MAX_CALLS)) {
+    const target =
+      arrow.toFieldName === undefined
+        ? arrow.toTypeId
+        : `${arrow.toTypeId}.${arrow.toFieldName}${callableSuffix(arrow.toRowKind)}`;
+    appendDiv(list, 'cd-line', `-> ${target}`);
+  }
+  appendMoreIfNeeded(panel, arrows.length);
+}
+
+function appendCallSection(
+  panel: HTMLDivElement,
+  layout: Layout,
+  calls: Layout['types'][number]['fields'][number]['callRefs'],
+): void {
+  appendDiv(panel, 'cd-section-title', 'Raw call facts');
+  if (calls.length === 0) {
+    appendDiv(panel, 'cd-empty', 'leaf function; no call edges attached');
+    return;
+  }
+
+  const list = appendDiv(panel, 'cd-list');
+  for (const call of calls.slice(0, CALLABLE_DEBUG_MAX_CALLS)) {
+    const item = appendDiv(list, 'cd-call');
+    const target = call.calleeRow
+      ? `${call.calleeRow.typeId}.${call.calleeRow.rowName}${callableSuffix(call.calleeRow.rowKind)}`
+      : call.callee;
+    appendDiv(item, 'cd-call-main', `${localityGlyph(call.locality)} ${target}`);
+    appendDiv(
+      item,
+      'cd-call-meta',
+      `${call.locality} | ${call.kind} | ${call.resolution} | ${targetRowVisibility(layout, call.calleeRow)}`,
+    );
+    if (call.origin !== '') {
+      appendDiv(item, 'cd-call-origin', `origin: ${call.origin}`);
+    }
+  }
+  appendMoreIfNeeded(panel, calls.length);
+}
+
+function appendMoreIfNeeded(panel: HTMLDivElement, total: number): void {
+  const hidden = total - CALLABLE_DEBUG_MAX_CALLS;
+  if (hidden > 0) appendDiv(panel, 'cd-more', `+${hidden} more`);
+}
+
+function callableDebugColorLabel(row: {
+  readonly callsOutsideModule: boolean;
+  readonly hasExternalCalls: boolean;
+  readonly hasUnresolvedCalls: boolean;
+  readonly hasOutgoingCalls: boolean;
+}): string {
+  if (row.hasExternalCalls) return 'blue: has resolved calls outside this module';
+  if (row.hasUnresolvedCalls) return 'orange: has unresolved calls and no external targets';
+  if (row.hasOutgoingCalls) return 'black: calls only inside this module';
+  return 'grey: leaf/no outgoing calls';
+}
+
+function targetRowVisibility(
+  layout: Layout,
+  row: Layout['types'][number]['fields'][number]['callRefs'][number]['calleeRow'],
+): string {
+  if (row === null) return 'no matched graph row';
+  const targetType = layout.types.find((typeNode) => typeNode.fullPath === row.typeId);
+  if (targetType === undefined) return 'target type not in current layout';
+  if (!targetType.expanded) return 'target type collapsed';
+  const targetRow = targetType.fields.find(
+    (candidate) => candidate.kind === row.rowKind && candidate.name === row.rowName,
+  );
+  return targetRow === undefined ? 'target row hidden' : 'target row visible';
+}
+
+function localityGlyph(locality: 'same_module' | 'other_module' | 'unresolved'): string {
+  switch (locality) {
+    case 'same_module':
+      return 'local';
+    case 'other_module':
+      return 'external';
+    case 'unresolved':
+      return 'unresolved';
+  }
+}
+
+function callableSuffix(kind: 'method' | 'function' | undefined): string {
+  return kind === undefined ? '' : '()';
+}
+
+function appendDebugPair(parent: HTMLElement, key: string, value: string): void {
+  appendDiv(parent, 'cd-key', key);
+  appendDiv(parent, 'cd-value', value);
+}
+
+function appendDiv(parent: HTMLElement, className: string, text?: string): HTMLDivElement {
+  const el = document.createElement('div');
+  el.className = className;
+  if (text !== undefined) el.textContent = text;
+  parent.appendChild(el);
+  return el;
 }
 
 function sizeTypeHintBackground(

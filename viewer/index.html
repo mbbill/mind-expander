@@ -54,28 +54,22 @@
       }
       /* Canonical ownership arrows are structural background. Keep them
          shallower at idle; selection still promotes them to full-opacity blue,
-         while drift/re-export/method arrows keep their own emphasis. */
-      #tree g.arrows path.visible.canonical:not(.method):not(.reexport):not(.highlighted) {
+         while drift/re-export/call arrows keep their own emphasis. */
+      #tree g.arrows path.visible.canonical:not(.call):not(.reexport):not(.highlighted) {
         opacity: 0.45;
       }
-      /* Method-reference arrows render dashed (`2 2`): roughly half the
-         pixel coverage of solid lines, so default 0.7 opacity makes
-         them faint. Boost idle visibility; selection only changes opacity
-         and color, matching ownership arrows. */
-      #tree g.arrows path.visible.method {
-        opacity: 0.95;
+      /* Function-call arrows are opt-in context. They exist in the layout so
+         row hover/click can reveal them without recomputing, but stay hidden
+         until highlighted by hover or selection. */
+      #tree g.arrows path.visible.call:not(.highlighted) {
+        opacity: 0;
+      }
+      #tree g.arrows path.visible.call {
         stroke-width: 1.25;
       }
-      #tree g.arrows path.visible.method.highlighted {
+      #tree g.arrows path.visible.call.highlighted {
         opacity: 1;
-        /* Methods always render canonical-grey at idle (drift class
-           describes structural placement, irrelevant for use-relations),
-           and the `.canonical.highlighted` blue rule only fires when
-           the path actually carries the `.canonical` class — which it
-           doesn't when the target's drift class is drift_above /
-           drift_sideways. So restate the highlight stroke explicitly
-           here, decoupled from drift. */
-        stroke: #3b82f6;
+        stroke: #94a3b8;
       }
       #tree g.arrows path.hit {
         cursor: pointer;
@@ -84,14 +78,14 @@
          overlay, the whole arrow group is hovered, so we can safely
          bump the visible path's weight via CSS. Hover switches to a
          fixed-size marker so the arrowhead grows more modestly than the line.
-         Opacity also nudges up so faint dotted method arrows announce
+         Opacity also nudges up so faint dotted call arrows announce
          themselves under the cursor. */
       #tree g.arrows g.arrow:hover path.visible {
         opacity: 1;
         stroke-width: 1.75;
         marker-end: url(#sf-arrow-hover);
       }
-      #tree g.arrows g.arrow:hover path.visible.method {
+      #tree g.arrows g.arrow:hover path.visible.call {
         stroke-width: 2;
       }
       /* Canonical arrows are slate-500 grey by default (background context);
@@ -118,28 +112,12 @@
         stroke-linejoin: round;
         stroke-linecap: round;
       }
-      /* Module-label background style — switchable via the settings dropdown.
-         The rect.bg geometry is set in tree.ts; appearance comes from these
-         class rules on the parent SVG so we can swap looks without a redraw. */
-      #tree.label-style-halo g.module-row rect.bg {
-        display: none;
-      }
-      #tree.label-style-halo g.module-row text.name,
-      #tree.label-style-halo g.module-row text.chevron {
+      /* Module-label halo: thicker white stroke around the chevron and label
+         glyphs so the floating text stays legible when it crosses arrows or
+         type content. Applies on top of the global #tree text halo (4px). */
+      #tree g.module-row text.name,
+      #tree g.module-row text.chevron {
         stroke-width: 8px;
-      }
-      #tree.label-style-border g.module-row rect.bg {
-        fill: transparent;
-        stroke: none;
-      }
-      #tree.label-style-shadow g.module-row rect.bg {
-        fill: #ffffff;
-        stroke: none;
-        filter: url(#module-bg-shadow);
-      }
-      #tree.label-style-blue g.module-row rect.bg {
-        fill: #dbeafe;
-        stroke: none;
       }
       #top-controls {
         position: fixed;
@@ -635,6 +613,98 @@
         font-size: 10px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
+      /* Hover-only diagnostics for callable rows. This exposes the exact call
+         facts already attached to the row, so confusing header-routed arrows
+         can be explained without adding a second diagnostic data path. */
+      #callable-debug {
+        position: fixed;
+        display: none;
+        pointer-events: auto;
+        z-index: 23;
+        box-sizing: border-box;
+        max-width: min(560px, calc(100vw - 16px));
+        max-height: min(560px, calc(100vh - 16px));
+        overflow-y: auto;
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.94);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+        color: #1e293b;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      #callable-debug .cd-kicker,
+      #callable-debug .cd-section-title {
+        color: #64748b;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      #callable-debug .cd-title {
+        margin-top: 1px;
+        font-size: 14px;
+        font-weight: 700;
+        color: #1e293b;
+      }
+      #callable-debug .cd-path,
+      #callable-debug .cd-value,
+      #callable-debug .cd-line,
+      #callable-debug .cd-call-meta,
+      #callable-debug .cd-call-origin {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #callable-debug .cd-path {
+        color: #64748b;
+        font-size: 10px;
+        margin-bottom: 8px;
+      }
+      #callable-debug .cd-grid {
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        gap: 3px 10px;
+        margin-bottom: 8px;
+      }
+      #callable-debug .cd-key {
+        color: #94a3b8;
+      }
+      #callable-debug .cd-value {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #334155;
+      }
+      #callable-debug .cd-section-title {
+        margin-top: 8px;
+        padding-top: 7px;
+        border-top: 1px solid #e2e8f0;
+      }
+      #callable-debug .cd-list {
+        margin-top: 4px;
+      }
+      #callable-debug .cd-line,
+      #callable-debug .cd-call {
+        padding: 3px 0;
+      }
+      #callable-debug .cd-call + .cd-call,
+      #callable-debug .cd-line + .cd-line {
+        border-top: 1px solid #f1f5f9;
+      }
+      #callable-debug .cd-call-main {
+        font-weight: 600;
+        color: #334155;
+      }
+      #callable-debug .cd-call-meta,
+      #callable-debug .cd-call-origin,
+      #callable-debug .cd-empty,
+      #callable-debug .cd-more {
+        color: #64748b;
+        font-size: 10px;
+      }
     </style>
   </head>
   <body>
@@ -662,12 +732,6 @@
         >
           <path d="M0,-4L8,0L0,4Z" fill="context-stroke" />
         </marker>
-        <!-- Soft drop-shadow used by the 'shadow' module-label style.
-             Reachable from #tree because filter URL fragments resolve
-             document-wide. -->
-        <filter id="module-bg-shadow" x="-20%" y="-50%" width="140%" height="200%">
-          <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#0f172a" flood-opacity="0.12" />
-        </filter>
       </defs>
     </svg>
     <div id="top-controls" aria-label="viewer controls">
@@ -706,15 +770,6 @@
             <input id="settings-debug-layout" type="checkbox" />
             <span>debug overlay</span>
           </label>
-          <div class="settings-row" title="Background style for module labels in the floating left overlay">
-            <span>label style</span>
-            <select id="settings-label-style" style="margin-left: auto; font: inherit; padding: 1px 4px; border: 1px solid #e2e8f0; border-radius: 3px; background: white;">
-              <option value="halo">halo only</option>
-              <option value="border">white + border</option>
-              <option value="shadow">white + shadow</option>
-              <option value="blue">blue (current)</option>
-            </select>
-          </div>
           <div class="settings-summary" id="settings-input-summary"></div>
           <div class="settings-default" id="settings-input-default"></div>
         </div>

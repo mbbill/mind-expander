@@ -91,10 +91,11 @@ function toTypeBoxes(geometry: Geometry): TypeBox[] {
       headerArrowX: t.headerArrowX,
       headerHitWidth: t.headerHitWidth,
       height: t.height,
-      hasFields: t.node.fields.length > 0 || t.node.methodBuckets.length > 0,
+      hasFields:
+        t.node.fields.length > 0 || t.node.functions.length > 0 || t.node.methodBuckets.length > 0,
       expanded: t.expanded,
       fields: buildFieldRows(t),
-      totalFieldCount: t.node.fields.length,
+      totalFieldCount: t.node.fields.length + t.node.functions.length,
       isGhost: t.node.isGhost ?? false,
       ghostTarget: t.node.ghostTarget ?? null,
     }),

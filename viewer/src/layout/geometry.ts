@@ -3,6 +3,7 @@
 // module measures visible items, places snapped rectangles, and adapts them to
 // renderer-facing boxes.
 
+import type { FunctionCallIndex, FunctionCallRef, FunctionRowRef } from '../analysis/calls.ts';
 import type { DriftClass, DriftIndex } from '../analysis/drift.ts';
 import {
   FIELD_LABEL_INSET,
@@ -13,11 +14,11 @@ import {
   LAYOUT_GRID_CELL_H,
   LAYOUT_GRID_CELL_W,
   LEFT_PAD,
+  type LeafBgSegment,
   METHOD_INDENT,
   MIN_TYPE_BOX_W,
   MODULE_BAND_X_GAP,
   MODULE_GLYPH_W,
-  type LeafBgSegment,
   type PrefixSegment,
   ROW_H,
   TOP_PAD,
@@ -33,7 +34,12 @@ import {
   type LayoutInputs,
   rowArrowKey,
 } from '../analysis/layout_model.ts';
-import type { ModuleNode, TreeNode, TypeNode } from '../analysis/module_tree.ts';
+import {
+  type ModuleNode,
+  type TreeNode,
+  type TypeNode,
+  methodBucketId,
+} from '../analysis/module_tree.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
 import { BUCKET_LABEL, type VisibilityBucket } from '../analysis/visibility.ts';
 import type { FnFacts, Ownership } from '../data/schema.ts';
@@ -131,7 +137,7 @@ export function computeGeometry(inputs: LayoutInputs, options: GeometryOptions =
     inputs.drift,
     inputs.methodsHidden ?? false,
     inputs.fieldArrowsShown,
-    inputs.methodArrowsShown,
+    inputs.calls,
     placementPlan,
     measure,
     measureBold,
@@ -143,8 +149,9 @@ export function computeGeometry(inputs: LayoutInputs, options: GeometryOptions =
       ...BAND_PLACEMENT_SEARCH,
       extraGaps,
       rankLayerGapCells: BAND_ITEM_RIGHT_CLEARANCE_CELLS,
-      // Prelude/function groups are intentionally module-local; the global
-      // LCA layer floor starts at the first real ownership rank.
+      // Prelude placement is scoped to each module band. Cross-band rank floors
+      // start at real ownership ranks so one module's function groups cannot
+      // push unrelated sibling modules far to the right.
       firstRankLayerOrder: 1,
     },
   );
@@ -198,7 +205,7 @@ function computeColumnStride(types: readonly TypeNode[], measure: (s: string) =>
     // Header labels are always visible, so their width is part of the
     // stable data-derived column contract. Detail rows can protrude
     // per-row, but headers must never overlap the next sub-column.
-    const hasHeaderArrow = t.fields.length > 0 || t.methodBuckets.length > 0;
+    const hasHeaderArrow = hasDetailRows(t);
     stride = Math.max(
       stride,
       measureTypeHeaderMetrics(t.label, hasHeaderArrow, measure).width + TYPE_X_GAP,
@@ -242,7 +249,7 @@ function collectVisibleModuleBands(
   drift: DriftIndex,
   methodsHidden: boolean,
   fieldArrowsShown: ReadonlySet<string> | undefined,
-  methodArrowsShown: ReadonlySet<string> | undefined,
+  calls: FunctionCallIndex | undefined,
   placementPlan: PlacementLayoutPlan,
   measure: (s: string) => number,
   measureBold: (s: string) => number,
@@ -267,7 +274,7 @@ function collectVisibleModuleBands(
       drift,
       methodsHidden,
       fieldArrowsShown,
-      methodArrowsShown,
+      calls,
       measure,
     );
   }
@@ -308,7 +315,7 @@ function collectVisibleModuleBands(
           drift,
           methodsHidden,
           fieldArrowsShown,
-          methodArrowsShown,
+          calls,
           placementPlan,
           measure,
           measureBold,
@@ -491,7 +498,7 @@ function buildSemanticBandItems(
   drift: DriftIndex,
   methodsHidden: boolean,
   fieldArrowsShown: ReadonlySet<string> | undefined,
-  methodArrowsShown: ReadonlySet<string> | undefined,
+  calls: FunctionCallIndex | undefined,
   measure: (s: string) => number,
 ): readonly SemanticBandItem[] {
   return types.map((node): SemanticBandItem => {
@@ -504,11 +511,11 @@ function buildSemanticBandItems(
           drift,
           methodsHidden,
           fieldArrowsShown,
-          methodArrowsShown,
+          calls,
           measure,
         )
       : [];
-    const hasHeaderArrow = node.fields.length > 0 || node.methodBuckets.length > 0;
+    const hasHeaderArrow = hasDetailRows(node);
     const headerMetrics = measureTypeHeaderMetrics(node.label, hasHeaderArrow, measure);
     const headerWidth = headerMetrics.width;
     const placement = requirePlacement(placementPlan, node.id);
@@ -592,7 +599,14 @@ interface LocalRowSpec {
   readonly labelInset: number;
   readonly textWidth: number;
   readonly targets: readonly string[];
-  readonly kind: 'field' | 'method_bucket' | 'method';
+  readonly callTargets: readonly FunctionRowRef[];
+  readonly callRefs: readonly FunctionCallRef[];
+  readonly functionFullPath: string | null;
+  readonly callsOutsideModule: boolean;
+  readonly hasExternalCalls: boolean;
+  readonly hasUnresolvedCalls: boolean;
+  readonly hasOutgoingCalls: boolean;
+  readonly kind: 'field' | 'method_bucket' | 'method' | 'function';
   readonly bucketId: string | null;
   readonly memberDriftClass: DriftClass | null;
 }
@@ -604,10 +618,24 @@ function buildRowSpecs(
   drift: DriftIndex,
   methodsHidden: boolean,
   fieldArrowsShown: ReadonlySet<string> | undefined,
-  methodArrowsShown: ReadonlySet<string> | undefined,
+  calls: FunctionCallIndex | undefined,
   measure: (s: string) => number,
 ): LocalRowSpec[] {
   const rows: LocalRowSpec[] = [];
+  if (t.typeKind === 'function_group') {
+    for (const f of t.functions) {
+      pushCallableRow(rows, {
+        fn: f.fn,
+        functionFullPath: f.fullPath,
+        kind: 'function',
+        labelInset: FUNCTION_GROUP_LABEL_INSET,
+        calls,
+        measure,
+      });
+    }
+    return rows;
+  }
+
   const fieldTargets = ownership.fieldTargets.get(t.fullPath);
   for (const f of t.fields) {
     const targets = fieldTargets?.get(f.name) ?? [];
@@ -626,6 +654,13 @@ function buildRowSpecs(
       labelInset: labelInsetForRows(t),
       textWidth: measure(f.name),
       targets: showThisArrow ? targets : [],
+      callTargets: [],
+      callRefs: [],
+      functionFullPath: null,
+      callsOutsideModule: false,
+      hasExternalCalls: false,
+      hasUnresolvedCalls: false,
+      hasOutgoingCalls: false,
       kind: 'field',
       bucketId: null,
       memberDriftClass,
@@ -643,29 +678,69 @@ function buildRowSpecs(
       labelInset: FIELD_LABEL_INSET,
       textWidth: measure(headerName),
       targets: [],
+      callTargets: [],
+      callRefs: [],
+      functionFullPath: null,
+      callsOutsideModule: false,
+      hasExternalCalls: false,
+      hasUnresolvedCalls: false,
+      hasOutgoingCalls: false,
       kind: 'method_bucket',
       bucketId,
       memberDriftClass: null,
     });
     if (!state.isExpanded(bucketId)) continue;
-    const methodTargets = ownership.methodTargets.get(t.fullPath);
     for (const fn of mb.methods) {
-      const showThisArrow =
-        methodArrowsShown === undefined || methodArrowsShown.has(rowArrowKey(t.fullPath, fn.name));
-      rows.push({
-        name: fn.name,
-        tyText: formatMethodSignature(fn),
-        ownership: 'primitive',
-        labelInset: FIELD_LABEL_INSET + METHOD_INDENT,
-        textWidth: measure(fn.name),
-        targets: showThisArrow ? (methodTargets?.get(fn.name) ?? []) : [],
+      pushCallableRow(rows, {
+        fn,
+        functionFullPath: `${t.fullPath}::${fn.name}`,
         kind: 'method',
-        bucketId: null,
-        memberDriftClass: null,
+        labelInset: FIELD_LABEL_INSET + METHOD_INDENT,
+        calls,
+        measure,
       });
     }
   }
   return rows;
+}
+
+function pushCallableRow(
+  rows: LocalRowSpec[],
+  args: {
+    readonly fn: FnFacts;
+    readonly functionFullPath: string;
+    readonly kind: 'method' | 'function';
+    readonly labelInset: number;
+    readonly calls: FunctionCallIndex | undefined;
+    readonly measure: (s: string) => number;
+  },
+): void {
+  // Module-level functions and type-member functions are both executable
+  // callables. Keep their row contract identical so rendering and routing
+  // cannot drift based on where Rust declared the function.
+  const callRefs = args.calls?.callsByFunction.get(args.functionFullPath) ?? [];
+  const hasExternalCalls = callRefs.some((call) => call.locality === 'other_module');
+  const hasUnresolvedCalls = callRefs.some((call) => call.locality === 'unresolved');
+  const callsOutsideModule = hasExternalCalls || hasUnresolvedCalls;
+  const callTargets = args.calls?.callTargetsByFunction.get(args.functionFullPath) ?? [];
+  rows.push({
+    name: args.fn.name,
+    tyText: formatCallableSignature(args.fn),
+    ownership: 'primitive',
+    labelInset: args.labelInset,
+    textWidth: args.measure(args.fn.name),
+    targets: [],
+    callTargets,
+    callRefs,
+    functionFullPath: args.functionFullPath,
+    callsOutsideModule,
+    hasExternalCalls,
+    hasUnresolvedCalls,
+    hasOutgoingCalls: callRefs.length > 0,
+    kind: args.kind,
+    bucketId: null,
+    memberDriftClass: null,
+  });
 }
 
 function strongestDriftClassForTargets(
@@ -719,6 +794,13 @@ function positionRows(
       y: rowY,
       arrowSourceX: x + spec.textWidth + 4,
       targets: spec.targets,
+      callTargets: spec.callTargets,
+      callRefs: spec.callRefs,
+      functionFullPath: spec.functionFullPath,
+      callsOutsideModule: spec.callsOutsideModule,
+      hasExternalCalls: spec.hasExternalCalls,
+      hasUnresolvedCalls: spec.hasUnresolvedCalls,
+      hasOutgoingCalls: spec.hasOutgoingCalls,
       kind: spec.kind,
       bucketId: spec.bucketId,
       memberDriftClass: spec.memberDriftClass,
@@ -732,8 +814,8 @@ function labelInsetForRows(t: TypeNode): number {
   return t.typeKind === 'function_group' ? FUNCTION_GROUP_LABEL_INSET : FIELD_LABEL_INSET;
 }
 
-function methodBucketId(typeFullPath: string, bucket: VisibilityBucket): string {
-  return `${typeFullPath}::__methods_${bucket}`;
+function hasDetailRows(t: TypeNode): boolean {
+  return t.fields.length > 0 || t.functions.length > 0 || t.methodBuckets.length > 0;
 }
 
 function bucketHeaderText(mb: {
@@ -743,10 +825,10 @@ function bucketHeaderText(mb: {
   return `${BUCKET_LABEL[mb.bucket]} (${mb.methods.length})`;
 }
 
-/** Method rows need the same signature tail the renderer already supports.
+/** Callable rows need the same signature tail wherever Rust declared them.
  *  Keeping this in geometry makes row height, hit source, and rendered text
- *  agree instead of making routing infer method details later. */
-function formatMethodSignature(fn: FnFacts): string {
+ *  agree instead of making routing infer function details later. */
+function formatCallableSignature(fn: FnFacts): string {
   const parts: string[] = [];
   if (fn.is_unsafe === true) parts.push('unsafe ');
   if (fn.is_const === true) parts.push('const ');
@@ -793,4 +875,3 @@ function computeGlobalXStart(
   walk(root, 0);
   return maxLabelEnd + MODULE_BAND_X_GAP;
 }
-

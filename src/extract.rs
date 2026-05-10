@@ -11,6 +11,7 @@ use syn::{
 };
 use walkdir::WalkDir;
 
+use crate::callgraph::{CallGraphProvider, SynCallGraphProvider};
 use crate::model::{
     CrateFacts, Edge, EdgeKind, EdgeProfile, FieldFacts, FnFacts, ModuleFacts, Ownership,
     ParamFacts, ReExport, ReExportKind, SelfKind, TypeFacts, TypeKind, ViaKind, WorkspaceFacts,
@@ -27,6 +28,7 @@ pub fn extract_workspace(root: &Path) -> Result<WorkspaceFacts> {
     let mut workspace = WorkspaceFacts {
         crates: BTreeMap::new(),
         edges: Vec::new(),
+        call_edges: Vec::new(),
         edge_profiles: BTreeMap::new(),
     };
 
@@ -87,6 +89,7 @@ pub fn extract_workspace(root: &Path) -> Result<WorkspaceFacts> {
 
     workspace.edge_profiles = build_profiles(&edges);
     workspace.edges = edges;
+    workspace.call_edges = SynCallGraphProvider.extract_call_edges(&workspace)?;
 
     Ok(workspace)
 }

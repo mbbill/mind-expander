@@ -1,4 +1,5 @@
 import { zoomTransform } from 'd3';
+import { type FunctionCallIndex, buildFunctionCallIndex } from './analysis/calls.ts';
 import { computeDrift } from './analysis/drift.ts';
 import { type Layout, rowArrowKey } from './analysis/layout_model.ts';
 import { type TreeNode, buildModuleTree } from './analysis/module_tree.ts';
@@ -21,7 +22,7 @@ import {
   FONT_FAMILY,
   FONT_SIZE_FIELD,
   LAYOUT_DEBUG_STORAGE_KEY,
-  chainArrowsFromMany,
+  directArrowsFromMany,
   fieldKey,
   layoutDebugEnabled,
   parseFieldKey,
@@ -29,8 +30,10 @@ import {
 } from './view/tree.ts';
 import {
   ancestorModuleIds,
+  callableBucketIdsForType,
   forwardRoutedTargetModulesFor,
   memberArrowRowsForType,
+  targetExpansionIdsForMemberRow,
   targetModulesForMemberRow,
 } from './view/type_expansion.ts';
 import { attachZoom } from './view/zoom.ts';
@@ -62,6 +65,7 @@ interface RenderCtx {
   readonly state: ViewState;
   readonly selectedFields: ReadonlySet<string>;
   readonly ownership: OwnershipIndex;
+  readonly calls: FunctionCallIndex;
   readonly crateName: string;
   readonly draw: () => void;
   /** Set of ids that are types (vs modules). Used to filter ViewState's
@@ -359,7 +363,6 @@ async function main(): Promise<void> {
     });
   }
 
-  applyLabelStyle(readStoredLabelStyle());
   setupInputSettings(inputController);
 
   // Mouse bindings — clicking any keybinding chip triggers its action.
@@ -397,6 +400,7 @@ async function main(): Promise<void> {
     }
     const staticRoot = buildModuleTree(crate);
     const ownership = buildOwnershipIndex(facts, crateName);
+    const calls = buildFunctionCallIndex(facts, crateName, staticRoot);
     const allTypeIds = collectTypeIds(staticRoot);
     const typeModule = collectTypeModuleMap(staticRoot);
     const drift = computeDrift(ownership, typeModule);
@@ -420,16 +424,15 @@ async function main(): Promise<void> {
       // Member arrows are opt-in: selecting a row asks layout to emit that
       // row's arrow, selecting it again removes the key so redraw hides it.
       const fieldArrowsShown = new Set<string>();
-      const methodArrowsShown = new Set<string>();
       for (const k of selectedFields) {
         const parsed = parseFieldKey(k);
         const rowKey = rowArrowKey(parsed.typePath, parsed.fieldName);
-        if (parsed.kind === 'method') methodArrowsShown.add(rowKey);
-        else fieldArrowsShown.add(rowKey);
+        if (parsed.kind === 'field') fieldArrowsShown.add(rowKey);
       }
       const buildArgs = {
         staticRoot,
         ownership,
+        calls,
         depth,
         state,
         drift,
@@ -438,7 +441,6 @@ async function main(): Promise<void> {
         placementPlan,
         ghostArrowsShown,
         fieldArrowsShown,
-        methodArrowsShown,
         methodsHidden: currentCtx?.methodsHidden ?? false,
         ...(focus ? { focusModules: focus.modules } : {}),
       };
@@ -454,10 +456,11 @@ async function main(): Promise<void> {
         x1: lastLayout.totalWidth,
         y1: lastLayout.totalHeight,
       });
-      // Compute the union of arrow chains for every selected field. These are
-      // drawn highlighted by default; hover unions a transient chain on top.
+      // Compute the union of direct outgoing arrows for every selected row.
+      // Selection is local to the selected object; downstream rows do not
+      // become highlighted just because their owner type is expanded.
       const selectedFieldRefs = [...selectedFields].map((k) => parseFieldKey(k));
-      const selectedArrows = chainArrowsFromMany(lastLayout, selectedFieldRefs);
+      const selectedArrows = directArrowsFromMany(lastLayout, selectedFieldRefs);
 
       // Method-bucket expansion is stored in the same ViewState set as
       // module/type expansions; pull just those ids into a small
@@ -504,25 +507,29 @@ async function main(): Promise<void> {
           const before = lookupPoint(lastLayout, typePath);
           const wasExpanded = state.isExpanded(typePath);
           state.toggle(typePath);
-          const rows = memberArrowRowsForType(typePath, ownership);
+          const rows = memberArrowRowsForType(typePath, ownership, calls);
           if (wasExpanded) {
             for (const row of rows)
               selectedFields.delete(fieldKey(typePath, row.rowName, row.rowKind));
           } else {
-            // Chevron-open means "open this type for inspection": show every
-            // member arrow and expand each target module so the arrows have
-            // visible endpoints immediately.
+            // Chevron-open means "open this type for inspection": expose
+            // function rows, but only field rows become selected by default.
             for (const row of rows) {
+              if (row.rowKind !== 'field') continue;
               selectedFields.add(fieldKey(typePath, row.rowName, row.rowKind));
-              for (const moduleId of targetModulesForMemberRow(
+              for (const targetId of targetExpansionIdsForMemberRow(
                 typePath,
                 row.rowName,
                 row.rowKind,
                 ownership,
+                calls,
                 crateName,
               )) {
-                state.expand(moduleId);
+                state.expand(targetId);
               }
+            }
+            for (const bucketId of callableBucketIdsForType(typePath, calls)) {
+              state.expand(bucketId);
             }
           }
           draw();
@@ -536,14 +543,15 @@ async function main(): Promise<void> {
             selectedFields.delete(key);
           } else {
             selectedFields.add(key);
-            for (const moduleId of targetModulesForMemberRow(
+            for (const targetId of targetExpansionIdsForMemberRow(
               typePath,
               fieldName,
               kind,
               ownership,
+              calls,
               crateName,
             )) {
-              state.expand(moduleId);
+              state.expand(targetId);
             }
           }
           draw();
@@ -722,6 +730,7 @@ async function main(): Promise<void> {
       state,
       selectedFields,
       ownership,
+      calls,
       crateName,
       draw,
       typeIdSet,
@@ -796,13 +805,13 @@ function mostRecentSelection(ctx: RenderCtx): string | null {
 //   - the crate root,
 //   - the containing module (and ancestors) of every expanded type,
 //   - the containing module (and ancestors) of every one-step arrow
-//     target of an expanded type's fields, so direct outgoing chains
-//     stay visible (their type box renders collapsed in those modules),
+//     target of an expanded type's fields, so direct outgoing context
+//     stays visible (their type box renders collapsed in those modules),
 //   - the containing module (and ancestors) of every arrow target of a
 //     selected field. (The owner is necessarily expanded, so it's
 //     already covered by the first bullet.)
 function computeFocus(ctx: RenderCtx): { modules: ReadonlySet<string> } {
-  const { state, selectedFields, ownership, crateName, typeIdSet } = ctx;
+  const { state, selectedFields, ownership, calls, crateName, typeIdSet } = ctx;
   const modules = new Set<string>([crateName]);
 
   const addAncestors = (typeFullPath: string): void => {
@@ -823,12 +832,22 @@ function computeFocus(ctx: RenderCtx): { modules: ReadonlySet<string> } {
   for (const k of selectedFields) {
     const parsed = parseFieldKey(k);
     addAncestors(parsed.typePath);
-    const targets =
-      parsed.kind === 'method'
-        ? ownership.methodTargets.get(parsed.typePath)?.get(parsed.fieldName)
-        : ownership.fieldTargets.get(parsed.typePath)?.get(parsed.fieldName);
-    if (targets) {
-      for (const t of targets) addAncestors(t);
+    if (parsed.kind === 'field') {
+      const targets = ownership.fieldTargets.get(parsed.typePath)?.get(parsed.fieldName);
+      if (targets) {
+        for (const t of targets) addAncestors(t);
+      }
+    } else {
+      for (const moduleId of targetModulesForMemberRow(
+        parsed.typePath,
+        parsed.fieldName,
+        parsed.kind,
+        ownership,
+        calls,
+        crateName,
+      )) {
+        modules.add(moduleId);
+      }
     }
   }
 
@@ -1018,31 +1037,11 @@ function installInputControls(
   return controller;
 }
 
-const LABEL_STYLE_KEY = 'mind-expander.labelStyle';
-const LABEL_STYLES = ['halo', 'border', 'shadow', 'blue'] as const;
-type LabelStyle = (typeof LABEL_STYLES)[number];
-const DEFAULT_LABEL_STYLE: LabelStyle = 'border';
-
-function applyLabelStyle(style: LabelStyle): void {
-  const svg = document.getElementById('tree');
-  if (!svg) return;
-  for (const s of LABEL_STYLES) svg.classList.remove(`label-style-${s}`);
-  svg.classList.add(`label-style-${style}`);
-}
-
-function readStoredLabelStyle(): LabelStyle {
-  const stored = localStorage.getItem(LABEL_STYLE_KEY);
-  return (LABEL_STYLES as readonly string[]).includes(stored ?? '')
-    ? (stored as LabelStyle)
-    : DEFAULT_LABEL_STYLE;
-}
-
 function setupInputSettings(controller: InputController): void {
   const toggle = document.querySelector<HTMLButtonElement>('.settings-toggle');
   const body = document.querySelector<HTMLElement>('#settings-body');
   const inputModeCheckbox = document.querySelector<HTMLInputElement>('#settings-trackpad-mode');
   const debugLayoutCheckbox = document.querySelector<HTMLInputElement>('#settings-debug-layout');
-  const labelStyleSelect = document.querySelector<HTMLSelectElement>('#settings-label-style');
   const summary = document.querySelector<HTMLElement>('#settings-input-summary');
   const defaultBadge = document.querySelector<HTMLElement>('#settings-input-default');
   if (!toggle || !body || !inputModeCheckbox || !summary || !defaultBadge) {
@@ -1084,15 +1083,6 @@ function setupInputSettings(controller: InputController): void {
     renderDebugLayout();
     currentCtx?.draw();
   });
-  if (labelStyleSelect) {
-    const current = readStoredLabelStyle();
-    labelStyleSelect.value = current;
-    labelStyleSelect.addEventListener('change', () => {
-      const next = labelStyleSelect.value as LabelStyle;
-      localStorage.setItem(LABEL_STYLE_KEY, next);
-      applyLabelStyle(next);
-    });
-  }
 }
 
 function detectDefaultInputMode(): InputMode {

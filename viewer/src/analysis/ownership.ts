@@ -1,8 +1,8 @@
 // Ownership graph extracted from edges, scoped to a single crate. Pure.
 //
 // "Ownership" = `kind=owns` plus a structural via (struct_field, union_field,
-// enum_variant_payload). Function-param/return owns are call-relations, not
-// structural composition; excluded by design (matches handover discipline).
+// enum_variant_payload). Function-param/return edges are signature references,
+// not structural composition or caller/callee facts; excluded by design.
 //
 // Two outputs:
 //   • OwnershipIndex: per-type list of owned target full_paths (for arrow drawing later).
@@ -20,27 +20,12 @@ export interface OwnershipIndex {
   readonly ownedBy: ReadonlyMap<string, readonly string[]>;
   /** Per (type full_path, field name) → list of owned target full_paths. Used for per-field arrow drawing. */
   readonly fieldTargets: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
-  /** Per (type full_path, method name) → list of referenced target
-   *  full_paths from the method's params and return type. Includes
-   *  owned + borrowed + indirection kinds (a borrow from a method is
-   *  still a "this method uses that type" relationship the user wants
-   *  to see). Drives method-row arrows in the layout. */
+  /** Deprecated compatibility slot. Method/function caller-callee arrows are
+   *  driven by analysis/calls.ts, not by function signature type references. */
   readonly methodTargets: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
 }
 
 const STRUCTURAL_VIAS: readonly string[] = ['struct_field', 'union_field', 'enum_variant_payload'];
-const METHOD_VIAS: readonly string[] = ['fn_param', 'fn_return'];
-// Edge kinds that count as "this method references that type" for
-// method-row arrows. We include borrows because a method that takes a
-// `&Foo` param is semantically using `Foo` — the user wants to see that
-// arrow. Field-level fieldTargets stays narrower (owns only) because
-// fields encode structural composition; this asymmetry is intentional.
-const METHOD_REFERENCE_KINDS: readonly string[] = [
-  'owns',
-  'borrows_immut',
-  'borrows_mut',
-  'indirection',
-];
 
 export function buildOwnershipIndex(facts: Facts, crateName: string): OwnershipIndex {
   const inCrate = (fullPath: string): boolean => fullPath.startsWith(`${crateName}::`);
@@ -67,23 +52,6 @@ export function buildOwnershipIndex(facts: Facts, crateName: string): OwnershipI
         }
         pushUnique(perType, fieldName, e.to);
       }
-      continue;
-    }
-
-    // Method-row references — drives the new per-method arrows. We key
-    // by (typeFullPath, methodName); the extractor sets `from` to the
-    // owning type's full_path for methods, so this lookup matches the
-    // way the renderer keys arrow sources.
-    if (METHOD_VIAS.includes(e.via) && METHOD_REFERENCE_KINDS.includes(e.kind)) {
-      const methodName = parseMethodName(e.origin);
-      if (methodName !== undefined) {
-        let perType = methodTargets.get(e.from);
-        if (!perType) {
-          perType = new Map();
-          methodTargets.set(e.from, perType);
-        }
-        pushUnique(perType, methodName, e.to);
-      }
     }
   }
 
@@ -107,25 +75,6 @@ function parseFieldName(origin: string): string | undefined {
   const PREFIX = 'field ';
   if (!origin.startsWith(PREFIX)) return undefined;
   return origin.slice(PREFIX.length);
-}
-
-// Origin grammar for method-derived edges, mirroring `emit_edges_from_fn`
-// in the extractor:
-//   "fn {name} param {paramName}"   → fn_param edge
-//   "fn {name} -> ret"              → fn_return edge
-// We extract just `{name}` — the method's own name — and key
-// methodTargets by (typeFullPath, methodName). Param names aren't
-// surfaced here because methods aren't sub-rowed by parameter; one
-// method-row aggregates every type it touches via params + return.
-function parseMethodName(origin: string): string | undefined {
-  const PREFIX = 'fn ';
-  if (!origin.startsWith(PREFIX)) return undefined;
-  // The substring after `fn ` and before the next space is the method
-  // name. Both grammars (`param ...` and `-> ret`) split on the first
-  // space after that.
-  const tail = origin.slice(PREFIX.length);
-  const sp = tail.indexOf(' ');
-  return sp < 0 ? tail : tail.slice(0, sp);
 }
 
 /**

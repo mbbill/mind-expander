@@ -1,9 +1,10 @@
+import type { FunctionCallIndex } from '../analysis/calls.ts';
 import type { DriftClass, DriftIndex } from '../analysis/drift.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
 
 export interface MemberArrowRow {
   readonly rowName: string;
-  readonly rowKind: 'field' | 'method';
+  readonly rowKind: 'field' | 'method' | 'function';
 }
 
 // The type-click affordance may reveal extra target modules, but only for
@@ -46,21 +47,56 @@ function isForwardOwnershipTarget(
 export function targetModulesForMemberRow(
   typeId: string,
   rowName: string,
-  rowKind: 'field' | 'method',
+  rowKind: 'field' | 'method' | 'function',
   ownership: OwnershipIndex,
+  calls: FunctionCallIndex,
   crateName: string,
 ): string[] {
-  const targets =
-    rowKind === 'method'
-      ? ownership.methodTargets.get(typeId)?.get(rowName)
-      : ownership.fieldTargets.get(typeId)?.get(rowName);
-  if (targets === undefined) return [];
+  const out = new Set<string>();
+  if (rowKind === 'field') {
+    const targets = ownership.fieldTargets.get(typeId)?.get(rowName);
+    if (targets === undefined) return [];
+    for (const target of targets) {
+      for (const id of ancestorModuleIds(target, crateName)) {
+        out.add(id);
+      }
+    }
+  } else {
+    const row = calls.rowsByType
+      .get(typeId)
+      ?.find((r) => r.rowName === rowName && r.rowKind === rowKind);
+    if (row === undefined) return [];
+    for (const target of calls.callTargetsByFunction.get(row.functionFullPath) ?? []) {
+      out.add(target.moduleId);
+    }
+  }
+  return [...out];
+}
+
+export function targetExpansionIdsForMemberRow(
+  typeId: string,
+  rowName: string,
+  rowKind: 'field' | 'method' | 'function',
+  ownership: OwnershipIndex,
+  calls: FunctionCallIndex,
+  crateName: string,
+): string[] {
+  if (rowKind === 'field') {
+    return targetModulesForMemberRow(typeId, rowName, rowKind, ownership, calls, crateName);
+  }
 
   const out = new Set<string>();
-  for (const target of targets) {
-    for (const id of ancestorModuleIds(target, crateName)) {
+  const row = calls.rowsByType
+    .get(typeId)
+    ?.find((r) => r.rowName === rowName && r.rowKind === rowKind);
+  if (row === undefined) return [];
+
+  for (const target of calls.callTargetsByFunction.get(row.functionFullPath) ?? []) {
+    for (const id of ancestorModuleIds(target.typeId, crateName)) {
       out.add(id);
     }
+    out.add(target.typeId);
+    if (target.bucketId !== null) out.add(target.bucketId);
   }
   return [...out];
 }
@@ -68,15 +104,28 @@ export function targetModulesForMemberRow(
 export function memberArrowRowsForType(
   typeId: string,
   ownership: OwnershipIndex,
+  calls: FunctionCallIndex,
 ): readonly MemberArrowRow[] {
   const out: MemberArrowRow[] = [];
   for (const rowName of ownership.fieldTargets.get(typeId)?.keys() ?? []) {
     out.push({ rowName, rowKind: 'field' });
   }
-  for (const rowName of ownership.methodTargets.get(typeId)?.keys() ?? []) {
-    out.push({ rowName, rowKind: 'method' });
+  for (const row of calls.rowsByType.get(typeId) ?? []) {
+    if ((calls.callTargetsByFunction.get(row.functionFullPath)?.length ?? 0) === 0) continue;
+    out.push({ rowName: row.rowName, rowKind: row.rowKind });
   }
   return out;
+}
+
+export function callableBucketIdsForType(
+  typeId: string,
+  calls: FunctionCallIndex,
+): readonly string[] {
+  const out = new Set<string>();
+  for (const row of calls.rowsByType.get(typeId) ?? []) {
+    if (row.bucketId !== null) out.add(row.bucketId);
+  }
+  return [...out];
 }
 
 // `crate::a::b::Type` -> [`crate`, `crate::a`, `crate::a::b`].

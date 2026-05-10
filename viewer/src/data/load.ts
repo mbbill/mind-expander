@@ -48,6 +48,10 @@ function validate(raw: unknown): Facts {
   if (!isObject(crates)) throw new FactsLoadError('root.crates is not an object');
   const edges = root['edges'];
   if (!Array.isArray(edges)) throw new FactsLoadError('root.edges is not an array');
+  const callEdges = root['call_edges'];
+  if (callEdges !== undefined && !Array.isArray(callEdges)) {
+    throw new FactsLoadError('root.call_edges is not an array');
+  }
   for (const [i, eRaw] of edges.entries()) {
     if (!isObject(eRaw)) {
       throw new FactsLoadError(`edges[${i}] is not an object`);
@@ -61,6 +65,21 @@ function validate(raw: unknown): Facts {
     }
     if (typeof e['origin'] !== 'string') {
       throw new FactsLoadError(`edges[${i}] missing origin`);
+    }
+  }
+  for (const [i, eRaw] of ((callEdges ?? []) as unknown[]).entries()) {
+    if (!isObject(eRaw)) {
+      throw new FactsLoadError(`call_edges[${i}] is not an object`);
+    }
+    const e = eRaw as Record<string, unknown>;
+    if (typeof e['caller'] !== 'string' || typeof e['callee'] !== 'string') {
+      throw new FactsLoadError(`call_edges[${i}] missing caller/callee`);
+    }
+    if (typeof e['kind'] !== 'string' || typeof e['resolution'] !== 'string') {
+      throw new FactsLoadError(`call_edges[${i}] missing kind/resolution`);
+    }
+    if (typeof e['origin'] !== 'string') {
+      throw new FactsLoadError(`call_edges[${i}] missing origin`);
     }
   }
 

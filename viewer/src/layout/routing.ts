@@ -33,9 +33,11 @@ interface TypeBounds {
 interface RouteRequest {
   readonly fromTypeId: string;
   readonly fromFieldName: string;
-  readonly fromRowKind: 'field' | 'method';
+  readonly fromRowKind: 'field' | 'method' | 'function';
   readonly toTypeId: string;
-  readonly kind: 'ownership' | 'reexport' | 'method';
+  readonly toFieldName?: string;
+  readonly toRowKind?: 'method' | 'function';
+  readonly kind: 'ownership' | 'reexport' | 'call';
   readonly driftClass: DriftClass;
   readonly sourceX: number;
   readonly targetX: number;
@@ -48,6 +50,8 @@ interface RouteRequest {
 interface RouteExit {
   readonly point: ArrowWaypoint;
 }
+
+const CALL_TARGET_LABEL_GAP = 4;
 
 export interface RoutingResult {
   readonly arrows: readonly Arrow[];
@@ -84,7 +88,7 @@ function collectRouteRequests(
 
     if (source.expanded) {
       for (const row of source.visibleRows) {
-        if (row.kind === 'method_bucket' || row.targets.length === 0) continue;
+        if (row.kind === 'method_bucket') continue;
 
         for (const targetId of row.targets) {
           const target = geometry.typesById.get(targetId);
@@ -95,9 +99,10 @@ function collectRouteRequests(
           out.push({
             fromTypeId: source.node.id,
             fromFieldName: row.name,
-            fromRowKind: row.kind === 'method' ? 'method' : 'field',
+            fromRowKind:
+              row.kind === 'method' ? 'method' : row.kind === 'function' ? 'function' : 'field',
             toTypeId: targetId,
-            kind: row.kind === 'method' ? 'method' : 'ownership',
+            kind: 'ownership',
             driftClass: drift.typeClass.get(targetId) ?? 'at_lca',
             sourceX: source.x,
             targetX: target.x,
@@ -105,6 +110,34 @@ function collectRouteRequests(
             targetBounds,
             start: { x: row.arrowSourceX, y: row.y },
             end: { x: targetBounds.left, y: target.y },
+          });
+        }
+
+        for (const targetRef of row.callTargets ?? []) {
+          const target = geometry.typesById.get(targetRef.typeId);
+          const targetBounds = boundsByType.get(targetRef.typeId);
+          if (target === undefined || targetBounds === undefined) continue;
+          const targetRow = target.visibleRows.find(
+            (candidate) =>
+              candidate.kind === targetRef.rowKind && candidate.name === targetRef.rowName,
+          );
+          if (targetRow === undefined) continue;
+
+          out.push({
+            fromTypeId: source.node.id,
+            fromFieldName: row.name,
+            fromRowKind: row.kind === 'method' ? 'method' : 'function',
+            toTypeId: targetRef.typeId,
+            toFieldName: targetRef.rowName,
+            toRowKind: targetRef.rowKind,
+            kind: 'call',
+            driftClass: 'at_lca',
+            sourceX: source.x,
+            targetX: target.x,
+            sourceBounds,
+            targetBounds,
+            start: { x: row.arrowSourceX, y: row.y },
+            end: { x: targetRow.x - CALL_TARGET_LABEL_GAP, y: targetRow.y },
           });
         }
       }
@@ -140,7 +173,7 @@ function collectRouteRequests(
 }
 
 function emitRoutedArrow(request: RouteRequest, field: RoutingField): Arrow {
-  return {
+  const arrow: Arrow = {
     waypoints: routeAroundBlocks(request, field),
     fromTypeId: request.fromTypeId,
     fromFieldName: request.fromFieldName,
@@ -149,6 +182,10 @@ function emitRoutedArrow(request: RouteRequest, field: RoutingField): Arrow {
     kind: request.kind,
     driftClass: request.driftClass,
   };
+  if (request.toFieldName !== undefined && request.toRowKind !== undefined) {
+    return { ...arrow, toFieldName: request.toFieldName, toRowKind: request.toRowKind };
+  }
+  return arrow;
 }
 
 function routeAroundBlocks(request: RouteRequest, field: RoutingField): readonly ArrowWaypoint[] {

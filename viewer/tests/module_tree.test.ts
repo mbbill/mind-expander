@@ -290,19 +290,17 @@ describe('buildModuleTree — function group synthesis', () => {
     expect(g.visibility).toBe('pub');
   });
 
-  it('exposes function names as the pseudo-type fields, alphabetical by name', () => {
+  it('exposes module functions as callable rows, alphabetical by name', () => {
     const root = buildModuleTree(
       crateOf('c', [mod(''), mod('a', [], { functions: [fn('zeta'), fn('alpha')] })]),
     );
     const a = findModule(root, 'a');
     const g = typeChildren(a as ModuleNode)[0] as TypeNode;
-    expect(g.fields.map((f) => f.name)).toEqual(['alpha', 'zeta']);
-    // Function fields are not real ownership edges — primitive ownership and
-    // empty ty_text leaves them inert in the ownership graph.
-    for (const f of g.fields) {
-      expect(f.ownership).toBe('primitive');
-      expect(f.ty_text).toBe('');
-    }
+    expect(g.fields).toEqual([]);
+    expect(g.functions.map((f) => [f.fullPath, f.fn.name])).toEqual([
+      ['c::a::alpha', 'alpha'],
+      ['c::a::zeta', 'zeta'],
+    ]);
   });
 
   it('skips functions with sentinel visibility tokens like `<orphan-impl>`', () => {
@@ -314,7 +312,7 @@ describe('buildModuleTree — function group synthesis', () => {
     );
     const a = findModule(root, 'a');
     const g = typeChildren(a as ModuleNode)[0] as TypeNode;
-    expect(g.fields.map((f) => f.name)).toEqual(['keep']);
+    expect(g.functions.map((f) => f.fn.name)).toEqual(['keep']);
   });
 
   it('emits no function-group rows when the module has no real-visibility functions', () => {

@@ -1,6 +1,7 @@
 // Internal types for the layout pipeline. The pipeline's final output is the
 // renderer-facing `Layout` shape from analysis/layout_model.ts.
 
+import type { FunctionCallRef, FunctionRowRef } from '../analysis/calls.ts';
 import type { DriftClass } from '../analysis/drift.ts';
 import type { LeafBgSegment, PrefixSegment } from '../analysis/layout_metrics.ts';
 import type { ModuleNode, TypeNode } from '../analysis/module_tree.ts';
@@ -58,7 +59,7 @@ export interface PositionedType {
   readonly visibleRows: readonly PositionedRow[];
 }
 
-export type PositionedRowKind = 'field' | 'method_bucket' | 'method';
+export type PositionedRowKind = 'field' | 'method_bucket' | 'method' | 'function';
 
 export interface PositionedRow {
   readonly name: string;
@@ -68,6 +69,13 @@ export interface PositionedRow {
   readonly y: number;
   readonly arrowSourceX: number;
   readonly targets: readonly string[];
+  readonly callTargets: readonly FunctionRowRef[];
+  readonly callRefs: readonly FunctionCallRef[];
+  readonly functionFullPath: string | null;
+  readonly callsOutsideModule: boolean;
+  readonly hasExternalCalls: boolean;
+  readonly hasUnresolvedCalls: boolean;
+  readonly hasOutgoingCalls: boolean;
   readonly kind: PositionedRowKind;
   readonly bucketId: string | null;
   readonly memberDriftClass?: DriftClass | null;

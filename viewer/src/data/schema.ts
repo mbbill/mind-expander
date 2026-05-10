@@ -135,7 +135,20 @@ export interface Edge {
   readonly origin: string;
 }
 
+export type CallKind = 'function' | 'associated_function' | 'method';
+
+export type CallResolution = 'exact' | 'heuristic' | 'ambiguous';
+
+export interface CallEdge {
+  readonly caller: string;
+  readonly callee: string;
+  readonly kind: CallKind;
+  readonly resolution: CallResolution;
+  readonly origin: string;
+}
+
 export interface Facts {
   readonly crates: Readonly<Record<string, CrateFacts>>;
   readonly edges: readonly Edge[];
+  readonly call_edges?: readonly CallEdge[];
 }

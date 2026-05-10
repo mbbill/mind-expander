@@ -227,6 +227,86 @@ describe('routeArrows obstacle routing', () => {
     );
   });
 
+  it('emits function-call arrows from callable rows without ownership targets', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'Target',
+        targetName: 'callee',
+      }),
+    ]);
+    const target = typeBox('Target', { x: 120, y: 80, width: 40 }, [
+      callableTargetRow('callee', { x: 132, y: 80 }),
+    ]);
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    const arrow = routing.arrows[0];
+    expect(arrow?.kind).toBe('call');
+    expect(arrow?.fromRowKind).toBe('function');
+    expect(arrow?.toFieldName).toBe('callee');
+    expect(arrow?.waypoints[0]).toEqual({ x: 32, y: 40 });
+    expect(arrow?.waypoints.at(-1)).toEqual({ x: 128, y: 80 });
+    const penultimate = arrow?.waypoints.at(-2);
+    expect(penultimate?.x).toBeLessThan(128);
+  });
+
+  it('routes same-type function-call arrows around the type instead of folding back through rows', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 80 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 64,
+        targetType: 'Source',
+        targetName: 'callee',
+      }),
+      callableTargetRow('callee', { x: 24, y: 88 }),
+    ]);
+    const routing = routeArrows(
+      geometry([source]),
+      obstacleMap([obstacle('Source', { x: 0, y: 28, width: 96, height: 84 })]),
+      routingInputs(),
+      measure,
+    );
+
+    const arrow = routing.arrows[0];
+    expect(arrow?.kind).toBe('call');
+    expect(arrow?.waypoints[0]).toEqual({ x: 64, y: 40 });
+    expect(arrow?.waypoints.at(-1)).toEqual({ x: 20, y: 88 });
+    const penultimate = arrow?.waypoints.at(-2);
+    expect(penultimate?.x).toBeLessThan(20);
+  });
+
+  it('does not route function-call arrows to a type header when the callee row is collapsed', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'CollapsedTarget',
+        targetName: 'hidden_callee',
+      }),
+    ]);
+    const target = typeBox('CollapsedTarget', { x: 120, y: 80, width: 40 });
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('CollapsedTarget', { x: 120, y: 68, width: 40, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    expect(routing.arrows).toEqual([]);
+  });
+
   it('keeps selected drift arrows visible when an intermediate real type expands', () => {
     const sourceId = 'sf-nano-core::utils::payload::PayloadError';
     const targetId = 'sf-nano-core::utils::leb128::ReadError';
@@ -343,9 +423,97 @@ function row(
     y: input.y,
     arrowSourceX: input.arrowSourceX,
     targets: [input.target],
+    callTargets: [],
+    callRefs: [],
+    functionFullPath: null,
+    callsOutsideModule: false,
+    hasExternalCalls: false,
+    hasUnresolvedCalls: false,
+    hasOutgoingCalls: false,
     kind: 'field',
     bucketId: null,
     memberDriftClass: 'at_lca',
+  };
+}
+
+function callRow(
+  name: string,
+  input: {
+    readonly y: number;
+    readonly arrowSourceX: number;
+    readonly targetType: string;
+    readonly targetName: string;
+  },
+): PositionedRow {
+  return {
+    name,
+    tyText: '',
+    ownership: 'primitive',
+    x: input.arrowSourceX - 16,
+    y: input.y,
+    arrowSourceX: input.arrowSourceX,
+    targets: [],
+    callTargets: [
+      {
+        functionFullPath: `${input.targetType}::${input.targetName}`,
+        typeId: input.targetType,
+        rowName: input.targetName,
+        rowKind: 'function',
+        moduleId: 'm',
+        bucketId: null,
+      },
+    ],
+    callRefs: [
+      {
+        caller: `Source::${name}`,
+        callee: `${input.targetType}::${input.targetName}`,
+        kind: 'function',
+        resolution: 'exact',
+        origin: input.targetName,
+        locality: 'same_module',
+        calleeRow: {
+          functionFullPath: `${input.targetType}::${input.targetName}`,
+          typeId: input.targetType,
+          rowName: input.targetName,
+          rowKind: 'function',
+          moduleId: 'm',
+          bucketId: null,
+        },
+      },
+    ],
+    functionFullPath: `Source::${name}`,
+    callsOutsideModule: false,
+    hasExternalCalls: false,
+    hasUnresolvedCalls: false,
+    hasOutgoingCalls: true,
+    kind: 'function',
+    bucketId: null,
+    memberDriftClass: null,
+  };
+}
+
+function callableTargetRow(
+  name: string,
+  input: { readonly x: number; readonly y: number },
+): PositionedRow {
+  return {
+    name,
+    tyText: '',
+    ownership: 'primitive',
+    x: input.x,
+    y: input.y,
+    arrowSourceX: input.x + 24,
+    targets: [],
+    callTargets: [],
+    callRefs: [],
+    functionFullPath: `Target::${name}`,
+    callsOutsideModule: false,
+    hasExternalCalls: false,
+    hasUnresolvedCalls: false,
+    hasOutgoingCalls: false,
+    kind: 'function',
+    bucketId: null,
+    memberDriftClass: null,
   };
 }
 
@@ -359,6 +527,7 @@ function typeNode(id: string): TypeNode {
     fullPath: id,
     modulePath: 'm',
     fields: [],
+    functions: [],
     methodBuckets: [],
   };
 }

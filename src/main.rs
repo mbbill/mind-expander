@@ -5,6 +5,7 @@
 //! output is deliberately label-free: facts only, the user reads the role.
 
 mod architecture;
+mod callgraph;
 mod extract;
 mod model;
 mod ownership;

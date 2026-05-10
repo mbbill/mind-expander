@@ -95,8 +95,16 @@ export function createArrowDisambig(opts: {
       action.className = 'action';
       const dest =
         hit.zone === 'head'
-          ? args.typeLabel(hit.arrow.fromTypeId)
-          : args.typeLabel(hit.arrow.toTypeId);
+          ? endpointLabel(
+              args.typeLabel(hit.arrow.fromTypeId),
+              hit.arrow.fromFieldName,
+              hit.arrow.fromRowKind,
+            )
+          : endpointLabel(
+              args.typeLabel(hit.arrow.toTypeId),
+              hit.arrow.toFieldName,
+              hit.arrow.toRowKind,
+            );
       const dirGlyph = hit.zone === 'head' ? '←' : '→';
       action.textContent = `${dirGlyph} ${dest}`;
       row.appendChild(action);
@@ -110,14 +118,11 @@ export function createArrowDisambig(opts: {
       // name, toTypePath)` shape — e.g. struct field `module` and
       // method `module()` both pointing at `ModuleInst` — render as
       // identical rows in the disambig popover.
-      const sourceSuffix = hit.arrow.fromRowKind === 'method' ? '()' : '';
-      const fieldChunk = hit.arrow.fromFieldName
-        ? `.${hit.arrow.fromFieldName}${sourceSuffix}`
-        : '';
-      const kindHint =
-        hit.arrow.kind === 'reexport' ? ' ↪' : hit.arrow.kind === 'method' ? ' ⋯' : '';
+      const fieldChunk = endpointMemberSuffix(hit.arrow.fromFieldName, hit.arrow.fromRowKind);
+      const kindHint = hit.arrow.kind === 'reexport' ? ' ↪' : hit.arrow.kind === 'call' ? ' ⋯' : '';
       const toLabel = args.typeLabel(hit.arrow.toTypeId);
-      meta.textContent = `${fromLabel}${fieldChunk}${kindHint} → ${toLabel}`;
+      const targetChunk = endpointMemberSuffix(hit.arrow.toFieldName, hit.arrow.toRowKind);
+      meta.textContent = `${fromLabel}${fieldChunk}${kindHint} → ${toLabel}${targetChunk}`;
       row.appendChild(meta);
 
       const onActivate = (): void => {
@@ -157,4 +162,20 @@ export function createArrowDisambig(opts: {
   };
 
   return { show, hide };
+}
+
+function endpointLabel(
+  typeLabel: string,
+  rowName: string | undefined,
+  rowKind: 'field' | 'method' | 'function' | undefined,
+): string {
+  return `${typeLabel}${endpointMemberSuffix(rowName, rowKind)}`;
+}
+
+function endpointMemberSuffix(
+  rowName: string | undefined,
+  rowKind: 'field' | 'method' | 'function' | undefined,
+): string {
+  if (rowName === undefined || rowName === '') return '';
+  return `.${rowName}${rowKind === 'method' || rowKind === 'function' ? '()' : ''}`;
 }

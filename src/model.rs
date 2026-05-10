@@ -10,6 +10,11 @@ pub struct WorkspaceFacts {
     pub crates: BTreeMap<String, CrateFacts>,
     /// Flat list of every cross-type edge.
     pub edges: Vec<Edge>,
+    /// Best-effort function caller/callee graph. Kept separate from
+    /// ownership/reference edges so layout and ownership analysis do not
+    /// accidentally treat executable calls as structural facts.
+    #[serde(default)]
+    pub call_edges: Vec<CallEdge>,
     /// Per-type aggregate edge profile (resolved name -> profile).
     pub edge_profiles: BTreeMap<String, EdgeProfile>,
 }
@@ -280,6 +285,41 @@ pub struct Edge {
     pub via: ViaKind,
     pub cardinality: Cardinality,
     /// Origin description (field name, fn name, etc.) — handy for follow-up.
+    pub origin: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CallKind {
+    /// `foo(...)` or `module::foo(...)`.
+    Function,
+    /// `Type::foo(...)` or `Self::foo(...)`.
+    AssociatedFunction,
+    /// `receiver.foo(...)`.
+    Method,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CallResolution {
+    /// The syntax points at a single known workspace function/method.
+    Exact,
+    /// Textual context picked one likely target, but this is not rustc name
+    /// resolution. A semantic backend can replace these later.
+    Heuristic,
+    /// Multiple known workspace functions/methods could match the call.
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallEdge {
+    /// Fully-qualified caller function or method id.
+    pub caller: String,
+    /// Fully-qualified callee function or method id.
+    pub callee: String,
+    pub kind: CallKind,
+    pub resolution: CallResolution,
+    /// Textual callee expression, e.g. `foo`, `Type::new`, or `.push`.
     pub origin: String,
 }
 

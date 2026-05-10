@@ -19,7 +19,11 @@ export function canonicalize(facts: Facts): Facts {
     }
     crates[name] = { ...crate, modules };
   }
-  return { crates, edges: facts.edges };
+  return {
+    crates,
+    edges: facts.edges,
+    ...(facts.call_edges !== undefined ? { call_edges: facts.call_edges } : {}),
+  };
 }
 
 function dedupeByFullPath(types: readonly TypeFacts[]): readonly TypeFacts[] {

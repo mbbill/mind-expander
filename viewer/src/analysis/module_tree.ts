@@ -32,6 +32,11 @@ export interface TypeNode {
   readonly fullPath: string;
   readonly modulePath: string;
   readonly fields: readonly FieldFacts[];
+  /** Module-level free functions when this node is a synthesized
+   *  `function_group`. Kept as `FnFacts` so module functions and type member
+   *  functions flow through the same callable-row layout path. Empty for
+   *  real types and ghosts. */
+  readonly functions: readonly FunctionRowFacts[];
   /** Methods on this type, bucketed by visibility and sorted by name
    *  within each bucket. The layout renders one foldable bucket header
    *  row per non-empty bucket; user clicks a bucket header to reveal
@@ -54,6 +59,15 @@ export interface TypeNode {
 export interface MethodBucket {
   readonly bucket: VisibilityBucket;
   readonly methods: readonly FnFacts[];
+}
+
+export function methodBucketId(typeFullPath: string, bucket: VisibilityBucket): string {
+  return `${typeFullPath}::__methods_${bucket}`;
+}
+
+export interface FunctionRowFacts {
+  readonly fullPath: string;
+  readonly fn: FnFacts;
 }
 
 export interface BuildOptions {
@@ -131,6 +145,7 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
         fullPath: t.full_path,
         modulePath: m.path,
         fields: t.fields,
+        functions: [],
         methodBuckets: bucketMethods(t.methods ?? []),
       });
     }
@@ -152,8 +167,8 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
 /**
  * Build synthetic `TypeNode`s — one per non-empty visibility bucket — to
  * represent the module's free functions. Each pseudo-type carries the
- * function names as its `fields`, so existing renderer/expansion machinery
- * works unchanged.
+ * original `FnFacts` rows so module functions and type member functions share
+ * one callable-row contract in layout/rendering.
  *
  * Empty buckets are skipped (so we don't render rows for visibility levels
  * that have no functions). Functions whose visibility is a sentinel like
@@ -192,9 +207,8 @@ function synthesiseFunctionGroups(
       visibility: BUCKET_VIS_TOKEN[bucket],
       fullPath: `${moduleId}::__fn_${bucket}`,
       modulePath,
-      // Each function becomes a "field" — name only, no targets. The
-      // renderer treats these like regular field rows.
-      fields: fns.map((fn): FieldFacts => ({ name: fn.name, ty_text: '', ownership: 'primitive' })),
+      fields: [],
+      functions: fns.map((fn) => ({ fullPath: `${moduleId}::${fn.name}`, fn })),
       methodBuckets: [],
     });
   }
@@ -266,6 +280,7 @@ function synthesiseTypeReExportGhosts(
       fullPath: ghostId,
       modulePath,
       fields: [],
+      functions: [],
       methodBuckets: [],
       isGhost: true,
       ghostTarget: re.target_path,

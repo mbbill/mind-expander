@@ -71,4 +71,21 @@ describe('canonicalize', () => {
     const out = canonicalize(input);
     expect(typesAt(out, 'c', 'a').map((t) => t.name)).toEqual(['X', 'Y']);
   });
+
+  it('preserves call edges while normalizing type facts', () => {
+    const input: Facts = {
+      ...facts('c', [mod('', [ty('c', '', 'Owner', 'struct')])]),
+      call_edges: [
+        {
+          caller: 'c::caller',
+          callee: 'c::callee',
+          kind: 'function',
+          resolution: 'exact',
+          origin: 'callee',
+        },
+      ],
+    };
+    const out = canonicalize(input);
+    expect(out.call_edges).toBe(input.call_edges);
+  });
 });
