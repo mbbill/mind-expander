@@ -119,24 +119,22 @@ export function createArrowDisambig(opts: {
     list.className = 'arrow-list';
     panel.appendChild(list);
 
-    for (const hit of args.hits) {
+    // Group hits so a shared source (or shared target) only appears once
+    // with the fanned-out other endpoints listed under it. The pure
+    // grouping decision lives in `groupArrowHits` so it can be tested
+    // without DOM.
+    const onPickHit = (
+      hit: ArrowHit,
+      endpoint: ArrowEndpoint,
+      anchor: { readonly x: number; readonly y: number },
+    ): void => {
+      opts.onPick(hit, endpoint, anchor);
+      hide();
+    };
+    for (const group of groupArrowHits(args.hits)) {
       const row = document.createElement('li');
       row.className = 'arrow-row';
-
-      // Each row exposes BOTH endpoints as independently clickable targets.
-      // Clicking the source label navigates to the caller; clicking the
-      // target label navigates to the callee. The whole row is no longer
-      // a single navigation target — direction is part of the user's pick.
-      const model = arrowDisambigRowModel(hit, args.qualifiedTypePath);
-      const onPick = (
-        endpoint: ArrowEndpoint,
-        anchor: { readonly x: number; readonly y: number },
-      ): void => {
-        opts.onPick(hit, endpoint, anchor);
-        hide();
-      };
-      row.appendChild(arrowDisambigRouteElement(model, onPick));
-
+      row.appendChild(arrowDisambigGroupElement(group, args.qualifiedTypePath, onPickHit));
       list.appendChild(row);
     }
 
@@ -189,6 +187,76 @@ export interface ArrowDisambigRowModel {
   readonly target: ArrowEndpointLabel;
 }
 
+/**
+ * A visual group of hits that share an endpoint. `by-source` means many
+ * arrows fan out from one source; `by-target` means many arrows merge into
+ * one target. The shared side is carried as a single representative hit
+ * (any hit in the group has the right source/target identity for nav).
+ */
+export type ArrowDisambigGroup =
+  | { readonly kind: 'by-source'; readonly shared: ArrowHit; readonly others: readonly ArrowHit[] }
+  | { readonly kind: 'by-target'; readonly shared: ArrowHit; readonly others: readonly ArrowHit[] };
+
+/**
+ * Decide how to lay out `hits` in the popup. Picks whichever side compresses
+ * more — fewer distinct sources than targets ⇒ group by source; the inverse
+ * ⇒ group by target; tie ⇒ group by source. Hits within a group keep their
+ * input order so the popup matches the order routes were ranked by distance.
+ *
+ * The returned groups may overlap when sources AND targets repeat in
+ * different combinations; in that case the chosen axis still produces the
+ * smaller group count. Mixed patterns (some sharing, some not) naturally
+ * render as a few multi-item groups plus singletons.
+ */
+export function groupArrowHits(hits: readonly ArrowHit[]): readonly ArrowDisambigGroup[] {
+  if (hits.length === 0) return [];
+  const distinctSources = countDistinctEndpoints(hits, sourceKey);
+  const distinctTargets = countDistinctEndpoints(hits, targetKey);
+  const groupBySource = distinctSources <= distinctTargets;
+  return groupBySource ? groupByKey(hits, sourceKey, 'by-source') : groupByKey(hits, targetKey, 'by-target');
+}
+
+function groupByKey(
+  hits: readonly ArrowHit[],
+  key: (hit: ArrowHit) => string,
+  kind: 'by-source' | 'by-target',
+): readonly ArrowDisambigGroup[] {
+  const buckets = new Map<string, ArrowHit[]>();
+  const order: string[] = [];
+  for (const hit of hits) {
+    const k = key(hit);
+    let bucket = buckets.get(k);
+    if (bucket === undefined) {
+      bucket = [];
+      buckets.set(k, bucket);
+      order.push(k);
+    }
+    bucket.push(hit);
+  }
+  return order.map((k) => {
+    const bucket = buckets.get(k) ?? [];
+    const shared = bucket[0] as ArrowHit;
+    return { kind, shared, others: bucket };
+  });
+}
+
+function countDistinctEndpoints(
+  hits: readonly ArrowHit[],
+  key: (hit: ArrowHit) => string,
+): number {
+  const seen = new Set<string>();
+  for (const hit of hits) seen.add(key(hit));
+  return seen.size;
+}
+
+function sourceKey(hit: ArrowHit): string {
+  return `${hit.arrow.fromTypeId}\x1F${hit.arrow.fromFieldName}\x1F${hit.arrow.fromRowKind}`;
+}
+
+function targetKey(hit: ArrowHit): string {
+  return `${hit.arrow.toTypeId}\x1F${hit.arrow.toFieldName ?? ''}\x1F${hit.arrow.toRowKind ?? ''}`;
+}
+
 export function arrowDisambigRowModel(
   hit: ArrowHit,
   qualifiedTypePath: (fullPath: string) => string,
@@ -207,14 +275,69 @@ export function arrowDisambigRowModel(
   };
 }
 
-function arrowDisambigRouteElement(
-  model: ArrowDisambigRowModel,
-  onPick: (endpoint: ArrowEndpoint, anchor: { readonly x: number; readonly y: number }) => void,
+function arrowDisambigGroupElement(
+  group: ArrowDisambigGroup,
+  qualifiedTypePath: (fullPath: string) => string,
+  onPickHit: (
+    hit: ArrowHit,
+    endpoint: ArrowEndpoint,
+    anchor: { readonly x: number; readonly y: number },
+  ) => void,
 ): HTMLElement {
   const route = document.createElement('div');
   route.className = 'arrow-route';
-  route.appendChild(endpointLineElement('source', model.source, onPick));
-  route.appendChild(endpointLineElement('target', model.target, onPick));
+  if (group.kind === 'by-source') {
+    // One source on top, one indented `-> target` per arrow underneath.
+    // Clicking the source navigates to the source row (any hit in the
+    // group is fine — they all share that endpoint).
+    const sourceLabel = endpointLabelParts(
+      qualifiedTypePath(group.shared.arrow.fromTypeId),
+      group.shared.arrow.fromFieldName,
+      group.shared.arrow.fromRowKind,
+    );
+    route.appendChild(
+      endpointLineElement('source', sourceLabel, (endpoint, anchor) =>
+        onPickHit(group.shared, endpoint, anchor),
+      ),
+    );
+    for (const hit of group.others) {
+      const targetLabel = endpointLabelParts(
+        qualifiedTypePath(hit.arrow.toTypeId),
+        hit.arrow.toFieldName,
+        hit.arrow.toRowKind,
+      );
+      route.appendChild(
+        endpointLineElement('target', targetLabel, (endpoint, anchor) =>
+          onPickHit(hit, endpoint, anchor),
+        ),
+      );
+    }
+  } else {
+    // Many sources on top, one `-> target` at the bottom. Mirror layout of
+    // the by-source case so "many → one" reads as a visual funnel.
+    for (const hit of group.others) {
+      const sourceLabel = endpointLabelParts(
+        qualifiedTypePath(hit.arrow.fromTypeId),
+        hit.arrow.fromFieldName,
+        hit.arrow.fromRowKind,
+      );
+      route.appendChild(
+        endpointLineElement('source', sourceLabel, (endpoint, anchor) =>
+          onPickHit(hit, endpoint, anchor),
+        ),
+      );
+    }
+    const targetLabel = endpointLabelParts(
+      qualifiedTypePath(group.shared.arrow.toTypeId),
+      group.shared.arrow.toFieldName,
+      group.shared.arrow.toRowKind,
+    );
+    route.appendChild(
+      endpointLineElement('target', targetLabel, (endpoint, anchor) =>
+        onPickHit(group.shared, endpoint, anchor),
+      ),
+    );
+  }
   return route;
 }
 

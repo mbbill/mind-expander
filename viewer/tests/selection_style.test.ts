@@ -76,7 +76,7 @@ describe('selected arrow styling', () => {
       'color: #2563eb',
     );
     expect(source).toContain('hit.arrow.toFieldName');
-    expect(source).toContain('arrowDisambigRouteElement');
+    expect(source).toContain('arrowDisambigGroupElement');
     expect(source).toContain('path-prefix');
   });
 });

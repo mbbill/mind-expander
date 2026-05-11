@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ArrowHit } from '../src/analysis/arrow_hit.ts';
 import type { Arrow } from '../src/analysis/layout_model.ts';
-import { arrowDisambigRowModel, arrowDisambigViewportAction } from '../src/view/arrow_disambig.ts';
+import {
+  arrowDisambigRowModel,
+  arrowDisambigViewportAction,
+  groupArrowHits,
+} from '../src/view/arrow_disambig.ts';
 
 const qualifiedTypePath = (fullPath: string): string => {
   const labels: Record<string, string> = {
@@ -66,6 +70,61 @@ describe('arrowDisambigRowModel', () => {
       prefix: 'vm::store::',
       main: 'register_gc_ref()',
     });
+  });
+});
+
+describe('groupArrowHits', () => {
+  it('groups by source when one source fans out to several targets', () => {
+    const h1 = hit(callArrow('Caller', 'fn', 'TargetA', 'a'));
+    const h2 = hit(callArrow('Caller', 'fn', 'TargetB', 'b'));
+    const h3 = hit(callArrow('Caller', 'fn', 'TargetC', 'c'));
+
+    const groups = groupArrowHits([h1, h2, h3]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.kind).toBe('by-source');
+    expect(groups[0]?.shared).toBe(h1);
+    expect(groups[0]?.others).toEqual([h1, h2, h3]);
+  });
+
+  it('groups by target when several sources merge into one target', () => {
+    const h1 = hit(callArrow('CallerA', 'fa', 'Target', 'sink'));
+    const h2 = hit(callArrow('CallerB', 'fb', 'Target', 'sink'));
+    const h3 = hit(callArrow('CallerC', 'fc', 'Target', 'sink'));
+
+    const groups = groupArrowHits([h1, h2, h3]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.kind).toBe('by-target');
+    expect(groups[0]?.others).toEqual([h1, h2, h3]);
+  });
+
+  it('keeps singletons as one-hit groups when nothing is shared', () => {
+    const h1 = hit(callArrow('A', 'fa', 'X', 'x'));
+    const h2 = hit(callArrow('B', 'fb', 'Y', 'y'));
+
+    const groups = groupArrowHits([h1, h2]);
+    // S == T == 2, tie → group by source; each source is distinct so the
+    // groups are singletons that render like a flat list.
+    expect(groups).toHaveLength(2);
+    expect(groups.every((g) => g.kind === 'by-source')).toBe(true);
+    expect(groups.every((g) => g.others.length === 1)).toBe(true);
+  });
+
+  it('handles partial sharing by producing the right group count', () => {
+    // Two hits share source A; one hit has a distinct source. S=2, T=3.
+    // S<T → group by source. Result: one multi-target group for A plus a
+    // singleton for B.
+    const h1 = hit(callArrow('A', 'fa', 'X', 'x'));
+    const h2 = hit(callArrow('A', 'fa', 'Y', 'y'));
+    const h3 = hit(callArrow('B', 'fb', 'Z', 'z'));
+
+    const groups = groupArrowHits([h1, h2, h3]);
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.others).toEqual([h1, h2]);
+    expect(groups[1]?.others).toEqual([h3]);
+  });
+
+  it('returns no groups for an empty hit list', () => {
+    expect(groupArrowHits([])).toEqual([]);
   });
 });
 
