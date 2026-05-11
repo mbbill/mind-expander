@@ -1,7 +1,7 @@
 import { zoomTransform } from 'd3';
 import { type FunctionCallIndex, buildFunctionCallIndex } from './analysis/calls.ts';
 import { computeDrift } from './analysis/drift.ts';
-import { type Layout, rowArrowKey } from './analysis/layout_model.ts';
+import { type Layout, callArrowKey, rowArrowKey } from './analysis/layout_model.ts';
 import { type TreeNode, buildModuleTree } from './analysis/module_tree.ts';
 import {
   type OwnershipIndex,
@@ -14,7 +14,9 @@ import { buildLayout } from './layout/pipeline.ts';
 import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
 import { ViewState } from './state/view_state.ts';
 import { anchorTranslation } from './view/anchor.ts';
-import { createArrowDisambig } from './view/arrow_disambig.ts';
+import { arrowDisambigViewportAction, createArrowDisambig } from './view/arrow_disambig.ts';
+import { type ArrowEndpoint, arrowEndpointLayoutPoint } from './view/arrow_navigation.ts';
+import { lookupLayoutPoint, lookupMemberRowPoint } from './view/layout_lookup.ts';
 import { createTextMeasurer } from './view/measure.ts';
 import { type Minimap, createMinimap } from './view/minimap.ts';
 import { createOwnersOverlay } from './view/owners_overlay.ts';
@@ -31,8 +33,11 @@ import {
 import {
   ancestorModuleIds,
   callableBucketIdsForType,
+  callerExpansionIdsForFunction,
   forwardRoutedTargetModulesFor,
   memberArrowRowsForType,
+  sourceExpansionIdsForArrowSource,
+  targetExpansionIdsForArrowTarget,
   targetExpansionIdsForMemberRow,
   targetModulesForMemberRow,
 } from './view/type_expansion.ts';
@@ -64,6 +69,7 @@ interface TypeInfo {
 interface RenderCtx {
   readonly state: ViewState;
   readonly selectedFields: ReadonlySet<string>;
+  readonly incomingCallTargetsShown: ReadonlySet<string>;
   readonly ownership: OwnershipIndex;
   readonly calls: FunctionCallIndex;
   readonly crateName: string;
@@ -78,15 +84,15 @@ interface RenderCtx {
   /** Navigate the viewport to a type by id: expand the type (and its
    *  ancestor modules), redraw, then center the viewport on its new y. */
   readonly navigateToType: (typeId: string) => void;
-  /** Pan the viewport so the chosen endpoint of `arrow` lands at the
-   *  screen position the user clicked. `zone === 'head'` navigates to
-   *  the SOURCE end (clicked the arrowhead "to go back"); `zone === 'body'`
-   *  navigates to the TARGET end. The endpoint snaps under the cursor
-   *  rather than the screen centre, so the user's spatial intuition
-   *  ("I clicked here") carries through the pan. */
-  readonly navigateAlongArrow: (
+  /** Navigate to one endpoint of `arrow`. `endpoint === 'source'` lands at
+   *  the caller; `endpoint === 'target'` lands at the callee. Direct canvas
+   *  clicks (and disambig picks) pass an anchor so the chosen endpoint pans
+   *  to that screen point instead of jumping to centre. The endpoint row
+   *  is expanded into view before the pan, so the data-space point is read
+   *  from the freshly built layout rather than the arrow's stale waypoints. */
+  readonly navigateToArrowEndpoint: (
     arrow: Layout['arrows'][number],
-    zone: 'body' | 'head',
+    endpoint: ArrowEndpoint,
     anchor: { x: number; y: number },
   ) => void;
   /** Reset to a pristine view: clear all field selections and expansions
@@ -144,15 +150,20 @@ async function main(): Promise<void> {
   const measureBoldText = createTextMeasurer(`bold ${FONT_SIZE_FIELD}px ${FONT_FAMILY}`);
 
   let minimap: Minimap | null = null;
+  let previousViewportTransform = { x: 0, y: 0, k: 1 };
   const layers = attachZoom(svg, (t) => {
     updateScaleIndicator(t.k);
     // The owner popover is anchored in screen space to the dot's current
     // position. Notify it on every pan/zoom so it can either dismiss
     // (default) or, when pinned, follow the dot to its new spot.
     ownersOverlay.onCanvasMoved();
-    // Arrow disambig is anchored to the original click point — once the
-    // canvas moves it's pointing at the wrong arrows. Dismiss it.
-    arrowDisambig.hide();
+    const arrowPopupAction = arrowDisambigViewportAction(previousViewportTransform, t);
+    previousViewportTransform = t;
+    if (arrowPopupAction.kind === 'move') {
+      arrowDisambig.moveBy(arrowPopupAction.dx, arrowPopupAction.dy);
+    } else if (arrowPopupAction.kind === 'hide') {
+      arrowDisambig.hide();
+    }
     minimap?.update(currentCtx?.lastLayout ?? null);
   });
   const inputController = installInputControls(svg, layers);
@@ -215,12 +226,16 @@ async function main(): Promise<void> {
     onNavigate: (typeId) => currentCtx?.navigateToType(typeId),
   });
 
-  // Disambiguation popover for arrow clicks that fall within tolerance
-  // of multiple arrows. The pick callback navigates along the chosen
-  // arrow using the same logic as the single-hit case.
+  // Disambiguation popover. Both endpoints in each row are independently
+  // clickable: source label navigates to the caller, target label navigates
+  // to the callee. The popup itself supplies the click/keyboard anchor for
+  // each pick — that's where the cursor (or focus) is at activation time,
+  // which is the screen position the chosen endpoint pans to. Using the
+  // original arrow-click anchor would jump the target far from where the
+  // user is now looking inside the popup.
   const arrowDisambig = createArrowDisambig({
-    onPick: (hit, anchor) => {
-      currentCtx?.navigateAlongArrow(hit.arrow, hit.zone, anchor);
+    onPick: (hit, endpoint, anchor) => {
+      currentCtx?.navigateToArrowEndpoint(hit.arrow, endpoint, anchor);
     },
   });
 
@@ -411,6 +426,8 @@ async function main(): Promise<void> {
 
     const state = new ViewState([staticRoot.id]);
     const selectedFields = new Set<string>();
+    const incomingCallTargetsShown = new Set<string>();
+    let previewCallArrowKey: string | null = null;
     // Per-crate set of ghost ids whose violet re-export arrow the user
     // has opted to display. Default empty: arrows are off until the
     // user clicks the corresponding ghost row. Cleared by resetAll.
@@ -424,11 +441,16 @@ async function main(): Promise<void> {
       // Member arrows are opt-in: selecting a row asks layout to emit that
       // row's arrow, selecting it again removes the key so redraw hides it.
       const fieldArrowsShown = new Set<string>();
+      const callArrowsShown = new Set<string>();
       for (const k of selectedFields) {
         const parsed = parseFieldKey(k);
-        const rowKey = rowArrowKey(parsed.typePath, parsed.fieldName);
-        if (parsed.kind === 'field') fieldArrowsShown.add(rowKey);
+        if (parsed.kind === 'field') {
+          fieldArrowsShown.add(rowArrowKey(parsed.typePath, parsed.fieldName));
+        } else {
+          callArrowsShown.add(callArrowKey(parsed.typePath, parsed.fieldName, parsed.kind));
+        }
       }
+      if (previewCallArrowKey !== null) callArrowsShown.add(previewCallArrowKey);
       const buildArgs = {
         staticRoot,
         ownership,
@@ -441,6 +463,8 @@ async function main(): Promise<void> {
         placementPlan,
         ghostArrowsShown,
         fieldArrowsShown,
+        callArrowsShown,
+        incomingCallTargetsShown,
         methodsHidden: currentCtx?.methodsHidden ?? false,
         ...(focus ? { focusModules: focus.modules } : {}),
       };
@@ -473,6 +497,7 @@ async function main(): Promise<void> {
 
       renderTree(layers, lastLayout, {
         selectedFields,
+        incomingCallTargetsShown,
         selectedArrows,
         expandedBucketIds,
         onToggle: (id) => {
@@ -538,6 +563,7 @@ async function main(): Promise<void> {
           if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
         },
         onSelectField: (typePath, fieldName, kind) => {
+          const before = lookupMemberRowPoint(lastLayout, typePath, fieldName, kind);
           const key = fieldKey(typePath, fieldName, kind);
           if (selectedFields.has(key)) {
             selectedFields.delete(key);
@@ -554,6 +580,41 @@ async function main(): Promise<void> {
               state.expand(targetId);
             }
           }
+          draw();
+          const after = lookupMemberRowPoint(lastLayout, typePath, fieldName, kind);
+          const delta = anchorTranslation(before, after);
+          if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
+        },
+        onToggleIncomingCalls: (typePath, fieldName, kind, functionFullPath) => {
+          const before = lookupMemberRowPoint(lastLayout, typePath, fieldName, kind);
+          if (incomingCallTargetsShown.has(functionFullPath)) {
+            incomingCallTargetsShown.delete(functionFullPath);
+          } else {
+            incomingCallTargetsShown.add(functionFullPath);
+            for (const targetId of callerExpansionIdsForFunction(
+              functionFullPath,
+              calls,
+              crateName,
+            )) {
+              state.expand(targetId);
+            }
+          }
+          draw();
+          const after = lookupMemberRowPoint(lastLayout, typePath, fieldName, kind);
+          const delta = anchorTranslation(before, after);
+          if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
+        },
+        onPreviewCallArrows: (typePath, fieldName, kind) => {
+          const next = callArrowKey(typePath, fieldName, kind);
+          if (previewCallArrowKey === next) return lastLayout;
+          previewCallArrowKey = next;
+          draw();
+          return lastLayout;
+        },
+        onClearCallArrowPreview: (typePath, fieldName, kind) => {
+          const current = callArrowKey(typePath, fieldName, kind);
+          if (previewCallArrowKey !== current) return;
+          previewCallArrowKey = null;
           draw();
         },
         onShowOwners: (typePath, getDotScreenPos) => {
@@ -613,29 +674,32 @@ async function main(): Promise<void> {
         },
         onArrowNavigate: (hits, anchor) => {
           if (hits.length === 0) return;
+          // Single unambiguous direct-nav zones bypass the popup. The
+          // 'source' zone (first 50px) means "I'm at source, take me to
+          // target"; the 'target' zone (last 50px) means "I'm at target,
+          // take me back to source". Middle-of-single-arrow clicks fall
+          // through to the popup so the user picks a direction explicitly.
           if (hits.length === 1) {
             const top = hits[0];
-            if (top) navigateAlongArrow(top.arrow, top.zone, anchor);
-            return;
+            if (top && top.zone === 'source') {
+              navigateToArrowEndpoint(top.arrow, 'target', anchor);
+              return;
+            }
+            if (top && top.zone === 'target') {
+              navigateToArrowEndpoint(top.arrow, 'source', anchor);
+              return;
+            }
           }
-          // Multiple arrows under the click: ask the user which one
-          // they meant. The popover handles dismissal; on pick it
-          // routes back through navigateAlongArrow via currentCtx,
-          // reusing the original click anchor so the chosen endpoint
-          // still snaps under that spot.
+          // Multi-arrow OR single-arrow-middle: open the popup. The popup
+          // captures its own click anchor on pick, so the chosen endpoint
+          // pans to where the user clicked inside the popup (not back to
+          // the original arrow-click anchor, which is far from the cursor
+          // by the time the user picks a row).
           arrowDisambig.show({
             hits,
             anchorX: anchor.x,
             anchorY: anchor.y,
-            typeLabel: (fullPath) => {
-              // Prefer the layout's display label; fall back to the leaf
-              // segment for synthesized ids (function-groups, ghosts) that
-              // don't appear in typeInfo.
-              const info = typeInfo.get(fullPath);
-              if (info) return info.label;
-              const seg = fullPath.split('::');
-              return seg[seg.length - 1] ?? fullPath;
-            },
+            qualifiedTypePath: (fullPath) => qualifiedTypePath(fullPath, typeInfo, crateName),
           });
         },
       });
@@ -653,23 +717,27 @@ async function main(): Promise<void> {
       if (y !== null) layers.centerOnY(y, true);
     };
 
-    // Pan so an arrow's chosen endpoint lands at the click anchor (NOT
-    // the screen centre). For "body" clicks we navigate to the TARGET
-    // (head waypoint); for "head" clicks we navigate to the SOURCE (tail
-    // waypoint). Using the arrow's own waypoints means we don't need to
-    // re-resolve the type box — those coords already match the rendered
-    // geometry. Snapping under the cursor preserves the user's spatial
-    // intuition: the spot they pointed at is where the endpoint shows up.
-    const navigateAlongArrow = (
+    // Single navigation path for both direct-click and popup-pick. The
+    // chosen endpoint's row is first expanded into view (otherwise the
+    // freshly built layout still hides it), then we look up its data-space
+    // point in the post-redraw layout and pan that point to the user's
+    // click anchor. Looking up the point in the new layout — not from the
+    // arrow's stale waypoints — is what makes the chosen endpoint actually
+    // land where the user clicked.
+    const navigateToArrowEndpoint = (
       arrow: Layout['arrows'][number],
-      zone: 'body' | 'head',
+      endpoint: ArrowEndpoint,
       anchor: { x: number; y: number },
     ): void => {
-      const w = arrow.waypoints;
-      if (w.length < 2) return;
-      const target = zone === 'head' ? w[0] : w[w.length - 1];
-      if (!target) return;
-      layers.panTo(target.x, target.y, anchor.x, anchor.y, true);
+      const ids =
+        endpoint === 'target'
+          ? targetExpansionIdsForArrowTarget(arrow, calls, crateName)
+          : sourceExpansionIdsForArrowSource(arrow, calls, crateName);
+      for (const id of ids) state.expand(id);
+      draw();
+      const point = arrowEndpointLayoutPoint(lastLayout, arrow, endpoint);
+      if (!point) return;
+      layers.panTo(point.x, point.y, anchor.x, anchor.y, true);
     };
 
     // Shared logic for the "owners" expand/fold toggle. Used by both the
@@ -709,6 +777,8 @@ async function main(): Promise<void> {
 
     const resetAll = (): void => {
       selectedFields.clear();
+      incomingCallTargetsShown.clear();
+      previewCallArrowKey = null;
       state.clear();
       state.expand(staticRoot.id);
       ghostArrowsShown.clear();
@@ -729,6 +799,7 @@ async function main(): Promise<void> {
     currentCtx = {
       state,
       selectedFields,
+      incomingCallTargetsShown,
       ownership,
       calls,
       crateName,
@@ -736,7 +807,7 @@ async function main(): Promise<void> {
       typeIdSet,
       typeInfo,
       navigateToType,
-      navigateAlongArrow,
+      navigateToArrowEndpoint,
       resetAll,
       focusMode: false,
       methodsHidden: false,
@@ -811,7 +882,15 @@ function mostRecentSelection(ctx: RenderCtx): string | null {
 //     selected field. (The owner is necessarily expanded, so it's
 //     already covered by the first bullet.)
 function computeFocus(ctx: RenderCtx): { modules: ReadonlySet<string> } {
-  const { state, selectedFields, ownership, calls, crateName, typeIdSet } = ctx;
+  const {
+    state,
+    selectedFields,
+    incomingCallTargetsShown,
+    ownership,
+    calls,
+    crateName,
+    typeIdSet,
+  } = ctx;
   const modules = new Set<string>([crateName]);
 
   const addAncestors = (typeFullPath: string): void => {
@@ -851,6 +930,14 @@ function computeFocus(ctx: RenderCtx): { modules: ReadonlySet<string> } {
     }
   }
 
+  for (const functionFullPath of incomingCallTargetsShown) {
+    const targetRow = calls.rowByFunction.get(functionFullPath);
+    if (targetRow !== undefined) addAncestors(targetRow.typeId);
+    for (const call of calls.incomingCallsByFunction.get(functionFullPath) ?? []) {
+      addAncestors(call.callerRow.typeId);
+    }
+  }
+
   return { modules };
 }
 
@@ -862,14 +949,7 @@ function lookupPoint(
   layout: Layout | null,
   id: string,
 ): { readonly x: number; readonly y: number } | null {
-  if (!layout) return null;
-  for (const t of layout.types) {
-    if (t.id === id) return { x: t.x, y: t.y };
-  }
-  for (const m of layout.modules) {
-    if (m.id === id) return { x: m.labelX, y: m.y };
-  }
-  return null;
+  return lookupLayoutPoint(layout, id);
 }
 
 function collectTypeIds(root: TreeNode): string[] {
@@ -902,6 +982,34 @@ function collectTypeInfo(root: TreeNode): Map<string, TypeInfo> {
   };
   walk(root);
   return out;
+}
+
+function qualifiedTypePath(
+  fullPath: string,
+  typeInfo: ReadonlyMap<string, TypeInfo>,
+  crateName: string,
+): string {
+  const info = typeInfo.get(fullPath);
+  if (info !== undefined) {
+    if (isFunctionGroupPath(fullPath)) return info.modulePath;
+    return info.modulePath === '' ? info.label : `${info.modulePath}::${info.label}`;
+  }
+
+  return stripCratePrefix(stripFunctionGroupPath(fullPath), crateName);
+}
+
+function isFunctionGroupPath(fullPath: string): boolean {
+  return fullPath.includes('::__fn_');
+}
+
+function stripFunctionGroupPath(fullPath: string): string {
+  const markerIndex = fullPath.indexOf('::__fn_');
+  return markerIndex === -1 ? fullPath : fullPath.slice(0, markerIndex);
+}
+
+function stripCratePrefix(fullPath: string, crateName: string): string {
+  const prefix = `${crateName}::`;
+  return fullPath.startsWith(prefix) ? fullPath.slice(prefix.length) : fullPath;
 }
 
 function updateFocusModeIndicator(active: boolean): void {

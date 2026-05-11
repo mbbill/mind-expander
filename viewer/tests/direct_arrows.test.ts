@@ -24,6 +24,7 @@ describe('directArrowsFromMany', () => {
     const layout: Layout = {
       modules: [],
       types: [],
+      arrowLayers: [{ id: 'ownership', arrows: [selected, downstream], hitTestable: true }],
       arrows: [selected, downstream],
       totalHeight: 0,
       totalWidth: 0,

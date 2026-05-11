@@ -105,6 +105,11 @@ describe('buildFunctionCallIndex', () => {
     expect(
       idx.callTargetsByFunction.get('c::Owner::local')?.map((r) => r.functionFullPath),
     ).toEqual(['c::Owner::helper']);
+    expect(
+      idx.incomingCallsByFunction
+        .get('c::Owner::helper')
+        ?.map((call) => [call.caller, call.callerRow.typeId, call.callerRow.rowName]),
+    ).toEqual([['c::Owner::local', 'c::Owner', 'local']]);
     expect(idx.rowByFunction.get('c::inner::module_caller')).toMatchObject({
       typeId: 'c::inner::__fn_pub',
       rowName: 'module_caller',

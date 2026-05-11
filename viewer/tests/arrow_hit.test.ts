@@ -26,15 +26,11 @@ function arrow(
 
 describe('distanceToSegment', () => {
   it('returns euclidean distance to nearest interior point on the segment', () => {
-    // Horizontal segment (0,0)→(10,0). Point at (5, 3) projects onto (5,0),
-    // distance 3.
     expect(distanceToSegment({ x: 5, y: 3 }, { x: 0, y: 0 }, { x: 10, y: 0 })).toBe(3);
   });
 
   it('clamps to the segment endpoints when the projection falls outside', () => {
-    // Point left of the segment — distance is to the left endpoint.
     expect(distanceToSegment({ x: -5, y: 0 }, { x: 0, y: 0 }, { x: 10, y: 0 })).toBe(5);
-    // Point right of the segment — distance is to the right endpoint.
     expect(distanceToSegment({ x: 15, y: 0 }, { x: 0, y: 0 }, { x: 10, y: 0 })).toBe(5);
   });
 
@@ -45,8 +41,6 @@ describe('distanceToSegment', () => {
 
 describe('distanceToPolyline', () => {
   it('returns the min distance across all segments', () => {
-    // L-shaped polyline: (0,0) → (10,0) → (10,10). Point (12, 5) is closest
-    // to the vertical leg, distance 2.
     const w = [
       { x: 0, y: 0 },
       { x: 10, y: 0 },
@@ -62,7 +56,7 @@ describe('distanceToPolyline', () => {
 });
 
 describe('pickArrowsAtPoint', () => {
-  const opts = { hitTolerance: 5, headRadius: 8 };
+  const opts = { hitTolerance: 5, endpointRadius: 20 };
 
   it('returns arrows whose polyline comes within tolerance', () => {
     const a = arrow([
@@ -83,37 +77,64 @@ describe('pickArrowsAtPoint', () => {
     expect(hits).toHaveLength(0);
   });
 
-  it('classifies a click near the FINAL waypoint as a head click', () => {
-    // Final waypoint is (100, 0). A click at (98, 0) is within headRadius=8.
+  it('classifies a click within the first endpointRadius of arc length as source', () => {
+    // Polyline 0..100 along x; click at x=15 is 15 along arc, inside the
+    // 20-unit source window.
     const a = arrow([
       [0, 0],
       [100, 0],
     ]);
-    const hits = pickArrowsAtPoint({ x: 98, y: 0 }, [a], opts);
-    expect(hits[0]?.zone).toBe('head');
+    const hits = pickArrowsAtPoint({ x: 15, y: 0 }, [a], opts);
+    expect(hits[0]?.zone).toBe('source');
   });
 
-  it('classifies a click far from the head as a body click', () => {
+  it('classifies a click within the last endpointRadius of arc length as target', () => {
     const a = arrow([
       [0, 0],
       [100, 0],
     ]);
-    const hits = pickArrowsAtPoint({ x: 30, y: 0 }, [a], opts);
-    expect(hits[0]?.zone).toBe('body');
+    const hits = pickArrowsAtPoint({ x: 85, y: 0 }, [a], opts);
+    expect(hits[0]?.zone).toBe('target');
   });
 
-  it('is forgiving: a click on the arrowhead tip itself counts as head', () => {
-    // The final waypoint IS the head tip — distance 0 → 'head'.
+  it('classifies a click in the middle band as middle', () => {
     const a = arrow([
       [0, 0],
-      [50, 0],
+      [100, 0],
     ]);
     const hits = pickArrowsAtPoint({ x: 50, y: 0 }, [a], opts);
-    expect(hits[0]?.zone).toBe('head');
+    expect(hits[0]?.zone).toBe('middle');
+  });
+
+  it('measures arc length along the polyline, not Euclidean distance', () => {
+    // L-shaped polyline (0,0)→(100,0)→(100,100), total arc length 200.
+    // endpointRadius=20: source window is first 20 along x, target window
+    // is last 20 along the vertical leg. A click near (100, 50) is at arc
+    // length 150 — in the middle band — even though Euclidean distance to
+    // the target endpoint (100, 100) is only 50.
+    const a = arrow([
+      [0, 0],
+      [100, 0],
+      [100, 100],
+    ]);
+    const hits = pickArrowsAtPoint({ x: 100, y: 50 }, [a], opts);
+    expect(hits[0]?.zone).toBe('middle');
+  });
+
+  it('clamps source/target windows to half the polyline length on short arrows', () => {
+    // Polyline length 10, endpointRadius=20 → each window is 5 (half).
+    // The two zones meet exactly at the midpoint with no overlap; the
+    // midpoint itself resolves to source.
+    const a = arrow([
+      [0, 0],
+      [10, 0],
+    ]);
+    expect(pickArrowsAtPoint({ x: 4, y: 0 }, [a], opts)[0]?.zone).toBe('source');
+    expect(pickArrowsAtPoint({ x: 5, y: 0 }, [a], opts)[0]?.zone).toBe('source');
+    expect(pickArrowsAtPoint({ x: 6, y: 0 }, [a], opts)[0]?.zone).toBe('target');
   });
 
   it('returns multiple candidates when several arrows overlap the click', () => {
-    // Two arrows both passing through (50, 0).
     const a = arrow(
       [
         [0, 0],
@@ -166,13 +187,11 @@ describe('pickArrowsAtPoint', () => {
       [0, 0],
       [100, 0],
     ]);
-    // Tighter tolerance: y=4 no longer counts.
     expect(
-      pickArrowsAtPoint({ x: 50, y: 4 }, [a], { hitTolerance: 3, headRadius: 8 }),
+      pickArrowsAtPoint({ x: 50, y: 4 }, [a], { hitTolerance: 3, endpointRadius: 20 }),
     ).toHaveLength(0);
-    // Larger tolerance: y=4 does count.
     expect(
-      pickArrowsAtPoint({ x: 50, y: 4 }, [a], { hitTolerance: 5, headRadius: 8 }),
+      pickArrowsAtPoint({ x: 50, y: 4 }, [a], { hitTolerance: 5, endpointRadius: 20 }),
     ).toHaveLength(1);
   });
 });

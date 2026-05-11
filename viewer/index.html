@@ -58,13 +58,11 @@
       #tree g.arrows path.visible.canonical:not(.call):not(.reexport):not(.highlighted) {
         opacity: 0.45;
       }
-      /* Function-call arrows are opt-in context. They exist in the layout so
-         row hover/click can reveal them without recomputing, but stay hidden
-         until highlighted by hover or selection. */
-      #tree g.arrows path.visible.call:not(.highlighted) {
-        opacity: 0;
-      }
+      /* Function-call arrows are opt-in context. The call layer only contains
+         active hover/click routes, so every call arrow in the SVG should be
+         visible and clickable. */
       #tree g.arrows path.visible.call {
+        opacity: 1;
         stroke-width: 1.25;
       }
       #tree g.arrows path.visible.call.highlighted {
@@ -566,8 +564,8 @@
           -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         color: #1e293b;
         box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
-        min-width: 220px;
-        max-width: 380px;
+        min-width: 320px;
+        max-width: min(680px, calc(100vw - 16px));
         max-height: 360px;
         overflow-y: auto;
       }
@@ -591,27 +589,51 @@
         margin: 0;
       }
       .arrow-disambig-panel li.arrow-row {
-        cursor: pointer;
-        padding: 5px 6px;
+        padding: 7px 8px;
         display: flex;
         flex-direction: column;
         border-radius: 3px;
+      }
+      .arrow-disambig-panel li.arrow-row .arrow-route {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .arrow-disambig-panel li.arrow-row .arrow-endpoint {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+        cursor: pointer;
+        padding: 2px 4px;
+        border-radius: 3px;
         transition: background-color 80ms;
       }
-      .arrow-disambig-panel li.arrow-row:hover,
-      .arrow-disambig-panel li.arrow-row:focus {
-        background: rgba(59, 130, 246, 0.1);
+      .arrow-disambig-panel li.arrow-row .arrow-endpoint:hover,
+      .arrow-disambig-panel li.arrow-row .arrow-endpoint:focus {
+        background: rgba(59, 130, 246, 0.12);
         outline: none;
       }
-      .arrow-disambig-panel li.arrow-row .action {
-        font-weight: 600;
-        color: #1e293b;
-        font-size: 12px;
+      .arrow-disambig-panel li.arrow-row .arrow-endpoint.source {
+        color: #c2410c;
       }
-      .arrow-disambig-panel li.arrow-row .meta {
+      .arrow-disambig-panel li.arrow-row .arrow-endpoint.target {
+        padding-left: 18px;
+        color: #2563eb;
+      }
+      .arrow-disambig-panel li.arrow-row .route-arrow {
+        margin-right: 6px;
         color: #64748b;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .arrow-disambig-panel li.arrow-row .path-prefix {
         font-size: 10px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-weight: 500;
+        opacity: 0.78;
+      }
+      .arrow-disambig-panel li.arrow-row .path-main {
+        font-weight: 600;
+        font-size: 12px;
       }
       /* Hover-only diagnostics for callable rows. This exposes the exact call
          facts already attached to the row, so confusing header-routed arrows

@@ -38,6 +38,7 @@ export const TYPE_LABEL_X = gridCols(3);
 export const FIELD_LABEL_INSET = gridCols(5);
 export const FUNCTION_GROUP_LABEL_INSET = gridCols(3);
 export const METHOD_INDENT = gridCols(2);
+export const INCOMING_CALL_MARKER_OFFSET = 14;
 export const HIT_MIN_W = gridCols(5);
 // Right-side breathing room added to the module label hit-rect / chip
 // background so the chip doesn't end flush against the leaf glyphs.

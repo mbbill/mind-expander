@@ -13,6 +13,11 @@ export interface BandShapeItem {
   /** Optional facts-derived ordering within a rank bucket. When omitted,
    *  same-rank items fall back to name/id order. */
   readonly stableOrder?: number;
+  /** True for module-level function groups, which live in a reserved
+   *  leftmost column. fn-column items get their own shape bucket so they
+   *  never share a placement group with non-fn items (which would let the
+   *  band-shape spreader scatter them across columns). */
+  readonly isFnColumn?: boolean;
 }
 
 export interface BandShapeGroup {
@@ -34,10 +39,12 @@ export interface BandShapeAssignment {
   readonly groupOrder: number;
   readonly groupIndex: number;
   readonly indexInGroup: number;
+  readonly isFnColumn: boolean;
 }
 
 export interface BandShapeBucket {
   readonly depth: BandDepth;
+  readonly isFnColumn: boolean;
   readonly items: readonly OrderedBandShapeItem[];
 }
 
@@ -90,6 +97,7 @@ export function planBandShape(
         groupOrder: bandOrder,
         groupIndex,
         indexInGroup,
+        isFnColumn: item.isFnColumn ?? false,
       }));
 
       assignments.push(...groupAssignments);
@@ -135,6 +143,10 @@ export function chooseCountOnlyWidescreenGroups(
     let bestScore = currentScore;
 
     for (const [index, bucket] of buckets.entries()) {
+      // fn-column buckets always stay in a single group so multiple
+      // function_groups (e.g. `pub fn` + `local fn` in the same module)
+      // stack vertically inside the reserved leftmost column.
+      if (bucket.isFnColumn) continue;
       const currentGroupCount = groupCounts[index];
       if (currentGroupCount === undefined || currentGroupCount >= bucket.items.length) {
         continue;
@@ -165,16 +177,22 @@ function buildDepthBuckets(items: readonly BandShapeItem[]): readonly BandShapeB
     depthOrder,
   }));
 
-  const buckets: Array<{ depth: BandDepth; items: OrderedBandShapeItem[] }> = [];
+  const buckets: Array<{ depth: BandDepth; isFnColumn: boolean; items: OrderedBandShapeItem[] }> =
+    [];
 
   for (const item of orderedItems) {
+    const isFnColumn = item.isFnColumn ?? false;
     const previous = buckets.at(-1);
-    if (previous !== undefined && sameDepth(previous.depth, item.depth)) {
+    if (
+      previous !== undefined &&
+      sameDepth(previous.depth, item.depth) &&
+      previous.isFnColumn === isFnColumn
+    ) {
       previous.items.push(item);
       continue;
     }
 
-    buckets.push({ depth: item.depth, items: [item] });
+    buckets.push({ depth: item.depth, isFnColumn, items: [item] });
   }
 
   return buckets;
@@ -198,6 +216,14 @@ function compareItems(a: BandShapeItem, b: BandShapeItem): number {
   if (depthOrder !== 0) {
     return depthOrder;
   }
+
+  // fn-column items sort before non-fn items at the same depth so the
+  // bucket builder splits them into their own bucket (fn-column items must
+  // never share a shape group with non-fn items — the spreader would scatter
+  // them across columns instead of stacking in the reserved leftmost column).
+  const aFn = a.isFnColumn ?? false;
+  const bFn = b.isFnColumn ?? false;
+  if (aFn !== bFn) return aFn ? -1 : 1;
 
   if (a.stableOrder !== undefined && b.stableOrder !== undefined) {
     const stableOrder = a.stableOrder - b.stableOrder;

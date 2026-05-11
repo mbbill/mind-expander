@@ -21,6 +21,7 @@ export interface FunctionCallRef {
   readonly resolution: CallResolution;
   readonly origin: string;
   readonly locality: FunctionCallLocality;
+  readonly callerRow: FunctionRowRef;
   readonly calleeRow: FunctionRowRef | null;
 }
 
@@ -28,6 +29,7 @@ export interface FunctionCallIndex {
   readonly rowByFunction: ReadonlyMap<string, FunctionRowRef>;
   readonly callTargetsByFunction: ReadonlyMap<string, readonly FunctionRowRef[]>;
   readonly callsByFunction: ReadonlyMap<string, readonly FunctionCallRef[]>;
+  readonly incomingCallsByFunction: ReadonlyMap<string, readonly FunctionCallRef[]>;
   readonly nonLocalCallers: ReadonlySet<string>;
   readonly rowsByType: ReadonlyMap<string, readonly FunctionRowRef[]>;
 }
@@ -84,6 +86,7 @@ export function buildFunctionCallIndex(
 
   const callTargets = new Map<string, FunctionRowRef[]>();
   const callsByFunction = new Map<string, FunctionCallRef[]>();
+  const incomingCallsByFunction = new Map<string, FunctionCallRef[]>();
   const nonLocal = new Set<string>();
   const inCrate = (path: string): boolean => path.startsWith(`${crateName}::`);
 
@@ -104,19 +107,25 @@ export function buildFunctionCallIndex(
       nonLocal.add(edge.caller);
     }
 
-    const calls = callsByFunction.get(edge.caller) ?? [];
-    calls.push({
+    const callRef: FunctionCallRef = {
       caller: edge.caller,
       callee: edge.callee,
       kind: edge.kind,
       resolution: edge.resolution,
       origin: edge.origin,
       locality,
+      callerRow,
       calleeRow: calleeRow ?? null,
-    });
+    };
+    const calls = callsByFunction.get(edge.caller) ?? [];
+    calls.push(callRef);
     callsByFunction.set(edge.caller, calls);
 
     if (calleeRow !== undefined) {
+      const incoming = incomingCallsByFunction.get(edge.callee) ?? [];
+      incoming.push(callRef);
+      incomingCallsByFunction.set(edge.callee, incoming);
+
       const targets = callTargets.get(edge.caller) ?? [];
       if (!targets.some((target) => target.functionFullPath === calleeRow.functionFullPath)) {
         targets.push(calleeRow);
@@ -129,6 +138,7 @@ export function buildFunctionCallIndex(
     rowByFunction,
     callTargetsByFunction: callTargets,
     callsByFunction,
+    incomingCallsByFunction,
     nonLocalCallers: nonLocal,
     rowsByType,
   };

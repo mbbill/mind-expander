@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { FunctionCallIndex } from '../src/analysis/calls.ts';
 import type { DriftIndex } from '../src/analysis/drift.ts';
+import type { Arrow } from '../src/analysis/layout_model.ts';
 import type { OwnershipIndex } from '../src/analysis/ownership.ts';
 import {
   ancestorModuleIds,
   callableBucketIdsForType,
+  callerExpansionIdsForFunction,
   forwardRoutedTargetModulesFor,
   memberArrowRowsForType,
+  targetExpansionIdsForArrowTarget,
   targetExpansionIdsForMemberRow,
   targetModulesForMemberRow,
 } from '../src/view/type_expansion.ts';
@@ -25,6 +28,7 @@ function calls(rows: FunctionCallIndex['rowsByType'] = new Map()): FunctionCallI
     rowByFunction: new Map(),
     callTargetsByFunction: new Map(),
     callsByFunction: new Map(),
+    incomingCallsByFunction: new Map(),
     nonLocalCallers: new Set(),
     rowsByType: rows,
   };
@@ -129,6 +133,7 @@ describe('type expansion target modules', () => {
         ],
       ]),
       callsByFunction: new Map(),
+      incomingCallsByFunction: new Map(),
       nonLocalCallers: new Set(),
       rowsByType: new Map([
         [
@@ -190,6 +195,7 @@ describe('type expansion target modules', () => {
         ],
       ]),
       callsByFunction: new Map(),
+      incomingCallsByFunction: new Map(),
       nonLocalCallers: new Set(['c::Owner::method_a']),
       rowsByType: new Map([
         [
@@ -220,6 +226,7 @@ describe('type expansion target modules', () => {
       rowByFunction: new Map(),
       callTargetsByFunction: new Map(),
       callsByFunction: new Map(),
+      incomingCallsByFunction: new Map(),
       nonLocalCallers: new Set(),
       rowsByType: new Map([
         [
@@ -257,6 +264,102 @@ describe('type expansion target modules', () => {
     expect(callableBucketIdsForType('c::Owner', callIndex)).toEqual([
       'c::Owner::__methods_pub',
       'c::Owner::__methods_private',
+    ]);
+  });
+
+  it('returns caller row expansion ids for incoming call targets', () => {
+    const callerRow = {
+      functionFullPath: 'c::src::Owner::caller',
+      typeId: 'c::src::Owner',
+      rowName: 'caller',
+      rowKind: 'method' as const,
+      moduleId: 'c::src',
+      bucketId: 'c::src::Owner::__methods_pub',
+    };
+    const targetRow = {
+      functionFullPath: 'c::dst::Target::callee',
+      typeId: 'c::dst::Target',
+      rowName: 'callee',
+      rowKind: 'method' as const,
+      moduleId: 'c::dst',
+      bucketId: 'c::dst::Target::__methods_pub',
+    };
+    const callIndex: FunctionCallIndex = {
+      rowByFunction: new Map(),
+      callTargetsByFunction: new Map(),
+      callsByFunction: new Map(),
+      incomingCallsByFunction: new Map([
+        [
+          'c::dst::Target::callee',
+          [
+            {
+              caller: callerRow.functionFullPath,
+              callee: targetRow.functionFullPath,
+              kind: 'method',
+              resolution: 'exact',
+              origin: '.callee',
+              locality: 'other_module',
+              callerRow,
+              calleeRow: targetRow,
+            },
+          ],
+        ],
+      ]),
+      nonLocalCallers: new Set(),
+      rowsByType: new Map(),
+    };
+
+    expect(callerExpansionIdsForFunction('c::dst::Target::callee', callIndex, 'c')).toEqual([
+      'c',
+      'c::src',
+      'c::src::Owner',
+      'c::src::Owner::__methods_pub',
+    ]);
+  });
+
+  it('returns expansion ids for the selected arrow target row', () => {
+    const callIndex: FunctionCallIndex = {
+      rowByFunction: new Map(),
+      callTargetsByFunction: new Map(),
+      callsByFunction: new Map(),
+      incomingCallsByFunction: new Map(),
+      nonLocalCallers: new Set(),
+      rowsByType: new Map([
+        [
+          'c::dst::Target',
+          [
+            {
+              functionFullPath: 'c::dst::Target::callee',
+              typeId: 'c::dst::Target',
+              rowName: 'callee',
+              rowKind: 'method',
+              moduleId: 'c::dst',
+              bucketId: 'c::dst::Target::__methods_pub',
+            },
+          ],
+        ],
+      ]),
+    };
+    const arrow: Arrow = {
+      waypoints: [
+        { x: 0, y: 0 },
+        { x: 10, y: 10 },
+      ],
+      fromTypeId: 'c::src::Owner',
+      fromFieldName: 'caller',
+      fromRowKind: 'method',
+      toTypeId: 'c::dst::Target',
+      toFieldName: 'callee',
+      toRowKind: 'method',
+      kind: 'call',
+      driftClass: 'at_lca',
+    };
+
+    expect(targetExpansionIdsForArrowTarget(arrow, callIndex, 'c')).toEqual([
+      'c',
+      'c::dst',
+      'c::dst::Target',
+      'c::dst::Target::__methods_pub',
     ]);
   });
 });

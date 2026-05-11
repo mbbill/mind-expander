@@ -47,6 +47,7 @@ function toLayout(geometry: Geometry, routing: RoutingResult): Layout {
   return {
     modules: toModuleRows(geometry),
     types: toTypeBoxes(geometry),
+    arrowLayers: routing.arrowLayers,
     arrows: routing.arrows,
     totalHeight: geometry.totalHeight,
     totalWidth: geometry.totalWidth,

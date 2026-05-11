@@ -1,5 +1,6 @@
 import type { FunctionCallIndex } from '../analysis/calls.ts';
 import type { DriftClass, DriftIndex } from '../analysis/drift.ts';
+import type { Arrow } from '../analysis/layout_model.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
 
 export interface MemberArrowRow {
@@ -98,6 +99,69 @@ export function targetExpansionIdsForMemberRow(
     out.add(target.typeId);
     if (target.bucketId !== null) out.add(target.bucketId);
   }
+  return [...out];
+}
+
+export function callerExpansionIdsForFunction(
+  functionFullPath: string,
+  calls: FunctionCallIndex,
+  crateName: string,
+): string[] {
+  const out = new Set<string>();
+  for (const call of calls.incomingCallsByFunction.get(functionFullPath) ?? []) {
+    const caller = call.callerRow;
+    for (const id of ancestorModuleIds(caller.typeId, crateName)) {
+      out.add(id);
+    }
+    out.add(caller.typeId);
+    if (caller.bucketId !== null) out.add(caller.bucketId);
+  }
+  return [...out];
+}
+
+export function targetExpansionIdsForArrowTarget(
+  arrow: Arrow,
+  calls: FunctionCallIndex,
+  crateName: string,
+): string[] {
+  return endpointExpansionIds(arrow, 'target', calls, crateName);
+}
+
+export function sourceExpansionIdsForArrowSource(
+  arrow: Arrow,
+  calls: FunctionCallIndex,
+  crateName: string,
+): string[] {
+  return endpointExpansionIds(arrow, 'source', calls, crateName);
+}
+
+function endpointExpansionIds(
+  arrow: Arrow,
+  endpoint: 'source' | 'target',
+  calls: FunctionCallIndex,
+  crateName: string,
+): string[] {
+  // Whichever endpoint the user is navigating to must be visible after a
+  // redraw: expand ancestor modules, the containing type, and (for call
+  // arrows) the method bucket that owns the row. Otherwise the freshly
+  // built layout still hides the row and the viewport pans to nowhere.
+  const typeId = endpoint === 'target' ? arrow.toTypeId : arrow.fromTypeId;
+  const rowName = endpoint === 'target' ? arrow.toFieldName : arrow.fromFieldName;
+  const rowKind = endpoint === 'target' ? arrow.toRowKind : arrow.fromRowKind;
+  const out = new Set<string>();
+  for (const id of ancestorModuleIds(typeId, crateName)) {
+    out.add(id);
+  }
+  out.add(typeId);
+
+  if (rowName !== undefined && rowName !== '' && rowKind !== undefined) {
+    const row = calls.rowsByType
+      .get(typeId)
+      ?.find((candidate) => candidate.rowName === rowName && candidate.rowKind === rowKind);
+    const bucketId = row?.bucketId;
+    if (bucketId !== null && bucketId !== undefined) out.add(bucketId);
+  }
+
   return [...out];
 }
 

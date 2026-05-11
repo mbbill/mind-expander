@@ -71,11 +71,13 @@ export interface PositionedRow {
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];
   readonly callRefs: readonly FunctionCallRef[];
+  readonly incomingCallRefs: readonly FunctionCallRef[];
   readonly functionFullPath: string | null;
   readonly callsOutsideModule: boolean;
   readonly hasExternalCalls: boolean;
   readonly hasUnresolvedCalls: boolean;
   readonly hasOutgoingCalls: boolean;
+  readonly hasIncomingCalls: boolean;
   readonly kind: PositionedRowKind;
   readonly bucketId: string | null;
   readonly memberDriftClass?: DriftClass | null;

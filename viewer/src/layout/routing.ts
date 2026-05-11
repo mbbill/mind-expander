@@ -5,13 +5,16 @@
 // multiple arrows may share the same segment.
 
 import type { DriftClass } from '../analysis/drift.ts';
+import { INCOMING_CALL_MARKER_OFFSET } from '../analysis/layout_metrics.ts';
 import type {
   Arrow,
+  ArrowLayer,
   ArrowWaypoint,
   ChannelObstacle,
   LayoutDebug,
   LayoutInputs,
 } from '../analysis/layout_model.ts';
+import { callArrowKey } from '../analysis/layout_model.ts';
 import type { Geometry } from './geometry.ts';
 import type { ObstacleMap } from './obstacles.ts';
 import {
@@ -39,8 +42,7 @@ interface RouteRequest {
   readonly toRowKind?: 'method' | 'function';
   readonly kind: 'ownership' | 'reexport' | 'call';
   readonly driftClass: DriftClass;
-  readonly sourceX: number;
-  readonly targetX: number;
+  readonly sourceSide: SourceSide;
   readonly sourceBounds: TypeBounds;
   readonly targetBounds: TypeBounds;
   readonly start: ArrowWaypoint;
@@ -51,10 +53,13 @@ interface RouteExit {
   readonly point: ArrowWaypoint;
 }
 
+type SourceSide = 'left' | 'right';
+
 const CALL_TARGET_LABEL_GAP = 4;
 
 export interface RoutingResult {
   readonly arrows: readonly Arrow[];
+  readonly arrowLayers: readonly ArrowLayer[];
   readonly debug: LayoutDebug;
 }
 
@@ -68,8 +73,10 @@ export function routeArrows(
   const requests = collectRouteRequests(geometry, inputs, boundsByType);
   const field = buildRoutingField(obstacles.all);
 
+  const arrows = requests.map((request) => emitRoutedArrow(request, field));
   return {
-    arrows: requests.map((request) => emitRoutedArrow(request, field)),
+    arrows,
+    arrowLayers: buildArrowLayers(arrows),
     debug: routingDebug(obstacles, geometry.debugLabels ?? [], geometry.debugGrid),
   };
 }
@@ -95,6 +102,8 @@ function collectRouteRequests(
           const targetBounds = boundsByType.get(targetId);
           if (target === undefined || targetBounds === undefined) continue;
           if (target.depth < 0) continue;
+          const end = { x: targetBounds.left, y: target.y };
+          const sourcePort = sourceRowPort(row.x, row.y, row.arrowSourceX, end.x);
 
           out.push({
             fromTypeId: source.node.id,
@@ -104,16 +113,24 @@ function collectRouteRequests(
             toTypeId: targetId,
             kind: 'ownership',
             driftClass: drift.typeClass.get(targetId) ?? 'at_lca',
-            sourceX: source.x,
-            targetX: target.x,
+            sourceSide: sourcePort.side,
             sourceBounds,
             targetBounds,
-            start: { x: row.arrowSourceX, y: row.y },
-            end: { x: targetBounds.left, y: target.y },
+            start: sourcePort.start,
+            end,
           });
         }
 
+        const shouldRouteOutgoingCallTargets =
+          (row.kind === 'method' || row.kind === 'function') &&
+          inputs.callArrowsShown !== undefined &&
+          inputs.callArrowsShown.has(callArrowKey(source.node.id, row.name, row.kind));
+
         for (const targetRef of row.callTargets ?? []) {
+          const shouldRouteIncomingCallTarget =
+            inputs.incomingCallTargetsShown?.has(targetRef.functionFullPath) ?? false;
+          if (!shouldRouteOutgoingCallTargets && !shouldRouteIncomingCallTarget) continue;
+
           const target = geometry.typesById.get(targetRef.typeId);
           const targetBounds = boundsByType.get(targetRef.typeId);
           if (target === undefined || targetBounds === undefined) continue;
@@ -122,6 +139,13 @@ function collectRouteRequests(
               candidate.kind === targetRef.rowKind && candidate.name === targetRef.rowName,
           );
           if (targetRow === undefined) continue;
+          const end = { x: callTargetEndX(targetRow), y: targetRow.y };
+          // Fn/method rows have directional ports: right edge is the outgoing
+          // port (this row calls another), left edge is the incoming port
+          // (someone calls this row). Call arrows are always caller→callee,
+          // so the source side is always the caller's right edge — never the
+          // left edge that would cut back through the label text.
+          const sourcePort = callOutgoingSourcePort(row.arrowSourceX, row.y);
 
           out.push({
             fromTypeId: source.node.id,
@@ -132,12 +156,11 @@ function collectRouteRequests(
             toRowKind: targetRef.rowKind,
             kind: 'call',
             driftClass: 'at_lca',
-            sourceX: source.x,
-            targetX: target.x,
+            sourceSide: sourcePort.side,
             sourceBounds,
             targetBounds,
-            start: { x: row.arrowSourceX, y: row.y },
-            end: { x: targetRow.x - CALL_TARGET_LABEL_GAP, y: targetRow.y },
+            start: sourcePort.start,
+            end,
           });
         }
       }
@@ -152,6 +175,7 @@ function collectRouteRequests(
       if (target === undefined || targetBounds === undefined || target.node.isGhost === true) {
         continue;
       }
+      const sourceSide = target.x < source.x ? 'left' : 'right';
       out.push({
         fromTypeId: source.node.id,
         fromFieldName: '',
@@ -159,17 +183,27 @@ function collectRouteRequests(
         toTypeId: target.node.id,
         kind: 'reexport',
         driftClass: 'at_lca',
-        sourceX: source.x,
-        targetX: target.x,
+        sourceSide,
         sourceBounds,
         targetBounds,
-        start: { x: sourceBounds.right, y: source.y },
+        start: { x: sourceSide === 'left' ? sourceBounds.left : sourceBounds.right, y: source.y },
         end: { x: targetBounds.left, y: target.y },
       });
     }
   }
 
   return out;
+}
+
+function buildArrowLayers(arrows: readonly Arrow[]): readonly ArrowLayer[] {
+  const ownership = arrows.filter((arrow) => arrow.kind === 'ownership');
+  const reexport = arrows.filter((arrow) => arrow.kind === 'reexport');
+  const call = arrows.filter((arrow) => arrow.kind === 'call');
+  return [
+    { id: 'ownership', arrows: ownership, hitTestable: true },
+    { id: 'reexport', arrows: reexport, hitTestable: true },
+    { id: 'call', arrows: call, hitTestable: true },
+  ];
 }
 
 function emitRoutedArrow(request: RouteRequest, field: RoutingField): Arrow {
@@ -209,6 +243,42 @@ function routeAroundBlocks(request: RouteRequest, field: RoutingField): readonly
   return compactDuplicateWaypoints([request.start, ...middle, request.end]);
 }
 
+function callOutgoingSourcePort(
+  rightAnchorX: number,
+  y: number,
+): { readonly side: SourceSide; readonly start: ArrowWaypoint } {
+  return { side: 'right', start: { x: rightAnchorX, y } };
+}
+
+function sourceRowPort(
+  leftAnchorX: number,
+  y: number,
+  rightAnchorX: number,
+  targetEndpointX: number,
+): { readonly side: SourceSide; readonly start: ArrowWaypoint } {
+  // Source-side selection is a row-port decision, not a type-origin decision.
+  // Long function names can protrude far enough that a target type whose origin
+  // is "to the right" still has its actual endpoint left of the source label.
+  // Compare the target against the source label interval so the first visible
+  // stub always exits away from the text.
+  const side = sourceSideForEndpoint(leftAnchorX, rightAnchorX, targetEndpointX);
+  return { side, start: { x: side === 'left' ? leftAnchorX : rightAnchorX, y } };
+}
+
+function sourceSideForEndpoint(
+  leftAnchorX: number,
+  rightAnchorX: number,
+  targetEndpointX: number,
+): SourceSide {
+  if (targetEndpointX <= leftAnchorX) return 'left';
+  if (targetEndpointX >= rightAnchorX) return 'right';
+  return targetEndpointX - leftAnchorX <= rightAnchorX - targetEndpointX ? 'left' : 'right';
+}
+
+function callTargetEndX(row: { readonly x: number; readonly hasIncomingCalls: boolean }): number {
+  return row.x - (row.hasIncomingCalls ? INCOMING_CALL_MARKER_OFFSET : 0) - CALL_TARGET_LABEL_GAP;
+}
+
 function unroutedHiddenRoute(request: RouteRequest): readonly ArrowWaypoint[] {
   // A visible route must be a checked orthogonal path. If no checked path is
   // available, keep the arrow degenerate instead of leaking a diagonal fallback
@@ -218,16 +288,22 @@ function unroutedHiddenRoute(request: RouteRequest): readonly ArrowWaypoint[] {
 
 function sourceExitForTarget(request: RouteRequest): RouteExit {
   const left = {
-    point: { x: request.sourceBounds.left - BLOCK_LEFT_CLEARANCE_X, y: request.start.y },
+    point: {
+      x: Math.min(request.sourceBounds.left, request.start.x) - BLOCK_LEFT_CLEARANCE_X,
+      y: request.start.y,
+    },
   };
   const right = {
-    point: { x: request.sourceBounds.right + BLOCK_RIGHT_CLEARANCE_X, y: request.start.y },
+    point: {
+      x: Math.max(request.sourceBounds.right, request.start.x) + BLOCK_RIGHT_CLEARANCE_X,
+      y: request.start.y,
+    },
   };
 
-  // Source side is endpoint semantics, not a route preference: an arrow leaves
-  // the side facing the target, independent of where the member text anchor
-  // sits inside the source block or how far expanded rows protrude.
-  return request.targetX < request.sourceX ? left : right;
+  // The exit is deliberately monotonic away from the source row anchor. This
+  // keeps the visible source stub outside the row label even if block fragments
+  // lag behind a long callable label or split-row protrusion.
+  return request.sourceSide === 'left' ? left : right;
 }
 
 function compactDuplicateWaypoints(points: readonly ArrowWaypoint[]): readonly ArrowWaypoint[] {

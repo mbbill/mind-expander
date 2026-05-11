@@ -37,6 +37,14 @@ export function rowArrowKey(typePath: string, rowName: string): string {
   return `${typePath}${ROW_ARROW_KEY_SEP}${rowName}`;
 }
 
+export function callArrowKey(
+  typePath: string,
+  rowName: string,
+  rowKind: 'method' | 'function',
+): string {
+  return `${typePath}${ROW_ARROW_KEY_SEP}${rowKind}${ROW_ARROW_KEY_SEP}${rowName}`;
+}
+
 export interface FieldRow {
   readonly name: string;
   readonly tyText: string;
@@ -47,11 +55,13 @@ export interface FieldRow {
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];
   readonly callRefs: readonly FunctionCallRef[];
+  readonly incomingCallRefs: readonly FunctionCallRef[];
   readonly functionFullPath: string | null;
   readonly callsOutsideModule: boolean;
   readonly hasExternalCalls: boolean;
   readonly hasUnresolvedCalls: boolean;
   readonly hasOutgoingCalls: boolean;
+  readonly hasIncomingCalls: boolean;
   readonly kind: RowKind;
   readonly bucketId: string | null;
   /** Strongest target drift for structural ownership targets on this row.
@@ -91,6 +101,7 @@ export interface ArrowWaypoint {
 }
 
 export type ArrowKind = 'ownership' | 'reexport' | 'call';
+export type ArrowLayerId = 'ownership' | 'reexport' | 'call' | 'debug';
 
 export interface Arrow {
   readonly waypoints: readonly ArrowWaypoint[];
@@ -104,9 +115,21 @@ export interface Arrow {
   readonly driftClass: DriftClass;
 }
 
+export interface ArrowLayer {
+  readonly id: ArrowLayerId;
+  /** Route geometry that is active for this render. Complete domain facts
+   *  remain on rows/indexes; layers contain only arrows the canvas should
+   *  paint and hit-test right now. */
+  readonly arrows: readonly Arrow[];
+  readonly hitTestable: boolean;
+}
+
 export interface Layout {
   readonly modules: readonly ModuleRow[];
   readonly types: readonly TypeBox[];
+  readonly arrowLayers: readonly ArrowLayer[];
+  /** Flattened compatibility view of `arrowLayers`. New code should choose
+   *  layers when it needs rendering or interaction policy. */
   readonly arrows: readonly Arrow[];
   readonly totalHeight: number;
   readonly totalWidth: number;
@@ -165,6 +188,13 @@ export interface LayoutInputs {
    *  field arrows; an empty set means emit none. Keys are rowArrowKey(typePath,
    *  fieldName). */
   readonly fieldArrowsShown?: ReadonlySet<string>;
+  /** Callable rows whose caller/callee routes should be materialized in the
+   *  active call-arrow layer. Call facts stay available on row.callRefs even
+   *  when this set is empty. Keys are callArrowKey(typePath, rowName, kind). */
+  readonly callArrowsShown?: ReadonlySet<string>;
+  /** Target functions whose incoming caller/callee routes should be
+   *  materialized. Values are full function paths from FunctionRowRef. */
+  readonly incomingCallTargetsShown?: ReadonlySet<string>;
   /** Legacy callers can still pass these while layout ignores them. Keeping
    *  the properties in the contract avoids UI call-site churn during removal
    *  of the old implementation. */

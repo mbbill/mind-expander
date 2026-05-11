@@ -17,6 +17,7 @@ import type { DriftClass } from '../analysis/drift.ts';
 import {
   BASE_FONT_SIZE,
   HIT_MIN_W,
+  INCOMING_CALL_MARKER_OFFSET,
   LAYOUT_GRID_CELL_W,
   MODULE_LABEL_X,
   TYPE_EXPAND_ARROW_CLOSED,
@@ -33,11 +34,12 @@ import { ANIM_MS, type ZoomLayers } from './zoom.ts';
 // Screen-space hit tolerances for arrow click navigation. Converted to
 // data-space by dividing by the current zoom scale, so the on-screen hit
 // area stays roughly constant regardless of zoom level.
-// `ARROW_HEAD_PX` is generous because going back along an arrow is the
-// less obvious half of the click affordance — making it forgiving means
-// users who aim for "the arrowhead" don't accidentally land on body.
+// `ARROW_ENDPOINT_PX` defines the arc-length window at each end of the
+// polyline that counts as a direct-nav zone (source / target). Beyond
+// that window, the click falls into the middle and opens the disambig
+// popup so the user picks a direction explicitly.
 const ARROW_HIT_PX = 8;
-const ARROW_HEAD_PX = 20;
+const ARROW_ENDPOINT_PX = 50;
 
 const TYPE_RADIUS = 4;
 // Module rows still use a left chevron for expand/collapse.
@@ -105,6 +107,7 @@ const DEBUG_PANEL_MARGIN = 8;
 const CALLABLE_DEBUG_MAX_CALLS = 24;
 const METHOD_BUCKET_CHEVRON_OFFSET = 12;
 const METHOD_BUCKET_CHEVRON_FONT_SIZE = 14;
+const INCOMING_CALL_MARKER_FONT_SIZE = 11;
 const COLOR_ARROW_CANONICAL = '#94a3b8'; // slate-400: at_lca / within_budget — neutral context
 // Highlighted-canonical color (#3b82f6 blue) is applied via CSS in
 // index.html (`.canonical.highlighted { stroke: ... }`) so the marker
@@ -244,8 +247,27 @@ export interface TreeRenderOptions {
   readonly onToggleTypeMembers: (typePath: string) => void;
   /** Click on a field name → toggle its selection. */
   readonly onSelectField: (typePath: string, fieldName: string, kind: FieldKeyKind) => void;
+  readonly onToggleIncomingCalls: (
+    typePath: string,
+    fieldName: string,
+    kind: 'method' | 'function',
+    functionFullPath: string,
+  ) => void;
+  /** Hover on a callable row → request a transient call-arrow layer for that
+   *  single row. Leaving the row clears only that preview layer. */
+  readonly onPreviewCallArrows: (
+    typePath: string,
+    fieldName: string,
+    kind: 'method' | 'function',
+  ) => Layout | null;
+  readonly onClearCallArrowPreview: (
+    typePath: string,
+    fieldName: string,
+    kind: 'method' | 'function',
+  ) => void;
   /** Set of "typePath::fieldName" keys currently selected. */
   readonly selectedFields: ReadonlySet<string>;
+  readonly incomingCallTargetsShown: ReadonlySet<string>;
   /** Method-bucket ids (`typeFullPath::__methods_pub` etc.) currently
    *  expanded. The renderer reads this to flip a bucket header's
    *  chevron between `▸` (closed) and `▾` (open) on every redraw,
@@ -589,9 +611,9 @@ function installArrowClickHandler(
     // itself carries the zoom transform.
     const [x, y] = pointer(event, layers.zoomLayer);
     const k = zoomTransform(svgEl).k || 1;
-    const hits = pickArrowsAtPoint({ x, y }, layout.arrows, {
+    const hits = pickArrowsAtPoint({ x, y }, hitTestableArrows(layout), {
       hitTolerance: ARROW_HIT_PX / k,
-      headRadius: ARROW_HEAD_PX / k,
+      endpointRadius: ARROW_ENDPOINT_PX / k,
     });
     if (hits.length === 0) return;
     event.stopPropagation();
@@ -679,7 +701,7 @@ function arrowKey(a: Layout['arrows'][number]): string {
   // would coalesce them and one would silently disappear).
   const ys = a.waypoints.map((w) => `${w.x},${w.y}`).join('|');
   const toRow = `${a.toRowKind ?? ''}::${a.toFieldName ?? ''}`;
-  return `${a.fromTypeId}::${a.fromRowKind}::${a.fromFieldName}::${a.toTypeId}::${toRow}::${ys}`;
+  return `${a.kind}::${a.fromTypeId}::${a.fromRowKind}::${a.fromFieldName}::${a.toTypeId}::${toRow}::${ys}`;
 }
 
 // Width of the transparent "hit" stroke per arrow. Wide enough to make
@@ -700,7 +722,7 @@ function renderArrows(
   // exit/enter join straightforward.
   const sel = g
     .selectAll<SVGGElement, Layout['arrows'][number]>('g.arrow')
-    .data(layout.arrows, arrowKey);
+    .data(renderableArrows(layout), arrowKey);
 
   sel
     .exit()
@@ -732,7 +754,11 @@ function renderArrows(
       return null;
     })
     .attr('marker-end', (a) => `url(#${ARROW_MARKER_IDS[a.driftClass]})`)
-    .classed('canonical', (a) => a.driftClass === 'at_lca' || a.driftClass === 'within_budget')
+    .classed(
+      'canonical',
+      (a) =>
+        a.kind === 'ownership' && (a.driftClass === 'at_lca' || a.driftClass === 'within_budget'),
+    )
     .classed('reexport', (a) => a.kind === 'reexport')
     .classed('call', (a) => a.kind === 'call')
     .classed('highlighted', (a) => selectedArrows.has(a));
@@ -746,12 +772,15 @@ function renderArrows(
     .merge(sel)
     .select<SVGPathElement>('path.visible')
     .classed('highlighted', (a) => selectedArrows.has(a));
-  enter
-    .merge(sel)
-    .select<SVGPathElement>('path.hit')
-    .attr('pointer-events', (a) =>
-      a.kind === 'call' && !selectedArrows.has(a) ? 'none' : 'stroke',
-    );
+  enter.merge(sel).select<SVGPathElement>('path.hit').attr('pointer-events', 'stroke');
+}
+
+function renderableArrows(layout: Layout): readonly Layout['arrows'][number][] {
+  return layout.arrowLayers.flatMap((layer) => layer.arrows);
+}
+
+function hitTestableArrows(layout: Layout): readonly Layout['arrows'][number][] {
+  return layout.arrowLayers.filter((layer) => layer.hitTestable).flatMap((layer) => layer.arrows);
 }
 
 function directArrowsFrom(
@@ -764,7 +793,7 @@ function directArrowsFrom(
   // Match on both name AND row kind so a struct field and a method that share
   // a name (e.g. `exn_heap` field + `exn_heap()` getter) don't both light up
   // when only one was selected.
-  for (const a of layout.arrows) {
+  for (const a of renderableArrows(layout)) {
     if (a.fromTypeId !== fromTypeId) continue;
     if (a.fromFieldName !== fieldName) continue;
     if (a.fromRowKind !== fromKind) continue;
@@ -1351,6 +1380,11 @@ function renderFieldsForType(
     const isMethod = f.kind === 'method';
     const isFunction = f.kind === 'function';
     const isCallable = isMethod || isFunction;
+    const callableKind: 'method' | 'function' | null = isMethod
+      ? 'method'
+      : isFunction
+        ? 'function'
+        : null;
 
     // Visual differentiation by row kind:
     //   - field        → default styling, italic for borrow ownership.
@@ -1400,6 +1434,36 @@ function renderFieldsForType(
       chevron.remove();
     }
 
+    const incomingActive =
+      f.functionFullPath !== null && opts.incomingCallTargetsShown.has(f.functionFullPath);
+    let incomingMarker = fg.select<SVGTextElement>('text.incoming-call-marker');
+    if (isCallable && f.hasIncomingCalls && f.functionFullPath !== null) {
+      if (incomingMarker.empty()) {
+        incomingMarker = fg
+          .insert('text', 'text.field-row')
+          .attr('class', 'incoming-call-marker')
+          .attr('dy', '0.32em')
+          .style('cursor', 'pointer');
+      }
+      incomingMarker
+        .attr('font-size', INCOMING_CALL_MARKER_FONT_SIZE)
+        .attr('font-weight', incomingActive ? 700 : 500)
+        .attr('fill', incomingActive ? '#2563eb' : COLOR_CHEVRON)
+        .text('→')
+        .transition('move')
+        .duration(ANIM_MS)
+        .attr('x', localX - INCOMING_CALL_MARKER_OFFSET)
+        .attr('y', localY);
+      const functionFullPath = f.functionFullPath;
+      incomingMarker.on('click', (event: MouseEvent) => {
+        event.stopPropagation();
+        if (callableKind === null) return;
+        opts.onToggleIncomingCalls(d.fullPath, f.name, callableKind, functionFullPath);
+      });
+    } else if (!incomingMarker.empty()) {
+      incomingMarker.remove();
+    }
+
     const tyText = fg
       .select<SVGTextElement>('text.field-ty')
       .attr('x', f.arrowSourceX - d.x)
@@ -1431,12 +1495,18 @@ function renderFieldsForType(
     // DOM node so it survives re-renders (data-join keeps the same element).
     const node = text.node() as (SVGTextElement & { __sfTyTimer?: number | undefined }) | null;
     text.on('mouseenter', () => {
-      const hover = directArrowsFrom(layout, d.fullPath, f.name, rowKind);
-      const union = new Set<Layout['arrows'][number]>(opts.selectedArrows);
-      for (const a of hover) union.add(a);
-      applyArrowHighlight(zoomLayer, union);
+      const activeLayout =
+        callableKind === null
+          ? layout
+          : (opts.onPreviewCallArrows(d.fullPath, f.name, callableKind) ?? layout);
+      if (callableKind === null) {
+        const hover = directArrowsFrom(activeLayout, d.fullPath, f.name, rowKind);
+        const union = new Set<Layout['arrows'][number]>(opts.selectedArrows);
+        for (const a of hover) union.add(a);
+        applyArrowHighlight(zoomLayer, union);
+      }
       if (isCallable && layoutDebugEnabled()) {
-        showCallableDebugPanel(layout, d, f, rowKind, text.node());
+        showCallableDebugPanel(activeLayout, d, f, rowKind, text.node());
       }
       if (node?.__sfTyTimer !== undefined) {
         clearTimeout(node.__sfTyTimer);
@@ -1448,7 +1518,11 @@ function renderFieldsForType(
       tyText.transition('ty').duration(120).style('opacity', 1);
     });
     text.on('mouseleave', () => {
-      applyArrowHighlight(zoomLayer, opts.selectedArrows);
+      if (callableKind !== null) {
+        opts.onClearCallArrowPreview(d.fullPath, f.name, callableKind);
+      } else {
+        applyArrowHighlight(zoomLayer, opts.selectedArrows);
+      }
       if (isCallable) hideCallableDebugPanel();
       if (!node) return;
       if (node.__sfTyTimer !== undefined) clearTimeout(node.__sfTyTimer);
@@ -1499,20 +1573,31 @@ function showCallableDebugPanel(
   appendDebugPair(summary, 'module', typeNode.modulePath || '(crate root)');
   appendDebugPair(summary, 'row kind', rowKind);
   appendDebugPair(summary, 'text color', callableDebugColorLabel(row));
-  appendDebugPair(summary, 'raw calls', String(row.callRefs.length));
+  appendDebugPair(summary, 'outgoing calls', String(row.callRefs.length));
+  appendDebugPair(summary, 'incoming calls', String(row.incomingCallRefs.length));
   appendDebugPair(summary, 'known target rows', String(row.callTargets.length));
 
-  const routedCallArrows = layout.arrows.filter(
+  const routedOutgoingCallArrows = renderableArrows(layout).filter(
     (arrow) =>
       arrow.kind === 'call' &&
       arrow.fromTypeId === typeNode.fullPath &&
       arrow.fromFieldName === row.name &&
       arrow.fromRowKind === rowKind,
   );
-  appendDebugPair(summary, 'routed arrows', String(routedCallArrows.length));
+  const routedIncomingCallArrows = renderableArrows(layout).filter(
+    (arrow) =>
+      arrow.kind === 'call' &&
+      arrow.toTypeId === typeNode.fullPath &&
+      arrow.toFieldName === row.name &&
+      arrow.toRowKind === rowKind,
+  );
+  appendDebugPair(summary, 'routed outgoing', String(routedOutgoingCallArrows.length));
+  appendDebugPair(summary, 'routed incoming', String(routedIncomingCallArrows.length));
 
-  appendArrowSection(panel, routedCallArrows);
-  appendCallSection(panel, layout, row.callRefs);
+  appendArrowSection(panel, 'Routed outgoing call arrows', routedOutgoingCallArrows, 'outgoing');
+  appendArrowSection(panel, 'Routed incoming call arrows', routedIncomingCallArrows, 'incoming');
+  appendCallSection(panel, layout, 'Outgoing call facts', row.callRefs, 'outgoing');
+  appendCallSection(panel, layout, 'Incoming call facts', row.incomingCallRefs, 'incoming');
 
   panel.style.display = 'block';
   positionCallableDebugPanel(panel, anchorNode.getBoundingClientRect());
@@ -1574,9 +1659,11 @@ function positionCallableDebugPanel(panel: HTMLDivElement, anchor: DOMRect): voi
 
 function appendArrowSection(
   panel: HTMLDivElement,
+  title: string,
   arrows: readonly Layout['arrows'][number][],
+  direction: 'outgoing' | 'incoming',
 ): void {
-  appendDiv(panel, 'cd-section-title', 'Routed visible call arrows');
+  appendDiv(panel, 'cd-section-title', title);
   if (arrows.length === 0) {
     appendDiv(panel, 'cd-empty', 'none currently routed');
     return;
@@ -1584,11 +1671,15 @@ function appendArrowSection(
 
   const list = appendDiv(panel, 'cd-list');
   for (const arrow of arrows.slice(0, CALLABLE_DEBUG_MAX_CALLS)) {
-    const target =
-      arrow.toFieldName === undefined
-        ? arrow.toTypeId
-        : `${arrow.toTypeId}.${arrow.toFieldName}${callableSuffix(arrow.toRowKind)}`;
-    appendDiv(list, 'cd-line', `-> ${target}`);
+    const endpoint =
+      direction === 'outgoing'
+        ? arrow.toFieldName === undefined
+          ? arrow.toTypeId
+          : `${arrow.toTypeId}.${arrow.toFieldName}${callableSuffix(arrow.toRowKind)}`
+        : `${arrow.fromTypeId}.${arrow.fromFieldName}${callableSuffix(
+            arrow.fromRowKind === 'field' ? undefined : arrow.fromRowKind,
+          )}`;
+    appendDiv(list, 'cd-line', `${direction === 'outgoing' ? '->' : '<-'} ${endpoint}`);
   }
   appendMoreIfNeeded(panel, arrows.length);
 }
@@ -1596,25 +1687,39 @@ function appendArrowSection(
 function appendCallSection(
   panel: HTMLDivElement,
   layout: Layout,
+  title: string,
   calls: Layout['types'][number]['fields'][number]['callRefs'],
+  direction: 'outgoing' | 'incoming',
 ): void {
-  appendDiv(panel, 'cd-section-title', 'Raw call facts');
+  appendDiv(panel, 'cd-section-title', title);
   if (calls.length === 0) {
-    appendDiv(panel, 'cd-empty', 'leaf function; no call edges attached');
+    appendDiv(
+      panel,
+      'cd-empty',
+      direction === 'outgoing'
+        ? 'no outgoing call edges attached'
+        : 'no incoming call edges attached',
+    );
     return;
   }
 
   const list = appendDiv(panel, 'cd-list');
   for (const call of calls.slice(0, CALLABLE_DEBUG_MAX_CALLS)) {
     const item = appendDiv(list, 'cd-call');
-    const target = call.calleeRow
-      ? `${call.calleeRow.typeId}.${call.calleeRow.rowName}${callableSuffix(call.calleeRow.rowKind)}`
-      : call.callee;
-    appendDiv(item, 'cd-call-main', `${localityGlyph(call.locality)} ${target}`);
+    const endpointRow = direction === 'outgoing' ? call.calleeRow : call.callerRow;
+    const endpoint =
+      endpointRow === null
+        ? call.callee
+        : `${endpointRow.typeId}.${endpointRow.rowName}${callableSuffix(endpointRow.rowKind)}`;
+    appendDiv(
+      item,
+      'cd-call-main',
+      `${direction === 'outgoing' ? '->' : '<-'} ${localityGlyph(call.locality)} ${endpoint}`,
+    );
     appendDiv(
       item,
       'cd-call-meta',
-      `${call.locality} | ${call.kind} | ${call.resolution} | ${targetRowVisibility(layout, call.calleeRow)}`,
+      `${call.locality} | ${call.kind} | ${call.resolution} | ${targetRowVisibility(layout, endpointRow)}`,
     );
     if (call.origin !== '') {
       appendDiv(item, 'cd-call-origin', `origin: ${call.origin}`);

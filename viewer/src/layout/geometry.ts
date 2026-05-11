@@ -535,6 +535,10 @@ function buildSemanticBandItems(
         // order. Measurement and expansion can change box size, but they must
         // not change which item is earlier within its logical tier.
         stableOrder: placement.stableOrder,
+        // Module-level function groups live in the reserved leftmost column;
+        // every other item (real types AND ghosts) is floored past the global
+        // fn-column width so types align in column 2+ across all bands.
+        isFnColumn: node.typeKind === 'function_group',
         header: {
           measuredWidthPx: headerWidth,
           measuredHeightPx: ROW_H,
@@ -601,11 +605,13 @@ interface LocalRowSpec {
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];
   readonly callRefs: readonly FunctionCallRef[];
+  readonly incomingCallRefs: readonly FunctionCallRef[];
   readonly functionFullPath: string | null;
   readonly callsOutsideModule: boolean;
   readonly hasExternalCalls: boolean;
   readonly hasUnresolvedCalls: boolean;
   readonly hasOutgoingCalls: boolean;
+  readonly hasIncomingCalls: boolean;
   readonly kind: 'field' | 'method_bucket' | 'method' | 'function';
   readonly bucketId: string | null;
   readonly memberDriftClass: DriftClass | null;
@@ -656,11 +662,13 @@ function buildRowSpecs(
       targets: showThisArrow ? targets : [],
       callTargets: [],
       callRefs: [],
+      incomingCallRefs: [],
       functionFullPath: null,
       callsOutsideModule: false,
       hasExternalCalls: false,
       hasUnresolvedCalls: false,
       hasOutgoingCalls: false,
+      hasIncomingCalls: false,
       kind: 'field',
       bucketId: null,
       memberDriftClass,
@@ -680,11 +688,13 @@ function buildRowSpecs(
       targets: [],
       callTargets: [],
       callRefs: [],
+      incomingCallRefs: [],
       functionFullPath: null,
       callsOutsideModule: false,
       hasExternalCalls: false,
       hasUnresolvedCalls: false,
       hasOutgoingCalls: false,
+      hasIncomingCalls: false,
       kind: 'method_bucket',
       bucketId,
       memberDriftClass: null,
@@ -723,6 +733,7 @@ function pushCallableRow(
   const hasUnresolvedCalls = callRefs.some((call) => call.locality === 'unresolved');
   const callsOutsideModule = hasExternalCalls || hasUnresolvedCalls;
   const callTargets = args.calls?.callTargetsByFunction.get(args.functionFullPath) ?? [];
+  const incomingCallRefs = args.calls?.incomingCallsByFunction.get(args.functionFullPath) ?? [];
   rows.push({
     name: args.fn.name,
     tyText: formatCallableSignature(args.fn),
@@ -732,11 +743,13 @@ function pushCallableRow(
     targets: [],
     callTargets,
     callRefs,
+    incomingCallRefs,
     functionFullPath: args.functionFullPath,
     callsOutsideModule,
     hasExternalCalls,
     hasUnresolvedCalls,
     hasOutgoingCalls: callRefs.length > 0,
+    hasIncomingCalls: incomingCallRefs.length > 0,
     kind: args.kind,
     bucketId: null,
     memberDriftClass: null,
@@ -796,11 +809,13 @@ function positionRows(
       targets: spec.targets,
       callTargets: spec.callTargets,
       callRefs: spec.callRefs,
+      incomingCallRefs: spec.incomingCallRefs,
       functionFullPath: spec.functionFullPath,
       callsOutsideModule: spec.callsOutsideModule,
       hasExternalCalls: spec.hasExternalCalls,
       hasUnresolvedCalls: spec.hasUnresolvedCalls,
       hasOutgoingCalls: spec.hasOutgoingCalls,
+      hasIncomingCalls: spec.hasIncomingCalls,
       kind: spec.kind,
       bucketId: spec.bucketId,
       memberDriftClass: spec.memberDriftClass,

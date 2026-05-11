@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { computeDrift } from '../src/analysis/drift.ts';
-import { LAYOUT_GRID_CELL_W } from '../src/analysis/layout_metrics.ts';
+import { INCOMING_CALL_MARKER_OFFSET, LAYOUT_GRID_CELL_W } from '../src/analysis/layout_metrics.ts';
 import type { LayoutInputs } from '../src/analysis/layout_model.ts';
-import { rowArrowKey } from '../src/analysis/layout_model.ts';
+import { callArrowKey, rowArrowKey } from '../src/analysis/layout_model.ts';
 import { type TreeNode, type TypeNode, buildModuleTree } from '../src/analysis/module_tree.ts';
 import { buildOwnershipIndex, computeOwnershipDepth } from '../src/analysis/ownership.ts';
 import { canonicalize } from '../src/data/canonicalize.ts';
@@ -44,15 +44,15 @@ describe('routeArrows obstacle routing', () => {
     expectLeftBorderClearance(arrow?.waypoints ?? [], blocker, LAYOUT_GRID_CELL_W * 1.5);
   });
 
-  it('can exit the source from the left while still entering the target from the left', () => {
-    const source = typeBox('Source', { x: 120, y: 40, width: 40 }, [
-      row('target', { y: 40, arrowSourceX: 128, target: 'Target' }),
+  it('starts left-going row arrows at the row left edge before exiting left', () => {
+    const source = typeBox('Source', { x: 120, y: 40, width: 80 }, [
+      row('target', { y: 40, arrowSourceX: 180, target: 'Target' }),
     ]);
     const target = typeBox('Target', { x: 0, y: 40, width: 40 });
     const routing = routeArrows(
       geometry([target, source]),
       obstacleMap([
-        obstacle('Source', { x: 120, y: 28, width: 40, height: 24 }),
+        obstacle('Source', { x: 120, y: 28, width: 80, height: 24 }),
         obstacle('Target', { x: 0, y: 28, width: 40, height: 24 }),
       ]),
       routingInputs(),
@@ -61,6 +61,7 @@ describe('routeArrows obstacle routing', () => {
 
     const arrow = routing.arrows[0];
     expectAxisAlignedSegments(arrow?.waypoints ?? []);
+    expect(arrow?.waypoints[0]).toEqual({ x: 164, y: 40 });
     expect(arrow?.waypoints[1]).toEqual({ x: 108, y: 40 });
     expect(arrow?.waypoints.at(-2)).toEqual({ x: -12, y: 40 });
     expect(arrow?.waypoints.at(-1)).toEqual({ x: 0, y: 40 });
@@ -83,6 +84,45 @@ describe('routeArrows obstacle routing', () => {
 
     expect(routing.arrows[0]?.waypoints[0]).toEqual({ x: 128, y: 40 });
     expect(routing.arrows[0]?.waypoints[1]).toEqual({ x: 164, y: 40 });
+  });
+
+  it('chooses source side from the row endpoint, not only the target type origin', () => {
+    const source = typeBox('Source', { x: 120, y: 40, width: 80 }, [
+      row('long_source_label', { y: 40, arrowSourceX: 320, target: 'Target' }),
+    ]);
+    const target = typeBox('Target', { x: 260, y: 80, width: 40 });
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 120, y: 28, width: 80, height: 24 }),
+        obstacle('Target', { x: 260, y: 68, width: 40, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    expect(routing.arrows[0]?.waypoints[0]).toEqual({ x: 304, y: 40 });
+    expect(routing.arrows[0]?.waypoints[1]?.x ?? 0).toBeLessThan(304);
+  });
+
+  it('does not backtrack through a source label when the block is narrower than the row', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      row('wide_source', { y: 40, arrowSourceX: 200, target: 'Target' }),
+    ]);
+    const target = typeBox('Target', { x: 260, y: 40, width: 40 });
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 260, y: 28, width: 40, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    const waypoints = routing.arrows[0]?.waypoints ?? [];
+    expect(waypoints[0]).toEqual({ x: 200, y: 40 });
+    expect(waypoints[1]?.x).toBeGreaterThan(200);
   });
 
   it('uses placed type origins rather than protruding bounds for source side', () => {
@@ -245,7 +285,7 @@ describe('routeArrows obstacle routing', () => {
         obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
         obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
       ]),
-      routingInputs(),
+      routingInputs(new Set([callArrowKey('Source', 'caller', 'function')])),
       measure,
     );
 
@@ -259,7 +299,88 @@ describe('routeArrows obstacle routing', () => {
     expect(penultimate?.x).toBeLessThan(128);
   });
 
-  it('routes same-type function-call arrows around the type instead of folding back through rows', () => {
+  it('terminates call arrows before an incoming-call marker on the target row', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'Target',
+        targetName: 'callee',
+      }),
+    ]);
+    const target = typeBox('Target', { x: 120, y: 80, width: 40 }, [
+      callableTargetRow('callee', { x: 132, y: 80, hasIncomingCalls: true }),
+    ]);
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
+      ]),
+      routingInputs(new Set([callArrowKey('Source', 'caller', 'function')])),
+      measure,
+    );
+
+    expect(routing.arrows[0]?.waypoints.at(-1)).toEqual({
+      x: 132 - INCOMING_CALL_MARKER_OFFSET - 4,
+      y: 80,
+    });
+  });
+
+  it('does not materialize inactive function-call facts as arrows', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'Target',
+        targetName: 'callee',
+      }),
+    ]);
+    const target = typeBox('Target', { x: 120, y: 80, width: 40 }, [
+      callableTargetRow('callee', { x: 132, y: 80 }),
+    ]);
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    expect(routing.arrowLayers.find((layer) => layer.id === 'call')?.arrows).toEqual([]);
+    expect(routing.arrows).toEqual([]);
+  });
+
+  it('materializes incoming function-call arrows for active target functions only', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'Target',
+        targetName: 'callee',
+      }),
+    ]);
+    const target = typeBox('Target', { x: 120, y: 80, width: 40 }, [
+      callableTargetRow('callee', { x: 132, y: 80 }),
+    ]);
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
+      ]),
+      routingInputs(undefined, new Set(['Target::callee'])),
+      measure,
+    );
+
+    expect(routing.arrows.map((arrow) => [arrow.fromFieldName, arrow.toFieldName])).toEqual([
+      ['caller', 'callee'],
+    ]);
+  });
+
+  it('routes same-type function-call arrows around the right side of the type instead of folding back through rows', () => {
     const source = typeBox('Source', { x: 0, y: 40, width: 80 }, [
       callRow('caller', {
         y: 40,
@@ -272,16 +393,56 @@ describe('routeArrows obstacle routing', () => {
     const routing = routeArrows(
       geometry([source]),
       obstacleMap([obstacle('Source', { x: 0, y: 28, width: 96, height: 84 })]),
-      routingInputs(),
+      routingInputs(new Set([callArrowKey('Source', 'caller', 'function')])),
       measure,
     );
 
     const arrow = routing.arrows[0];
     expect(arrow?.kind).toBe('call');
+    // Outgoing call exits the caller's right edge (the outgoing port).
     expect(arrow?.waypoints[0]).toEqual({ x: 64, y: 40 });
+    const second = arrow?.waypoints[1];
+    expect(second?.y).toBe(40);
+    expect(second?.x).toBeGreaterThan(64);
     expect(arrow?.waypoints.at(-1)).toEqual({ x: 20, y: 88 });
     const penultimate = arrow?.waypoints.at(-2);
     expect(penultimate?.x).toBeLessThan(20);
+    // Must wrap around the right side of the source block, not fold back left.
+    expect((arrow?.waypoints ?? []).some((wp) => wp.x > 96)).toBe(true);
+  });
+
+  it('exits outgoing call arrows from the caller right edge even when the callee sits to the left', () => {
+    // Fn/method rows have directional ports: right = outgoing, left = incoming.
+    // Without this rule, the closest-side heuristic would pick the caller's
+    // left edge here (callee endpoint is far to the left) and the stub would
+    // cut back through the caller's row text.
+    const caller = typeBox('Caller', { x: 200, y: 40, width: 80 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 264,
+        targetType: 'Callee',
+        targetName: 'callee',
+      }),
+    ]);
+    const callee = typeBox('Callee', { x: 0, y: 88, width: 60 }, [
+      callableTargetRow('callee', { x: 0, y: 88 }),
+    ]);
+    const routing = routeArrows(
+      geometry([callee, caller]),
+      obstacleMap([
+        obstacle('Caller', { x: 200, y: 28, width: 80, height: 24 }),
+        obstacle('Callee', { x: 0, y: 76, width: 60, height: 24 }),
+      ]),
+      routingInputs(new Set([callArrowKey('Caller', 'caller', 'function')])),
+      measure,
+    );
+
+    const arrow = routing.arrows[0];
+    expect(arrow?.kind).toBe('call');
+    expect(arrow?.waypoints[0]).toEqual({ x: 264, y: 40 });
+    const second = arrow?.waypoints[1];
+    expect(second?.y).toBe(40);
+    expect(second?.x).toBeGreaterThan(264);
   });
 
   it('does not route function-call arrows to a type header when the callee row is collapsed', () => {
@@ -300,7 +461,7 @@ describe('routeArrows obstacle routing', () => {
         obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
         obstacle('CollapsedTarget', { x: 120, y: 68, width: 40, height: 24 }),
       ]),
-      routingInputs(),
+      routingInputs(new Set([callArrowKey('Source', 'caller', 'function')])),
       measure,
     );
 
@@ -425,11 +586,13 @@ function row(
     targets: [input.target],
     callTargets: [],
     callRefs: [],
+    incomingCallRefs: [],
     functionFullPath: null,
     callsOutsideModule: false,
     hasExternalCalls: false,
     hasUnresolvedCalls: false,
     hasOutgoingCalls: false,
+    hasIncomingCalls: false,
     kind: 'field',
     bucketId: null,
     memberDriftClass: 'at_lca',
@@ -471,6 +634,14 @@ function callRow(
         resolution: 'exact',
         origin: input.targetName,
         locality: 'same_module',
+        callerRow: {
+          functionFullPath: `Source::${name}`,
+          typeId: 'Source',
+          rowName: name,
+          rowKind: 'function',
+          moduleId: 'm',
+          bucketId: null,
+        },
         calleeRow: {
           functionFullPath: `${input.targetType}::${input.targetName}`,
           typeId: input.targetType,
@@ -481,11 +652,13 @@ function callRow(
         },
       },
     ],
+    incomingCallRefs: [],
     functionFullPath: `Source::${name}`,
     callsOutsideModule: false,
     hasExternalCalls: false,
     hasUnresolvedCalls: false,
     hasOutgoingCalls: true,
+    hasIncomingCalls: false,
     kind: 'function',
     bucketId: null,
     memberDriftClass: null,
@@ -494,7 +667,7 @@ function callRow(
 
 function callableTargetRow(
   name: string,
-  input: { readonly x: number; readonly y: number },
+  input: { readonly x: number; readonly y: number; readonly hasIncomingCalls?: boolean },
 ): PositionedRow {
   return {
     name,
@@ -506,11 +679,13 @@ function callableTargetRow(
     targets: [],
     callTargets: [],
     callRefs: [],
+    incomingCallRefs: [],
     functionFullPath: `Target::${name}`,
     callsOutsideModule: false,
     hasExternalCalls: false,
     hasUnresolvedCalls: false,
     hasOutgoingCalls: false,
+    hasIncomingCalls: input.hasIncomingCalls ?? false,
     kind: 'function',
     bucketId: null,
     memberDriftClass: null,
@@ -588,9 +763,14 @@ function obstacleMap(items: readonly Obstacle[]): ObstacleMap {
   };
 }
 
-function routingInputs(): LayoutInputs {
+function routingInputs(
+  callArrowsShown?: ReadonlySet<string>,
+  incomingCallTargetsShown?: ReadonlySet<string>,
+): LayoutInputs {
   return {
     drift: { typeClass: new Map(), lca: new Map() },
+    ...(callArrowsShown !== undefined ? { callArrowsShown } : {}),
+    ...(incomingCallTargetsShown !== undefined ? { incomingCallTargetsShown } : {}),
   } as unknown as LayoutInputs;
 }
 

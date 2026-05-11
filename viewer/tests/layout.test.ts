@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildFunctionCallIndex } from '../src/analysis/calls.ts';
 import type { TypeBox } from '../src/analysis/layout_model.ts';
-import { rowArrowKey } from '../src/analysis/layout_model.ts';
+import { callArrowKey, rowArrowKey } from '../src/analysis/layout_model.ts';
 import { buildModuleTree } from '../src/analysis/module_tree.ts';
 import type { Facts } from '../src/data/schema.ts';
 import {
@@ -402,7 +402,11 @@ describe('computeGeometry — basic placement', () => {
     expect(real?.x).toBeGreaterThan(fnGroup?.x ?? 0);
   });
 
-  it('keeps non-rank prelude spacing local to the module band', () => {
+  it('reserves a global leftmost column for module-level function groups', () => {
+    // The reserved fn column is global: a function group in `with_fns` pushes
+    // every type — including bands that have no function groups, like `plain`
+    // — past the column's right edge so types align across bands. Function
+    // groups themselves stay at the global start (col 0 inside the band grid).
     const c = crateFacts('c', [
       {
         path: 'with_fns',
@@ -421,8 +425,12 @@ describe('computeGeometry — basic placement', () => {
     expect(fnGroup).toBeDefined();
     expect(real).toBeDefined();
     expect(plain).toBeDefined();
-    expect(fnGroup?.x).toBeLessThan(real?.x ?? 0);
-    expect(plain?.x).toBe(g.globalXStart);
+    expect(fnGroup?.x).toBe(g.globalXStart);
+    expect(real?.x).toBeGreaterThan(fnGroup?.x ?? 0);
+    // Plain has no fn group in its own band, but the global column still
+    // applies — Plain sits at the same x as Real (both at the type-area floor).
+    expect(plain?.x).toBe(real?.x);
+    expect(plain?.x).toBeGreaterThan(g.globalXStart);
   });
 
   it('same-depth long headers do not overlap neighboring boxes or obstacles', () => {
@@ -771,6 +779,7 @@ describe('buildLayout — Layout shape', () => {
     });
     const group = layout.types.find((t) => t.id === 'c::m::__fn_pub');
     const local = group?.fields.find((f) => f.name === 'local');
+    const helper = group?.fields.find((f) => f.name === 'helper');
     const outbound = group?.fields.find((f) => f.name === 'outbound');
     const unresolved = group?.fields.find((f) => f.name === 'unresolved');
 
@@ -779,6 +788,8 @@ describe('buildLayout — Layout shape', () => {
     expect(local?.hasUnresolvedCalls).toBe(false);
     expect(local?.hasOutgoingCalls).toBe(true);
     expect(local?.callTargets.map((target) => target.functionFullPath)).toEqual(['c::m::helper']);
+    expect(helper?.hasIncomingCalls).toBe(true);
+    expect(helper?.incomingCallRefs.map((call) => call.caller)).toEqual(['c::m::local']);
     expect(outbound?.callsOutsideModule).toBe(true);
     expect(outbound?.hasExternalCalls).toBe(true);
     expect(outbound?.hasUnresolvedCalls).toBe(false);
@@ -791,6 +802,17 @@ describe('buildLayout — Layout shape', () => {
     expect(unresolved?.hasUnresolvedCalls).toBe(true);
     expect(unresolved?.hasOutgoingCalls).toBe(true);
     expect(unresolved?.callTargets).toEqual([]);
+    expect(layout.arrowLayers.find((layer) => layer.id === 'call')?.arrows).toEqual([]);
+
+    const active = buildLayout({
+      ...buildInputs(c, [], ['c', 'c::m', 'c::m::__fn_pub', 'c::other']),
+      calls,
+      callArrowsShown: new Set([callArrowKey('c::m::__fn_pub', 'local', 'function')]),
+    });
+    const activeCallArrows = active.arrowLayers.find((layer) => layer.id === 'call')?.arrows ?? [];
+
+    expect(activeCallArrows.map((arrow) => arrow.fromFieldName)).toEqual(['local']);
+    expect(activeCallArrows.map((arrow) => arrow.toFieldName)).toEqual(['helper']);
   });
 
   it('keeps crowded target geometry unchanged during one-pass routing', () => {

@@ -61,9 +61,16 @@ describe('selected arrow styling', () => {
     expect(source).toContain('row.callTargets');
   });
 
-  it('labels call-arrow disambiguation with target rows when known', () => {
+  it('renders call-arrow disambiguation as colored source and target endpoints', () => {
     const source = arrowDisambigSource();
+    expect(cssRule('.arrow-disambig-panel li.arrow-row .arrow-endpoint.source')).toContain(
+      'color: #c2410c',
+    );
+    expect(cssRule('.arrow-disambig-panel li.arrow-row .arrow-endpoint.target')).toContain(
+      'color: #2563eb',
+    );
     expect(source).toContain('hit.arrow.toFieldName');
-    expect(source).toContain('endpointMemberSuffix');
+    expect(source).toContain('arrowDisambigRouteElement');
+    expect(source).toContain('path-prefix');
   });
 });

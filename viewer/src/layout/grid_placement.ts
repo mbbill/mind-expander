@@ -30,6 +30,10 @@ export interface GridPlacementItem {
    *  local packing, but it must not weaken predecessor constraints above. */
   readonly groupOrder: number;
   readonly indexInGroup: number;
+  /** True for module-level function groups. The placer keeps these in the
+   *  reserved leftmost column (col 0); every non-fn item is floored to
+   *  `fnColumnWidth` so types align in column 2+ across all bands. */
+  readonly isFnColumn?: boolean;
   readonly fragments: readonly GridPlacementFragment[];
 }
 
@@ -119,6 +123,10 @@ export function placeGridItemsTopToBottom(
   const rules = normalizePlacementRules(options);
   const orderedItems = normalizeItems(items);
   const groupExtraOffsets = buildGroupExtraOffsets(orderedItems, options.extraGaps ?? []);
+  // Global fn-column width: widest fn-column item's clearance right edge in
+  // cells, across all bands. Every non-fn item is floored to this so types
+  // start in column 2+ even in bands that contain no function group.
+  const fnColumnWidth = computeFnColumnWidth(items);
   const placedItems: PlacedGridItem[] = [];
   const placedFragments: PlacedGridFragment[] = [];
   const nextGroupRowByKey = new Map<string, number>();
@@ -138,6 +146,7 @@ export function placeGridItemsTopToBottom(
       rules,
       groupExtraOffsets,
       { byRegionGroup: groupTracks },
+      fnColumnWidth,
     );
     placedItems.push(placedItem);
     placedFragments.push(...placedItem.fragments);
@@ -151,6 +160,22 @@ export function placeGridItemsTopToBottom(
   };
 }
 
+function computeFnColumnWidth(items: readonly GridPlacementItem[]): number {
+  // Reads each fn-column item's right clearance edge in item-local cells.
+  // Fragments are item-local with own.col == 0, so the clearance right edge
+  // doubles as the per-item width. Taking the max yields the global column
+  // width every other item must clear.
+  let width = 0;
+  for (const item of items) {
+    if (!item.isFnColumn) continue;
+    for (const fragment of item.fragments) {
+      const right = fragment.clearance.col + fragment.clearance.cols;
+      if (right > width) width = right;
+    }
+  }
+  return width;
+}
+
 function placeOneItem(
   item: GridPlacementItem,
   minimumTopRow: number,
@@ -160,6 +185,7 @@ function placeOneItem(
   rules: PlacementRules,
   groupExtraOffsets: GroupExtraOffsets,
   groupTracks: DisplayGroupTracks,
+  fnColumnWidth: number,
 ): PlacedGridItem {
   const localOwnBounds = boundsOf(item.fragments.map((fragment) => fragment.own));
   const firstTopRow = Math.max(0, minimumTopRow);
@@ -175,6 +201,7 @@ function placeOneItem(
       groupTracks,
       rules.rankLayerGapCells,
       rules.firstRankLayerOrder,
+      fnColumnWidth,
     ),
   );
   const lastLeftCol = bounds.maxCols - localOwnBounds.cols;
@@ -386,6 +413,7 @@ function minimumLeftColForItem(
   groupTracks: DisplayGroupTracks,
   rankLayerGapCells: number,
   firstRankLayerOrder: number,
+  fnColumnWidth: number,
 ): number {
   const regionId = regionIdForItem(item);
   const groupExtraOffset = extraOffsetForGroup(regionId, item.groupOrder, groupExtraOffsets);
@@ -406,8 +434,17 @@ function minimumLeftColForItem(
     rankLayerGapCells,
     firstRankLayerOrder,
   );
+  // Reserved leftmost column for module-level function groups. Non-fn items
+  // are floored to the global fn-column width so types align in column 2+
+  // across every band, even bands that contain no function group.
+  const fnColumnFloor = item.isFnColumn ? 0 : fnColumnWidth;
 
-  return Math.max(predecessorFloor, (displayGroupFloor ?? 0) + groupExtraOffset, rankLayerFloor);
+  return Math.max(
+    predecessorFloor,
+    (displayGroupFloor ?? 0) + groupExtraOffset,
+    rankLayerFloor,
+    fnColumnFloor,
+  );
 }
 
 function rankLayerFloorForItem(

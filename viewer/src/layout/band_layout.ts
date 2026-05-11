@@ -30,6 +30,7 @@ export interface BandLayoutItem {
   readonly rankOrder?: number;
   readonly predecessorIds?: readonly string[];
   readonly stableOrder?: number;
+  readonly isFnColumn?: boolean;
   readonly header: MeasuredBoxPart;
   readonly rows: readonly MeasuredLayoutRow[];
   readonly grid: GridSpec;
@@ -96,12 +97,13 @@ export function prepareModuleBandLayout(
   assertUniqueItemIds(items);
 
   const shapePlan = planBandShape(
-    items.map(({ id, name, depth, rankOrder, stableOrder }) => ({
+    items.map(({ id, name, depth, rankOrder, stableOrder, isFnColumn }) => ({
       id,
       name,
       depth,
       ...(rankOrder !== undefined ? { rankOrder } : {}),
       ...(stableOrder !== undefined ? { stableOrder } : {}),
+      ...(isFnColumn !== undefined ? { isFnColumn } : {}),
     })),
     options.shapeStrategy,
   );
@@ -157,6 +159,7 @@ function buildGridItems(
       predecessorIds: predecessorIdsByItem.get(assignment.id) ?? [],
       groupOrder: assignment.groupOrder,
       indexInGroup: assignment.indexInGroup,
+      isFnColumn: assignment.isFnColumn,
       // Long-row splitting is a physical layout detail. The placement item
       // stays owner-scoped so split fragments cannot become graph nodes.
       fragments: fragments.fragments,
