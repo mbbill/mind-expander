@@ -9,6 +9,7 @@ import { INCOMING_CALL_MARKER_OFFSET } from '../analysis/layout_metrics.ts';
 import type {
   Arrow,
   ArrowLayer,
+  ArrowLocality,
   ArrowWaypoint,
   ChannelObstacle,
   LayoutDebug,
@@ -42,6 +43,7 @@ interface RouteRequest {
   readonly toRowKind?: 'method' | 'function';
   readonly kind: 'ownership' | 'reexport' | 'call';
   readonly driftClass: DriftClass;
+  readonly locality?: ArrowLocality;
   readonly sourceSide: SourceSide;
   readonly sourceBounds: TypeBounds;
   readonly targetBounds: TypeBounds;
@@ -156,6 +158,11 @@ function collectRouteRequests(
             toRowKind: targetRef.rowKind,
             kind: 'call',
             driftClass: 'at_lca',
+            // The renderer reads `locality` to colour same-module calls grey
+            // (background) and cross-module calls blue (attention). Locality
+            // is derived from the source row's own callRefs so it cannot
+            // disagree with the row-name colour decided upstream.
+            locality: callLocality(row.callRefs, targetRef.functionFullPath),
             sourceSide: sourcePort.side,
             sourceBounds,
             targetBounds,
@@ -215,11 +222,23 @@ function emitRoutedArrow(request: RouteRequest, field: RoutingField): Arrow {
     toTypeId: request.toTypeId,
     kind: request.kind,
     driftClass: request.driftClass,
+    ...(request.locality !== undefined ? { locality: request.locality } : {}),
   };
   if (request.toFieldName !== undefined && request.toRowKind !== undefined) {
     return { ...arrow, toFieldName: request.toFieldName, toRowKind: request.toRowKind };
   }
   return arrow;
+}
+
+function callLocality(
+  callRefs: ReadonlyArray<{ readonly callee: string; readonly locality: string }>,
+  calleeFullPath: string,
+): ArrowLocality {
+  // FunctionCallRef carries the upstream locality verdict; reuse it instead
+  // of recomputing module-path comparisons here, so the colour stays in
+  // lockstep with the row-name colour the analysis layer already drives.
+  const ref = callRefs.find((candidate) => candidate.callee === calleeFullPath);
+  return ref?.locality === 'same_module' ? 'local' : 'external';
 }
 
 function routeAroundBlocks(request: RouteRequest, field: RoutingField): readonly ArrowWaypoint[] {

@@ -29,8 +29,14 @@ describe('selected arrow styling', () => {
     expect(cssRule('#tree g.arrows path.visible.highlighted')).toContain('opacity: 1');
   });
 
-  it('keeps highlighted call arrows neutral grey', () => {
-    expect(cssRule('#tree g.arrows path.visible.call.highlighted')).toContain('stroke: #94a3b8');
+  it('does not override the stroke color on highlighted call arrows', () => {
+    // Call arrows get their stroke from the renderer based on locality
+    // (grey for local, blue for external). The highlight state must only
+    // bump opacity; if the CSS forced a stroke here, external arrows would
+    // flip to grey when selected and lose their locality cue.
+    const rule = cssRule('#tree g.arrows path.visible.call.highlighted');
+    expect(rule).toContain('opacity: 1');
+    expect(rule).not.toContain('stroke:');
   });
 
   it('uses a fixed-size marker for hovered arrows', () => {

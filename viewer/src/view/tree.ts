@@ -121,6 +121,10 @@ const COLOR_MEMBER_DRIFT_BELOW = '#d97706'; // amber-600: deeper label for drift
 // The violet stroke alone is enough identity, so re-exports can afford
 // the subtler short-symmetric pattern.
 const COLOR_ARROW_REEXPORT = '#a855f7'; // violet-500
+// Blue for cross-module call arrows. Matches the row-name color used by
+// callableRowColor() for rows that have any external outgoing call, so a
+// row labeled in blue draws blue arrows to its callees in other modules.
+const COLOR_CALL_EXTERNAL = '#2563eb';
 const REEXPORT_DASH = '2 2';
 // Method-reference arrows show up far more often than re-exports and
 // render in plain canonical grey, so they need the higher pixel
@@ -139,10 +143,13 @@ const ARROW_MARKER_IDS: Readonly<Record<DriftClass, string>> = {
 
 function arrowColor(a: Layout['arrows'][number]): string {
   if (a.kind === 'reexport') return COLOR_ARROW_REEXPORT;
-  // Call arrows always render in the neutral canonical grey. The target's
-  // drift class describes structural placement and is not a property of the
-  // executable caller/callee relation.
-  if (a.kind === 'call') return COLOR_ARROW_CANONICAL;
+  // Call arrows are colored by locality, matching the row-name color
+  // policy in callableRowColor: cross-module calls draw attention in blue,
+  // same-module calls recede into the canonical grey background. Locality
+  // is set at routing time so the renderer doesn't recompute it.
+  if (a.kind === 'call') {
+    return a.locality === 'external' ? COLOR_CALL_EXTERNAL : COLOR_ARROW_CANONICAL;
+  }
   const c = a.driftClass;
   if (c === 'at_lca' || c === 'within_budget') return COLOR_ARROW_CANONICAL;
   if (c === 'drift_below') return COLOR_ARROW_SOFT;

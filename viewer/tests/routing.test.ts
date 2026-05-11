@@ -293,10 +293,65 @@ describe('routeArrows obstacle routing', () => {
     expect(arrow?.kind).toBe('call');
     expect(arrow?.fromRowKind).toBe('function');
     expect(arrow?.toFieldName).toBe('callee');
+    // Default fixture uses same_module → arrow is local. This drives the
+    // grey/blue render-color split.
+    expect(arrow?.locality).toBe('local');
     expect(arrow?.waypoints[0]).toEqual({ x: 32, y: 40 });
     expect(arrow?.waypoints.at(-1)).toEqual({ x: 128, y: 80 });
     const penultimate = arrow?.waypoints.at(-2);
     expect(penultimate?.x).toBeLessThan(128);
+  });
+
+  it('tags call arrows whose callee lives in another module as external', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'Target',
+        targetName: 'callee',
+        locality: 'other_module',
+      }),
+    ]);
+    const target = typeBox('Target', { x: 120, y: 80, width: 40 }, [
+      callableTargetRow('callee', { x: 132, y: 80 }),
+    ]);
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
+      ]),
+      routingInputs(new Set([callArrowKey('Source', 'caller', 'function')])),
+      measure,
+    );
+
+    expect(routing.arrows[0]?.locality).toBe('external');
+  });
+
+  it('treats unresolved callees as external for color purposes', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'Target',
+        targetName: 'callee',
+        locality: 'unresolved',
+      }),
+    ]);
+    const target = typeBox('Target', { x: 120, y: 80, width: 40 }, [
+      callableTargetRow('callee', { x: 132, y: 80 }),
+    ]);
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
+      ]),
+      routingInputs(new Set([callArrowKey('Source', 'caller', 'function')])),
+      measure,
+    );
+
+    expect(routing.arrows[0]?.locality).toBe('external');
   });
 
   it('terminates call arrows before an incoming-call marker on the target row', () => {
@@ -606,6 +661,7 @@ function callRow(
     readonly arrowSourceX: number;
     readonly targetType: string;
     readonly targetName: string;
+    readonly locality?: 'same_module' | 'other_module' | 'unresolved';
   },
 ): PositionedRow {
   return {
@@ -633,7 +689,7 @@ function callRow(
         kind: 'function',
         resolution: 'exact',
         origin: input.targetName,
-        locality: 'same_module',
+        locality: input.locality ?? 'same_module',
         callerRow: {
           functionFullPath: `Source::${name}`,
           typeId: 'Source',

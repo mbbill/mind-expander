@@ -102,6 +102,11 @@ export interface ArrowWaypoint {
 
 export type ArrowKind = 'ownership' | 'reexport' | 'call';
 export type ArrowLayerId = 'ownership' | 'reexport' | 'call' | 'debug';
+/** Call-arrow locality: `local` = caller and callee live in the same module,
+ *  `external` = different modules (or unresolved target). Only meaningful for
+ *  `kind: 'call'`; other arrow kinds leave this undefined. Setting it at
+ *  routing time keeps the data classification out of the renderer. */
+export type ArrowLocality = 'local' | 'external';
 
 export interface Arrow {
   readonly waypoints: readonly ArrowWaypoint[];
@@ -113,6 +118,7 @@ export interface Arrow {
   readonly toRowKind?: 'method' | 'function';
   readonly kind: ArrowKind;
   readonly driftClass: DriftClass;
+  readonly locality?: ArrowLocality;
 }
 
 export interface ArrowLayer {
