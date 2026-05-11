@@ -10,6 +10,7 @@ import {
 } from './analysis/ownership.ts';
 import { FactsLoadError, loadFacts } from './data/load.ts';
 import type { Facts } from './data/schema.ts';
+import { signatureExpansionId } from './layout/geometry.ts';
 import { buildLayout } from './layout/pipeline.ts';
 import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
 import { ViewState } from './state/view_state.ts';
@@ -601,6 +602,13 @@ async function main(): Promise<void> {
           const after = lookupMemberRowPoint(lastLayout, typePath, fieldName, kind);
           const delta = anchorTranslation(before, after);
           if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
+        },
+        onToggleSignature: (functionFullPath) => {
+          // The (..) toggle is a render-time detail expansion. Use the
+          // existing ViewState toggle keyed by `sig::<fullPath>` so it
+          // shares the expand/collapse mechanics of every other toggle.
+          state.toggle(signatureExpansionId(functionFullPath));
+          draw();
         },
         onShowOwners: (typePath, getDotScreenPos) => {
           const ownerIds = ownership.ownedBy.get(typePath);

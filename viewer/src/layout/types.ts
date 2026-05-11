@@ -59,7 +59,12 @@ export interface PositionedType {
   readonly visibleRows: readonly PositionedRow[];
 }
 
-export type PositionedRowKind = 'field' | 'method_bucket' | 'method' | 'function';
+export type PositionedRowKind =
+  | 'field'
+  | 'method_bucket'
+  | 'method'
+  | 'function'
+  | 'signature_arg';
 
 export interface PositionedRow {
   readonly name: string;
@@ -67,6 +72,10 @@ export interface PositionedRow {
   readonly ownership: Ownership;
   readonly x: number;
   readonly y: number;
+  /** Rendered width of `name` only (no inline suffix glyphs like `(..)`).
+   *  The renderer uses this to position inline affordances right after the
+   *  name. `arrowSourceX` already accounts for any reserved suffix. */
+  readonly textWidth: number;
   readonly arrowSourceX: number;
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];

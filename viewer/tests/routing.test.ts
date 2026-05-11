@@ -637,6 +637,7 @@ function row(
     ownership: 'owned',
     x: input.arrowSourceX - 16,
     y: input.y,
+    textWidth: 12,
     arrowSourceX: input.arrowSourceX,
     targets: [input.target],
     callTargets: [],
@@ -670,6 +671,7 @@ function callRow(
     ownership: 'primitive',
     x: input.arrowSourceX - 16,
     y: input.y,
+    textWidth: 12,
     arrowSourceX: input.arrowSourceX,
     targets: [],
     callTargets: [
@@ -731,6 +733,7 @@ function callableTargetRow(
     ownership: 'primitive',
     x: input.x,
     y: input.y,
+    textWidth: 12,
     arrowSourceX: input.x + 24,
     targets: [],
     callTargets: [],

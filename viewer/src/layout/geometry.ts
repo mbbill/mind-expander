@@ -602,6 +602,12 @@ interface LocalRowSpec {
   readonly ownership: Ownership;
   readonly labelInset: number;
   readonly textWidth: number;
+  /** Reserve in pixels for inline glyphs the renderer paints between the
+   *  row name and the arrow exit point (e.g. the `(..)` signature toggle
+   *  on callable rows). `arrowSourceX` is computed as
+   *  `x + textWidth + 4 + (inlineSuffixWidth ?? 0)` so outgoing arrows
+   *  start past the inline glyph rather than slicing through it. */
+  readonly inlineSuffixWidth?: number;
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];
   readonly callRefs: readonly FunctionCallRef[];
@@ -612,7 +618,7 @@ interface LocalRowSpec {
   readonly hasUnresolvedCalls: boolean;
   readonly hasOutgoingCalls: boolean;
   readonly hasIncomingCalls: boolean;
-  readonly kind: 'field' | 'method_bucket' | 'method' | 'function';
+  readonly kind: 'field' | 'method_bucket' | 'method' | 'function' | 'signature_arg';
   readonly bucketId: string | null;
   readonly memberDriftClass: DriftClass | null;
 }
@@ -635,6 +641,7 @@ function buildRowSpecs(
         functionFullPath: f.fullPath,
         kind: 'function',
         labelInset: FUNCTION_GROUP_LABEL_INSET,
+        state,
         calls,
         measure,
       });
@@ -706,6 +713,7 @@ function buildRowSpecs(
         functionFullPath: `${t.fullPath}::${fn.name}`,
         kind: 'method',
         labelInset: FIELD_LABEL_INSET + METHOD_INDENT,
+        state,
         calls,
         measure,
       });
@@ -721,6 +729,7 @@ function pushCallableRow(
     readonly functionFullPath: string;
     readonly kind: 'method' | 'function';
     readonly labelInset: number;
+    readonly state: ViewState;
     readonly calls: FunctionCallIndex | undefined;
     readonly measure: (s: string) => number;
   },
@@ -740,6 +749,10 @@ function pushCallableRow(
     ownership: 'primitive',
     labelInset: args.labelInset,
     textWidth: args.measure(args.fn.name),
+    // Reserve room for the `(..)` signature toggle so its glyph sits between
+    // the function name and the arrow exit point. Without the reserve,
+    // outgoing call arrows would draw through `(..)`.
+    inlineSuffixWidth: args.measure(SIGNATURE_TOGGLE_GLYPH) + SIGNATURE_TOGGLE_GAP,
     targets: [],
     callTargets,
     callRefs,
@@ -754,6 +767,81 @@ function pushCallableRow(
     bucketId: null,
     memberDriftClass: null,
   });
+
+  // Signature expansion: when the user clicks the (..) glyph next to a
+  // function name, ViewState records sig::<fullPath>. The expanded rows are
+  // pure detail — no arrows, no markers, no chevron. They participate in
+  // obstacles like normal rows so call arrows route around them.
+  if (args.state.isExpanded(signatureExpansionId(args.functionFullPath))) {
+    pushSignatureRows(rows, args.fn, args.functionFullPath, args.labelInset, args.measure);
+  }
+}
+
+const SIGNATURE_ARG_INDENT = METHOD_INDENT;
+export const SIGNATURE_TOGGLE_GLYPH = '(..)';
+const SIGNATURE_TOGGLE_GAP = 4;
+
+export function signatureExpansionId(functionFullPath: string): string {
+  return `sig::${functionFullPath}`;
+}
+
+function pushSignatureRows(
+  rows: LocalRowSpec[],
+  fn: FnFacts,
+  parentFunctionFullPath: string,
+  parentLabelInset: number,
+  measure: (s: string) => number,
+): void {
+  const indent = parentLabelInset + SIGNATURE_ARG_INDENT;
+  const push = (name: string, tyText: string): void => {
+    rows.push({
+      name,
+      tyText,
+      ownership: 'primitive',
+      labelInset: indent,
+      textWidth: measure(name),
+      targets: [],
+      callTargets: [],
+      callRefs: [],
+      incomingCallRefs: [],
+      // Stamp the parent function path on each signature row so the
+      // renderer's data-join can key signature rows by (parent, name).
+      // Without this, two functions sharing a param name (or both having a
+      // `-> ` return row) collide on the global `kind:name` key and d3
+      // animates only one shared DOM element.
+      functionFullPath: parentFunctionFullPath,
+      callsOutsideModule: false,
+      hasExternalCalls: false,
+      hasUnresolvedCalls: false,
+      hasOutgoingCalls: false,
+      hasIncomingCalls: false,
+      kind: 'signature_arg',
+      bucketId: null,
+      memberDriftClass: null,
+    });
+  };
+
+  switch (fn.self_kind) {
+    case 'by_value':
+      push('self', '');
+      break;
+    case 'ref':
+      push('&self', '');
+      break;
+    case 'ref_mut':
+      push('&mut self', '');
+      break;
+  }
+  for (const p of fn.params ?? []) {
+    push(p.name, p.ty_text);
+  }
+  const ret = fn.return_ty_text;
+  if (ret !== undefined && ret !== '' && ret !== '()') {
+    // Return row uses '->' as the leading glyph; the renderer treats
+    // signature_arg rows uniformly (name black, tyText grey), and '->' reads
+    // naturally even when coloured the same as a param name.
+    push('->', ret);
+  }
 }
 
 function strongestDriftClassForTargets(
@@ -805,7 +893,8 @@ function positionRows(
       ownership: spec.ownership,
       x,
       y: rowY,
-      arrowSourceX: x + spec.textWidth + 4,
+      textWidth: spec.textWidth,
+      arrowSourceX: x + spec.textWidth + 4 + (spec.inlineSuffixWidth ?? 0),
       targets: spec.targets,
       callTargets: spec.callTargets,
       callRefs: spec.callRefs,

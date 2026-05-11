@@ -45,6 +45,7 @@ const layout: Layout = {
           ownership: 'primitive',
           x: 116,
           y: 64,
+          textWidth: 32,
           arrowSourceX: 156,
           targets: [],
           callTargets: [],

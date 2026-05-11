@@ -30,7 +30,7 @@ export interface ModuleRow {
   readonly leafBg: LeafBgSegment;
 }
 
-export type RowKind = 'field' | 'method_bucket' | 'method' | 'function';
+export type RowKind = 'field' | 'method_bucket' | 'method' | 'function' | 'signature_arg';
 export const ROW_ARROW_KEY_SEP = '\x1F';
 
 export function rowArrowKey(typePath: string, rowName: string): string {
@@ -51,6 +51,9 @@ export interface FieldRow {
   readonly ownership: Ownership;
   readonly x: number;
   readonly y: number;
+  /** Rendered width of `name` only. Renderers place inline affordances
+   *  (e.g. the (..) signature toggle on callable rows) right after this. */
+  readonly textWidth: number;
   readonly arrowSourceX: number;
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];

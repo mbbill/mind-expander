@@ -863,6 +863,172 @@ describe('buildLayout — Layout shape', () => {
   });
 });
 
+describe('buildLayout — signature expansion', () => {
+  function moduleWithFn(
+    name: string,
+    params: { name: string; ty_text: string }[],
+    extras: { return_ty_text?: string; self_kind?: 'none' | 'by_value' | 'ref' | 'ref_mut' } = {},
+  ): import('../src/data/schema.ts').CrateFacts {
+    return crateFacts('c', [
+      {
+        path: 'm',
+        file: 'src/m.rs',
+        types: [],
+        functions: [
+          {
+            name,
+            visibility: 'pub',
+            params,
+            ...(extras.return_ty_text !== undefined
+              ? { return_ty_text: extras.return_ty_text }
+              : {}),
+            ...(extras.self_kind !== undefined ? { self_kind: extras.self_kind } : {}),
+          },
+        ],
+      },
+    ]);
+  }
+
+  const fnGroupId = 'c::m::__fn_pub';
+  const sigId = 'sig::c::m::parse';
+
+  it('does not emit signature rows when the toggle is off', () => {
+    const c = moduleWithFn('parse', [{ name: 'n', ty_text: 'usize' }], {
+      return_ty_text: 'bool',
+    });
+    const layout = buildLayout(buildInputs(c, [], ['c', 'c::m', fnGroupId]));
+    const group = layout.types.find((t) => t.id === fnGroupId);
+    expect(group?.fields.map((f) => f.kind)).toEqual(['function']);
+  });
+
+  it('emits one signature_arg row per param plus a return row when the toggle is on', () => {
+    const c = moduleWithFn(
+      'parse',
+      [
+        { name: 'n', ty_text: 'usize' },
+        { name: 'flag', ty_text: 'bool' },
+      ],
+      { return_ty_text: 'bool' },
+    );
+    const layout = buildLayout(buildInputs(c, [], ['c', 'c::m', fnGroupId, sigId]));
+    const group = layout.types.find((t) => t.id === fnGroupId);
+    expect(group?.fields.map((f) => `${f.kind}:${f.name}:${f.tyText}`)).toEqual([
+      'function:parse:(n: usize, flag: bool) -> bool',
+      'signature_arg:n:usize',
+      'signature_arg:flag:bool',
+      'signature_arg:->:bool',
+    ]);
+  });
+
+  it('omits the return row when the return type is unit', () => {
+    const c = moduleWithFn('parse', [{ name: 'n', ty_text: 'usize' }], {
+      return_ty_text: '()',
+    });
+    const layout = buildLayout(buildInputs(c, [], ['c', 'c::m', fnGroupId, sigId]));
+    const group = layout.types.find((t) => t.id === fnGroupId);
+    expect(group?.fields.map((f) => `${f.kind}:${f.name}`)).toEqual([
+      'function:parse',
+      'signature_arg:n',
+    ]);
+  });
+
+  it('emits a self-receiver row for ref methods when expanded', () => {
+    const c = crateFacts('c', [
+      mod('m', [
+        {
+          ...ty('c', 'm', 'Thing'),
+          methods: [
+            {
+              name: 'alpha',
+              visibility: 'pub',
+              self_kind: 'ref_mut',
+              params: [{ name: 'n', ty_text: 'usize' }],
+              return_ty_text: '()',
+            },
+          ],
+        },
+      ]),
+    ]);
+    const thingId = 'c::m::Thing';
+    const layout = buildLayout(
+      buildInputs(c, [], [
+        'c',
+        'c::m',
+        thingId,
+        `${thingId}::__methods_pub`,
+        'sig::c::m::Thing::alpha',
+      ]),
+    );
+    const thing = layout.types.find((t) => t.id === thingId);
+    expect(thing?.fields.map((f) => `${f.kind}:${f.name}`)).toEqual([
+      'method_bucket:pub fn (1)',
+      'method:alpha',
+      'signature_arg:&mut self',
+      'signature_arg:n',
+    ]);
+  });
+
+  it('grows the type box height to include signature rows', () => {
+    const c = moduleWithFn(
+      'parse',
+      [
+        { name: 'n', ty_text: 'usize' },
+        { name: 'flag', ty_text: 'bool' },
+      ],
+      { return_ty_text: 'bool' },
+    );
+    const collapsed = buildLayout(buildInputs(c, [], ['c', 'c::m', fnGroupId]));
+    const expanded = buildLayout(buildInputs(c, [], ['c', 'c::m', fnGroupId, sigId]));
+    const collapsedH = collapsed.types.find((t) => t.id === fnGroupId)?.height ?? 0;
+    const expandedH = expanded.types.find((t) => t.id === fnGroupId)?.height ?? 0;
+    // Three extra rows: two params + return.
+    expect(expandedH).toBe(collapsedH + 3 * FIELD_ROW_H);
+  });
+
+  it('stamps each signature row with its parent function path so renderers can key them uniquely', () => {
+    // Regression: when two callable rows both have a `-> Self` signature
+    // row (or both have a param named `n`), the renderer's data-join must
+    // not collapse them onto one DOM node. Including the parent function
+    // path on each row makes that key uniqueness possible.
+    const c = crateFacts('c', [
+      {
+        path: 'm',
+        file: 'src/m.rs',
+        types: [],
+        functions: [
+          { name: 'new', visibility: 'pub', return_ty_text: 'Self' },
+          { name: 'default', visibility: 'pub', return_ty_text: 'Self' },
+        ],
+      },
+    ]);
+    const layout = buildLayout(
+      buildInputs(c, [], [
+        'c',
+        'c::m',
+        'c::m::__fn_pub',
+        'sig::c::m::new',
+        'sig::c::m::default',
+      ]),
+    );
+    const group = layout.types.find((t) => t.id === 'c::m::__fn_pub');
+    const sigRows = group?.fields.filter((f) => f.kind === 'signature_arg') ?? [];
+    expect(sigRows.map((r) => r.functionFullPath)).toEqual(['c::m::default', 'c::m::new']);
+  });
+
+  it('reserves room for the (..) toggle so callable arrowSourceX is past the row name', () => {
+    const c = moduleWithFn('parse', [], {});
+    const layout = buildLayout(buildInputs(c, [], ['c', 'c::m', fnGroupId]));
+    const fn = layout.types
+      .find((t) => t.id === fnGroupId)
+      ?.fields.find((f) => f.kind === 'function');
+    if (!fn) throw new Error('expected function row');
+    // arrowSourceX sits past the row name PLUS the reserved (..) glyph,
+    // not just past the name. Without the reserve, outgoing call arrows
+    // would draw straight through the (..) glyph.
+    expect(fn.arrowSourceX).toBeGreaterThan(fn.x + fn.textWidth + 4);
+  });
+});
+
 function toTypeBoxLike(types: readonly PositionedType[]): readonly TypeBox[] {
   return types.map(
     (t): TypeBox => ({

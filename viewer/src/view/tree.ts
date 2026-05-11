@@ -260,6 +260,9 @@ export interface TreeRenderOptions {
     kind: 'method' | 'function',
     functionFullPath: string,
   ) => void;
+  /** Click on a function/method row's `(..)` glyph → toggle whether that
+   *  function's signature is expanded into indented argument rows. */
+  readonly onToggleSignature: (functionFullPath: string) => void;
   /** Set of "typePath::fieldName" keys currently selected. */
   readonly selectedFields: ReadonlySet<string>;
   readonly incomingCallTargetsShown: ReadonlySet<string>;
@@ -1291,7 +1294,15 @@ function renderFieldsForType(
 
   const sel = typeNode
     .selectAll<SVGGElement, Layout['types'][number]['fields'][number]>('g.field-row-g')
-    .data(fields, (f) => `${f.kind}:${f.name}`);
+    .data(fields, (f) =>
+      // Signature_arg rows belong to a specific function and must include
+      // the parent function path so two functions sharing a param name
+      // (or both having a `->` return row) produce distinct DOM nodes.
+      // Other row kinds are unique per type by (kind, name) already.
+      f.kind === 'signature_arg' && f.functionFullPath !== null
+        ? `${f.kind}:${f.functionFullPath}:${f.name}`
+        : `${f.kind}:${f.name}`,
+    );
 
   // Fast collapse -> expand can re-bind rows that still have a pending
   // named exit transition from the collapse render. Cancel that removal
@@ -1346,7 +1357,16 @@ function renderFieldsForType(
     .attr('font-size', FONT_SIZE_FIELD)
     .attr('fill', COLOR_FIELD_TY)
     .style('opacity', 0)
-    .style('pointer-events', 'none');
+    .style('pointer-events', 'none')
+    // Stamp the correct initial x/y at enter time. Non-signature rows hide
+    // the type via opacity 0 (only fades in on hover), so any default x/y
+    // is invisible anyway — but signature_arg rows show it immediately,
+    // and without an initial position they animate diagonally from (0,0)
+    // to their final spot, looking like a "drop from above".
+    .attr('x', (f) =>
+      f.kind === 'signature_arg' ? f.x - d.x + f.textWidth + 4 : f.arrowSourceX - d.x,
+    )
+    .attr('y', (f) => f.y - groupTopY);
 
   enter.transition('enter').duration(ANIM_MS).style('opacity', 1);
 
@@ -1356,6 +1376,15 @@ function renderFieldsForType(
     const fg = select(this);
     const localX = f.x - d.x;
     const localY = f.y - groupTopY;
+
+    // Signature argument rows are pure detail with no interactions: just a
+    // black name + grey type, always visible. Bail out early so the rest of
+    // the row pipeline (selection, chevron, markers, hover) never wires up.
+    if (f.kind === 'signature_arg') {
+      renderSignatureArgRow(fg, f, localX, localY);
+      return;
+    }
+
     const isBorrow =
       f.ownership === 'borrow_immut' ||
       f.ownership === 'borrow_mut' ||
@@ -1459,6 +1488,37 @@ function renderFieldsForType(
       incomingMarker.remove();
     }
 
+    // Signature toggle: callable rows show a small `(..)` glyph right after
+    // the function name. Click toggles the expansion. Geometry already
+    // reserved room between the name and arrowSourceX for this glyph.
+    let sigToggle = fg.select<SVGTextElement>('text.signature-toggle');
+    if (isCallable && f.functionFullPath !== null) {
+      if (sigToggle.empty()) {
+        sigToggle = fg
+          .insert('text', 'text.field-ty')
+          .attr('class', 'signature-toggle')
+          .attr('dy', '0.32em')
+          .attr('font-size', INCOMING_CALL_MARKER_FONT_SIZE)
+          .attr('font-weight', 600)
+          .attr('fill', COLOR_CHEVRON)
+          .style('cursor', 'pointer')
+          .text('(..)');
+      }
+      const functionFullPath = f.functionFullPath;
+      sigToggle.on('click', (event: MouseEvent) => {
+        event.stopPropagation();
+        opts.onToggleSignature(functionFullPath);
+      });
+      // 4px gap matches SIGNATURE_TOGGLE_GAP reserved in geometry.
+      sigToggle
+        .transition('move')
+        .duration(ANIM_MS)
+        .attr('x', localX + f.textWidth + 4)
+        .attr('y', localY);
+    } else if (!sigToggle.empty()) {
+      sigToggle.remove();
+    }
+
     const tyText = fg
       .select<SVGTextElement>('text.field-ty')
       .attr('x', f.arrowSourceX - d.x)
@@ -1499,6 +1559,11 @@ function renderFieldsForType(
       if (isCallable && layoutDebugEnabled()) {
         showCallableDebugPanel(layout, d, f, rowKind, text.node());
       }
+      // Callable rows no longer flash their signature on hover — the
+      // signature is now an explicit click affordance via the (..) toggle.
+      // Field rows keep the hover-type-hint because their type is short
+      // and there is no equivalent click affordance.
+      if (isCallable) return;
       if (node?.__sfTyTimer !== undefined) {
         clearTimeout(node.__sfTyTimer);
         node.__sfTyTimer = undefined;
@@ -1513,6 +1578,7 @@ function renderFieldsForType(
         applyArrowHighlight(zoomLayer, opts.selectedArrows);
       }
       if (isCallable) hideCallableDebugPanel();
+      if (isCallable) return;
       if (!node) return;
       if (node.__sfTyTimer !== undefined) clearTimeout(node.__sfTyTimer);
       node.__sfTyTimer = window.setTimeout(() => {
@@ -1526,6 +1592,46 @@ function renderFieldsForType(
     // background pill competing with the member's drift color.
     fg.select<SVGRectElement>('rect.focus-bg').remove();
   });
+}
+
+function renderSignatureArgRow(
+  fg: Selection<SVGGElement, unknown, null, undefined>,
+  row: { name: string; tyText: string; textWidth: number },
+  localX: number,
+  localY: number,
+): void {
+  // '->' is the return-type prefix; render it in the same grey as the type
+  // so the row reads as "type only". All other names (params + self) are
+  // identifier-like and render in the normal row name color.
+  const isReturn = row.name === '->';
+  const text = fg
+    .select<SVGTextElement>('text.field-row')
+    .attr('font-style', 'normal')
+    .attr('font-weight', 400)
+    .attr('fill', isReturn ? COLOR_FIELD_TY : COLOR_FIELD_NAME)
+    .text(row.name);
+  text.on('click', null).on('mouseenter', null).on('mouseleave', null);
+  text.transition('move').duration(ANIM_MS).attr('x', localX).attr('y', localY);
+
+  const ty = fg.select<SVGTextElement>('text.field-ty');
+  ty.text(row.tyText)
+    .attr('fill', COLOR_FIELD_TY)
+    .style('opacity', row.tyText === '' ? 0 : 1)
+    .style('pointer-events', 'none');
+  ty.transition('move')
+    .duration(ANIM_MS)
+    .attr('x', localX + row.textWidth + 4)
+    .attr('y', localY);
+
+  // Keep the ty background hidden — signature rows render plain text on the
+  // type-box background, not a hover pill.
+  fg.select<SVGRectElement>('rect.field-ty-bg').style('opacity', 0);
+
+  // Sweep up any inline glyphs left over from a previous render where this
+  // DOM node carried a callable or field row instead of a signature arg.
+  fg.select<SVGTextElement>('text.method-bucket-chevron').remove();
+  fg.select<SVGTextElement>('text.incoming-call-marker').remove();
+  fg.select<SVGTextElement>('text.signature-toggle').remove();
 }
 
 function hoveredTextRight(text: Selection<SVGTextElement, unknown, null, undefined>): number {
