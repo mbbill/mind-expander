@@ -39,6 +39,15 @@ export const FIELD_LABEL_INSET = gridCols(5);
 export const FUNCTION_GROUP_LABEL_INSET = gridCols(3);
 export const METHOD_INDENT = gridCols(2);
 export const INCOMING_CALL_MARKER_OFFSET = 14;
+// Drift dot — a small filled circle to the left of a field row name flagging
+// non-canonical ownership placement. Shared between the renderer (where the
+// circle is painted) and the geometry (where the row's leftPortX accounts
+// for the dot so an outgoing arrow that exits left doesn't draw through it).
+export const DRIFT_DOT_RADIUS = 2.5;
+export const DRIFT_DOT_OFFSET = 7; // center distance from row.x going left
+// Gap between the dot's left edge and the row's left-side arrow port, so
+// arrows that exit left clear the dot completely instead of kissing it.
+export const DRIFT_DOT_PORT_GAP = 2;
 export const HIT_MIN_W = gridCols(5);
 // Right-side breathing room added to the module label hit-rect / chip
 // background so the chip doesn't end flush against the leaf glyphs.

@@ -67,6 +67,34 @@ describe('routeArrows obstacle routing', () => {
     expect(arrow?.waypoints.at(-1)).toEqual({ x: 0, y: 40 });
   });
 
+  it('honors leftPortX so a drift-dotted row exits past its dot, not at the text edge', () => {
+    // A drifted field row renders a small dot to the LEFT of the row name.
+    // The row's leftPortX sits past the dot so the outgoing arrow clears
+    // it. Routing must use leftPortX (not row.x) for the left-side start.
+    const driftedLeftPortX = 150;
+    const source = typeBox('Source', { x: 120, y: 40, width: 80 }, [
+      row('target', {
+        y: 40,
+        arrowSourceX: 180,
+        target: 'Target',
+        leftPortX: driftedLeftPortX,
+      }),
+    ]);
+    const target = typeBox('Target', { x: 0, y: 40, width: 40 });
+    const routing = routeArrows(
+      geometry([target, source]),
+      obstacleMap([
+        obstacle('Source', { x: 120, y: 28, width: 80, height: 24 }),
+        obstacle('Target', { x: 0, y: 28, width: 40, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    const arrow = routing.arrows[0];
+    expect(arrow?.waypoints[0]?.x).toBe(driftedLeftPortX);
+  });
+
   it('uses the source exit facing the target', () => {
     const source = typeBox('Source', { x: 120, y: 40, width: 40 }, [
       row('right_target', { y: 40, arrowSourceX: 128, target: 'Target' }),
@@ -629,15 +657,22 @@ function typeBox(
 
 function row(
   name: string,
-  input: { readonly y: number; readonly arrowSourceX: number; readonly target: string },
+  input: {
+    readonly y: number;
+    readonly arrowSourceX: number;
+    readonly target: string;
+    readonly leftPortX?: number;
+  },
 ): PositionedRow {
+  const x = input.arrowSourceX - 16;
   return {
     name,
     tyText: '',
     ownership: 'owned',
-    x: input.arrowSourceX - 16,
+    x,
     y: input.y,
     textWidth: 12,
+    leftPortX: input.leftPortX ?? x,
     arrowSourceX: input.arrowSourceX,
     targets: [input.target],
     callTargets: [],
@@ -672,6 +707,7 @@ function callRow(
     x: input.arrowSourceX - 16,
     y: input.y,
     textWidth: 12,
+    leftPortX: input.arrowSourceX - 16,
     arrowSourceX: input.arrowSourceX,
     targets: [],
     callTargets: [
@@ -734,6 +770,7 @@ function callableTargetRow(
     x: input.x,
     y: input.y,
     textWidth: 12,
+    leftPortX: input.x,
     arrowSourceX: input.x + 24,
     targets: [],
     callTargets: [],

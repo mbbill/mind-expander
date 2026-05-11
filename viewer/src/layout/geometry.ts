@@ -6,6 +6,9 @@
 import type { FunctionCallIndex, FunctionCallRef, FunctionRowRef } from '../analysis/calls.ts';
 import type { DriftClass, DriftIndex } from '../analysis/drift.ts';
 import {
+  DRIFT_DOT_OFFSET,
+  DRIFT_DOT_PORT_GAP,
+  DRIFT_DOT_RADIUS,
   FIELD_LABEL_INSET,
   FIELD_ROW_H,
   FUNCTION_GROUP_LABEL_INSET,
@@ -32,6 +35,7 @@ import {
   type LayoutDebugGrid,
   type LayoutDebugLabel,
   type LayoutInputs,
+  callArrowKey,
   rowArrowKey,
 } from '../analysis/layout_model.ts';
 import {
@@ -137,6 +141,7 @@ export function computeGeometry(inputs: LayoutInputs, options: GeometryOptions =
     inputs.drift,
     inputs.methodsHidden ?? false,
     inputs.fieldArrowsShown,
+    inputs.callArrowsShown,
     inputs.calls,
     placementPlan,
     measure,
@@ -249,6 +254,7 @@ function collectVisibleModuleBands(
   drift: DriftIndex,
   methodsHidden: boolean,
   fieldArrowsShown: ReadonlySet<string> | undefined,
+  callArrowsShown: ReadonlySet<string> | undefined,
   calls: FunctionCallIndex | undefined,
   placementPlan: PlacementLayoutPlan,
   measure: (s: string) => number,
@@ -274,8 +280,10 @@ function collectVisibleModuleBands(
       drift,
       methodsHidden,
       fieldArrowsShown,
+      callArrowsShown,
       calls,
       measure,
+      measureBold,
     );
   }
 
@@ -315,6 +323,7 @@ function collectVisibleModuleBands(
           drift,
           methodsHidden,
           fieldArrowsShown,
+          callArrowsShown,
           calls,
           placementPlan,
           measure,
@@ -498,8 +507,10 @@ function buildSemanticBandItems(
   drift: DriftIndex,
   methodsHidden: boolean,
   fieldArrowsShown: ReadonlySet<string> | undefined,
+  callArrowsShown: ReadonlySet<string> | undefined,
   calls: FunctionCallIndex | undefined,
   measure: (s: string) => number,
+  measureBold: (s: string) => number,
 ): readonly SemanticBandItem[] {
   return types.map((node): SemanticBandItem => {
     const expanded = state.isExpanded(node.id);
@@ -511,8 +522,10 @@ function buildSemanticBandItems(
           drift,
           methodsHidden,
           fieldArrowsShown,
+          callArrowsShown,
           calls,
           measure,
+          measureBold,
         )
       : [];
     const hasHeaderArrow = hasDetailRows(node);
@@ -602,11 +615,10 @@ interface LocalRowSpec {
   readonly ownership: Ownership;
   readonly labelInset: number;
   readonly textWidth: number;
-  /** Reserve in pixels for inline glyphs the renderer paints between the
-   *  row name and the arrow exit point (e.g. the `(..)` signature toggle
-   *  on callable rows). `arrowSourceX` is computed as
-   *  `x + textWidth + 4 + (inlineSuffixWidth ?? 0)` so outgoing arrows
-   *  start past the inline glyph rather than slicing through it. */
+  /** Reserve in pixels for the `→` locality glyph painted after callable
+   *  row names. `arrowSourceX` is computed as
+   *  `x + textWidth + 4 + (inlineSuffixWidth ?? 0)` so outgoing call arrows
+   *  start past the glyph rather than slicing through it. */
   readonly inlineSuffixWidth?: number;
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];
@@ -621,6 +633,10 @@ interface LocalRowSpec {
   readonly kind: 'field' | 'method_bucket' | 'method' | 'function' | 'signature_arg';
   readonly bucketId: string | null;
   readonly memberDriftClass: DriftClass | null;
+  /** Self-receiver shape, propagated from FnFacts for callable rows only
+   *  so the renderer can color the name by ownership flavor without
+   *  re-parsing the formatted signature. */
+  readonly selfKind?: 'none' | 'by_value' | 'ref' | 'ref_mut';
 }
 
 function buildRowSpecs(
@@ -630,8 +646,10 @@ function buildRowSpecs(
   drift: DriftIndex,
   methodsHidden: boolean,
   fieldArrowsShown: ReadonlySet<string> | undefined,
+  callArrowsShown: ReadonlySet<string> | undefined,
   calls: FunctionCallIndex | undefined,
   measure: (s: string) => number,
+  measureBold: (s: string) => number,
 ): LocalRowSpec[] {
   const rows: LocalRowSpec[] = [];
   if (t.typeKind === 'function_group') {
@@ -641,9 +659,12 @@ function buildRowSpecs(
         functionFullPath: f.fullPath,
         kind: 'function',
         labelInset: FUNCTION_GROUP_LABEL_INSET,
+        parentTypeId: t.id,
         state,
+        callArrowsShown,
         calls,
         measure,
+        measureBold,
       });
     }
     return rows;
@@ -713,9 +734,12 @@ function buildRowSpecs(
         functionFullPath: `${t.fullPath}::${fn.name}`,
         kind: 'method',
         labelInset: FIELD_LABEL_INSET + METHOD_INDENT,
+        parentTypeId: t.id,
         state,
+        callArrowsShown,
         calls,
         measure,
+        measureBold,
       });
     }
   }
@@ -729,9 +753,19 @@ function pushCallableRow(
     readonly functionFullPath: string;
     readonly kind: 'method' | 'function';
     readonly labelInset: number;
+    /** TypeNode id of the parent type / function group. Used to derive the
+     *  callArrowKey for selection-state lookup. */
+    readonly parentTypeId: string;
     readonly state: ViewState;
+    readonly callArrowsShown: ReadonlySet<string> | undefined;
     readonly calls: FunctionCallIndex | undefined;
     readonly measure: (s: string) => number;
+    /** Bold measurer used when this row is currently selected — the
+     *  renderer paints selected names bold, and the `→` glyph sits at
+     *  `x + textWidth + 4`. Switching the measurer with selection keeps
+     *  unselected rows tight while ensuring a selected bold name never
+     *  spills past the glyph. */
+    readonly measureBold: (s: string) => number;
   },
 ): void {
   // Module-level functions and type-member functions are both executable
@@ -743,16 +777,27 @@ function pushCallableRow(
   const callsOutsideModule = hasExternalCalls || hasUnresolvedCalls;
   const callTargets = args.calls?.callTargetsByFunction.get(args.functionFullPath) ?? [];
   const incomingCallRefs = args.calls?.incomingCallsByFunction.get(args.functionFullPath) ?? [];
+  const localityGlyphW = args.measure(LOCALITY_GLYPH);
+  // Bold measurement only when the row is selected — selection drives
+  // the bold render. Unselected rows use the regular measurer so the `→`
+  // glyph sits tight against the row name. Toggling selection rebuilds
+  // the layout, so the glyph slides smoothly via the renderer's `move`
+  // transition rather than jumping.
+  const isSelected =
+    args.callArrowsShown?.has(callArrowKey(args.parentTypeId, args.fn.name, args.kind)) ?? false;
+  const nameMeasure = isSelected ? args.measureBold : args.measure;
   rows.push({
     name: args.fn.name,
     tyText: formatCallableSignature(args.fn),
     ownership: 'primitive',
     labelInset: args.labelInset,
-    textWidth: args.measure(args.fn.name),
-    // Reserve room for the `(..)` signature toggle so its glyph sits between
-    // the function name and the arrow exit point. Without the reserve,
-    // outgoing call arrows would draw through `(..)`.
-    inlineSuffixWidth: args.measure(SIGNATURE_TOGGLE_GLYPH) + SIGNATURE_TOGGLE_GAP,
+    textWidth: nameMeasure(args.fn.name),
+    // Reserve room for the `→` locality glyph (rendered after the row
+    // name) so outgoing call arrows start past it. Reserved unconditionally
+    // even when the glyph isn't currently drawn — a row can gain/lose
+    // outgoing calls across redraws, and arrowSourceX must stay stable for
+    // the same row identity.
+    inlineSuffixWidth: localityGlyphW + LOCALITY_GAP,
     targets: [],
     callTargets,
     callRefs,
@@ -766,6 +811,7 @@ function pushCallableRow(
     kind: args.kind,
     bucketId: null,
     memberDriftClass: null,
+    ...(args.fn.self_kind !== undefined ? { selfKind: args.fn.self_kind } : {}),
   });
 
   // Signature expansion: when the user clicks the (..) glyph next to a
@@ -778,8 +824,22 @@ function pushCallableRow(
 }
 
 const SIGNATURE_ARG_INDENT = METHOD_INDENT;
-export const SIGNATURE_TOGGLE_GLYPH = '(..)';
-const SIGNATURE_TOGGLE_GAP = 4;
+// Gap between the row name and the first inline element to its right —
+// either the locality `→` glyph on callable rows or the arrow exit
+// (arrowSourceX) on other rows. Kept small so the glyph hugs the name
+// without crowding the letterforms.
+const ROW_NAME_TRAILING_GAP = 2;
+// Locality indicator glyph: a small `→` painted after the callable row
+// name. Clicking it toggles arrow-selection for that callable; clicking
+// the name itself toggles the signature expansion. The glyph encodes
+// local/external/unresolved via color. Space is reserved unconditionally
+// so call arrows from a row land at the same x relative to its name
+// regardless of whether the glyph is currently drawn (rows can gain/lose
+// outgoing calls across redraws).
+export const LOCALITY_GLYPH = '→';
+// Gap between the glyph and the arrow exit point — same value as the
+// name trailing gap so the glyph sits symmetrically between name and exit.
+const LOCALITY_GAP = 2;
 
 export function signatureExpansionId(functionFullPath: string): string {
   return `sig::${functionFullPath}`;
@@ -865,6 +925,18 @@ function isCanonicalMemberDrift(driftClass: DriftClass | null): boolean {
   return driftClass === 'at_lca' || driftClass === 'within_budget';
 }
 
+// Field rows with non-canonical drift render a small dot to the left of
+// the name. Geometry needs to know this to push the row's left-side
+// arrow port past the dot. Other row kinds (callables, buckets, signature
+// args) never carry a dot.
+function rowHasDriftDot(spec: LocalRowSpec): boolean {
+  return (
+    spec.kind === 'field' &&
+    spec.memberDriftClass !== null &&
+    !isCanonicalMemberDrift(spec.memberDriftClass)
+  );
+}
+
 function driftSeverity(driftClass: DriftClass): number {
   switch (driftClass) {
     case 'drift_above':
@@ -887,6 +959,19 @@ function positionRows(
   let rowY = headerY + ROW_H / 2 + FIELD_ROW_H / 2;
   for (const spec of specs) {
     const x = typeX + spec.labelInset;
+    // The `→` locality glyph sits immediately after the row name on
+    // callable rows. Only callable specs reserve `inlineSuffixWidth`, so
+    // that's a sufficient signal to compute its position.
+    const localityGlyphX =
+      spec.inlineSuffixWidth !== undefined
+        ? x + spec.textWidth + ROW_NAME_TRAILING_GAP
+        : undefined;
+    // Field rows with non-canonical drift carry a small dot to the left
+    // of the name; the row's left-side arrow port has to start past the
+    // dot or a left-going outgoing arrow draws through it.
+    const leftPortX = rowHasDriftDot(spec)
+      ? x - (DRIFT_DOT_OFFSET + DRIFT_DOT_RADIUS + DRIFT_DOT_PORT_GAP)
+      : x;
     rows.push({
       name: spec.name,
       tyText: spec.tyText,
@@ -894,7 +979,10 @@ function positionRows(
       x,
       y: rowY,
       textWidth: spec.textWidth,
-      arrowSourceX: x + spec.textWidth + 4 + (spec.inlineSuffixWidth ?? 0),
+      leftPortX,
+      ...(localityGlyphX !== undefined ? { localityGlyphX } : {}),
+      ...(spec.selfKind !== undefined ? { selfKind: spec.selfKind } : {}),
+      arrowSourceX: x + spec.textWidth + ROW_NAME_TRAILING_GAP + (spec.inlineSuffixWidth ?? 0),
       targets: spec.targets,
       callTargets: spec.callTargets,
       callRefs: spec.callRefs,

@@ -76,6 +76,22 @@ export interface PositionedRow {
    *  The renderer uses this to position inline affordances right after the
    *  name. `arrowSourceX` already accounts for any reserved suffix. */
   readonly textWidth: number;
+  /** Data-space x where an arrow exits this row going LEFT. For most rows
+   *  this is `x` (the row name's left edge). For field rows that carry a
+   *  drift dot (a small circle painted to the left of the name), this is
+   *  pushed further left so the arrow clears the dot instead of slicing
+   *  through it. */
+  readonly leftPortX: number;
+  /** Data-space x of the locality `→` glyph rendered after `(..)` on
+   *  callable rows. Computed by geometry so the renderer doesn't need its
+   *  own font measurer to match the layout's reserved space. Undefined on
+   *  non-callable rows. */
+  readonly localityGlyphX?: number;
+  /** Function self receiver shape, propagated from FnFacts so the
+   *  renderer can color a callable name by ownership flavor without
+   *  parsing the formatted signature text. Undefined on non-callable rows
+   *  and on free / associated fns (no self). */
+  readonly selfKind?: 'none' | 'by_value' | 'ref' | 'ref_mut';
   readonly arrowSourceX: number;
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];

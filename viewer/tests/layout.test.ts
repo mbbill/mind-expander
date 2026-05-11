@@ -1015,17 +1015,108 @@ describe('buildLayout — signature expansion', () => {
     expect(sigRows.map((r) => r.functionFullPath)).toEqual(['c::m::default', 'c::m::new']);
   });
 
-  it('reserves room for the (..) toggle so callable arrowSourceX is past the row name', () => {
+  it('reserves room for the `→` locality glyph so callable arrowSourceX is past the row name', () => {
     const c = moduleWithFn('parse', [], {});
     const layout = buildLayout(buildInputs(c, [], ['c', 'c::m', fnGroupId]));
     const fn = layout.types
       .find((t) => t.id === fnGroupId)
       ?.fields.find((f) => f.kind === 'function');
     if (!fn) throw new Error('expected function row');
-    // arrowSourceX sits past the row name PLUS the reserved (..) glyph,
+    // arrowSourceX sits past the row name PLUS the reserved `→` glyph,
     // not just past the name. Without the reserve, outgoing call arrows
-    // would draw straight through the (..) glyph.
-    expect(fn.arrowSourceX).toBeGreaterThan(fn.x + fn.textWidth + 4);
+    // would draw straight through the locality glyph.
+    // Glyph sits a small fixed gap after the row name; arrowSourceX is
+    // past the glyph plus its trailing gap. We assert the structural
+    // relationship rather than the exact pixel constant — the constant
+    // is allowed to shrink/grow without breaking the test.
+    expect(fn.arrowSourceX).toBeGreaterThan(fn.x + fn.textWidth);
+    expect(fn.localityGlyphX).toBeGreaterThan(fn.x + fn.textWidth);
+    expect(fn.localityGlyphX).toBeLessThan(fn.arrowSourceX);
+  });
+
+  it('uses bold measurement for callable textWidth only when the row is selected', () => {
+    // Selected callables render bold; bold measurement is only correct
+    // for those rows. Unselected callables stay tight (regular measure)
+    // so the `→` glyph hugs the row name. Selection toggle rebuilds the
+    // layout, so the geometry sees current selection via callArrowsShown.
+    const c = moduleWithFn('parse', [], {});
+    const base = buildInputs(c, [], ['c', 'c::m', fnGroupId]);
+    const measure = (s: string): number => s.length * 7;
+    const measureBold = (s: string): number => s.length * 70;
+
+    const unselected = buildLayout({
+      ...base,
+      measureText: measure,
+      measureBoldText: measureBold,
+    });
+    const unselectedRow = unselected.types
+      .find((t) => t.id === fnGroupId)
+      ?.fields.find((f) => f.kind === 'function');
+    if (!unselectedRow) throw new Error('expected function row');
+    expect(unselectedRow.textWidth).toBe(measure('parse'));
+
+    const selected = buildLayout({
+      ...base,
+      measureText: measure,
+      measureBoldText: measureBold,
+      callArrowsShown: new Set([callArrowKey(fnGroupId, 'parse', 'function')]),
+    });
+    const selectedRow = selected.types
+      .find((t) => t.id === fnGroupId)
+      ?.fields.find((f) => f.kind === 'function');
+    if (!selectedRow) throw new Error('expected function row');
+    expect(selectedRow.textWidth).toBe(measureBold('parse'));
+  });
+});
+
+describe('buildLayout — leftPortX accounts for drift dot', () => {
+  function makeDriftedField(): import('../src/data/schema.ts').CrateFacts {
+    return crateFacts('c', [
+      mod('a::b::c', [
+        ty('c', 'a::b::c', 'Source', [{ name: 'target_field', ty_text: 'crate::Far' }]),
+      ]),
+      mod('', [ty('c', '', 'Far')]),
+    ]);
+  }
+
+  it('canonical field rows have leftPortX equal to row x', () => {
+    const c = crateFacts('c', [
+      mod('m', [ty('c', 'm', 'S', [{ name: 'f', ty_text: 'Target' }]), ty('c', 'm', 'Target')]),
+    ]);
+    const layout = buildLayout(
+      buildInputs(c, [edge('c::m::S', 'c::m::Target', 'field f')], [
+        'c',
+        'c::m',
+        'c::m::S',
+      ]),
+    );
+    const f = layout.types
+      .find((t) => t.id === 'c::m::S')
+      ?.fields.find((row) => row.name === 'f');
+    if (!f) throw new Error('expected field row');
+    expect(f.leftPortX).toBe(f.x);
+  });
+
+  it('field rows with drift_above push leftPortX left of row x to clear the dot', () => {
+    // Source is deep (c::a::b::c::Source); target is at the crate root
+    // (c::Far). Ownership depth says the source field's target should be
+    // deeper than the source — so the field is drift_above and renders a
+    // red dot. The row's leftPortX must sit past the dot.
+    const layout = buildLayout(
+      buildInputs(
+        makeDriftedField(),
+        [edge('c::a::b::c::Source', 'c::Far', 'field target_field')],
+        ['c', 'c::a', 'c::a::b', 'c::a::b::c', 'c::a::b::c::Source'],
+      ),
+    );
+    const f = layout.types
+      .find((t) => t.id === 'c::a::b::c::Source')
+      ?.fields.find((row) => row.name === 'target_field');
+    if (!f) throw new Error('expected field row');
+    expect(f.memberDriftClass).not.toBeNull();
+    expect(f.memberDriftClass).not.toBe('at_lca');
+    expect(f.memberDriftClass).not.toBe('within_budget');
+    expect(f.leftPortX).toBeLessThan(f.x);
   });
 });
 

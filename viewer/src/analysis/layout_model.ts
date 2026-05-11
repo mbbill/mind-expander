@@ -54,6 +54,17 @@ export interface FieldRow {
   /** Rendered width of `name` only. Renderers place inline affordances
    *  (e.g. the (..) signature toggle on callable rows) right after this. */
   readonly textWidth: number;
+  /** Data-space x where an arrow exits this row going LEFT. For most rows
+   *  equal to `x`; for field rows with a drift dot it sits past the dot's
+   *  left edge so routed arrows clear the dot. */
+  readonly leftPortX: number;
+  /** Data-space x of the `→` locality glyph rendered after `(..)` on
+   *  callable rows. Undefined for non-callable rows. */
+  readonly localityGlyphX?: number;
+  /** Function self receiver shape (propagated from FnFacts) so renderers
+   *  can pick a callable's name color from ownership flavor. Undefined
+   *  for non-callable rows. */
+  readonly selfKind?: 'none' | 'by_value' | 'ref' | 'ref_mut';
   readonly arrowSourceX: number;
   readonly targets: readonly string[];
   readonly callTargets: readonly FunctionRowRef[];

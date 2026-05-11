@@ -105,7 +105,11 @@ function collectRouteRequests(
           if (target === undefined || targetBounds === undefined) continue;
           if (target.depth < 0) continue;
           const end = { x: targetBounds.left, y: target.y };
-          const sourcePort = sourceRowPort(row.x, row.y, row.arrowSourceX, end.x);
+          // The row's leftPortX accounts for any visual ornaments to the
+          // left of the row text (drift dots in particular) so an outgoing
+          // arrow that exits left clears the ornament instead of slicing
+          // through it. For ordinary rows this equals row.x.
+          const sourcePort = sourceRowPort(row.leftPortX, row.y, row.arrowSourceX, end.x);
 
           out.push({
             fromTypeId: source.node.id,

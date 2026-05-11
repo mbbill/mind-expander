@@ -64,6 +64,26 @@ describe('borrowFlavor', () => {
     expect(borrowFlavor('&mut self')).toBe('mut');
   });
 
+  describe('raw pointers are classified as raw', () => {
+    it.each([
+      ['*const T', 'raw'],
+      ['*mut T', 'raw'],
+      ['*const u8', 'raw'],
+      ['*mut Module', 'raw'],
+      ['*const [u8]', 'raw'],
+    ] as const)('%s → %s', (ty, expected) => {
+      expect(borrowFlavor(ty)).toBe(expected);
+    });
+  });
+
+  it('does not confuse type names with the const/mut keywords inside raw pointers', () => {
+    // Defensive: `*constant` and `*mutually` aren't valid Rust pointer
+    // syntax, but the keyword check must require a word boundary so
+    // hypothetical inputs don't slip through as 'raw'.
+    expect(borrowFlavor('*constant')).toBe('move');
+    expect(borrowFlavor('*mutually')).toBe('move');
+  });
+
   it('tolerates leading whitespace from the extractor', () => {
     expect(borrowFlavor('  &T')).toBe('shared');
     expect(borrowFlavor('  &mut T')).toBe('mut');

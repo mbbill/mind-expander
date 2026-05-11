@@ -17,6 +17,8 @@ import { type BorrowFlavor, borrowFlavor } from '../analysis/borrow_flavor.ts';
 import type { DriftClass } from '../analysis/drift.ts';
 import {
   BASE_FONT_SIZE,
+  DRIFT_DOT_OFFSET,
+  DRIFT_DOT_RADIUS,
   HIT_MIN_W,
   INCOMING_CALL_MARKER_OFFSET,
   LAYOUT_GRID_CELL_W,
@@ -29,6 +31,7 @@ import {
   splitModuleDisplayLabel,
 } from '../analysis/layout_metrics.ts';
 import { type Layout, ROW_H } from '../analysis/layout_model.ts';
+import { LOCALITY_GLYPH } from '../layout/geometry.ts';
 import { colorForVisibility } from './encoding.ts';
 import { ANIM_MS, type ZoomLayers } from './zoom.ts';
 
@@ -108,6 +111,7 @@ const COLOR_FIELD_TY = '#94a3b8'; // slate-400, grey for the on-hover type hint
 const COLOR_BORROW_MOVE = COLOR_FIELD_TY; // neutral grey: the common baseline
 const COLOR_BORROW_SHARED = '#c2410c'; // orange-700: temporary read-only handoff
 const COLOR_BORROW_MUT = '#7c3aed'; // violet-600: exclusive write borrow
+const COLOR_BORROW_RAW = '#dc2626'; // red-600: unsafe raw pointer
 
 function borrowFlavorColor(flavor: BorrowFlavor): string {
   switch (flavor) {
@@ -117,8 +121,60 @@ function borrowFlavorColor(flavor: BorrowFlavor): string {
       return COLOR_BORROW_SHARED;
     case 'mut':
       return COLOR_BORROW_MUT;
+    case 'raw':
+      return COLOR_BORROW_RAW;
   }
 }
+
+// Callable rows expose the receiver's ownership flavor via the name color
+// — no need to expand the signature to tell `&self` from `&mut self`.
+// Free / associated fns and consuming `self` methods fall through to
+// 'move' (neutral grey), the common-case baseline.
+function selfKindFlavor(
+  selfKind: FieldRowLike['selfKind'] | undefined,
+): BorrowFlavor {
+  switch (selfKind) {
+    case 'ref':
+      return 'shared';
+    case 'ref_mut':
+      return 'mut';
+    case 'by_value':
+    case 'none':
+    case undefined:
+      return 'move';
+  }
+}
+
+// Locality indicator color for the `→` glyph after `(..)`. Blue for
+// cross-module, orange for unresolved, grey for local-only — the same
+// three buckets the call-arrow stroke uses, so a row's `→` and its
+// outgoing arrows agree on color.
+function localityGlyphColor(row: {
+  readonly hasExternalCalls?: boolean;
+  readonly hasUnresolvedCalls?: boolean;
+}): string {
+  if (row.hasExternalCalls === true) return '#2563eb';
+  if (row.hasUnresolvedCalls === true) return '#f97316';
+  return COLOR_FIELD_TY;
+}
+
+// Drift dot color for field rows. Canonical placements (at_lca,
+// within_budget) get no dot — the absence is the signal "this row is
+// where structural ownership expected it". Drifted placements get a
+// small colored circle to the left of the field name.
+function driftDotColor(driftClass: DriftClass | null | undefined): string | null {
+  switch (driftClass) {
+    case 'drift_below':
+      return COLOR_MEMBER_DRIFT_BELOW;
+    case 'drift_above':
+    case 'drift_sideways':
+      return COLOR_ARROW_HARD;
+    default:
+      return null;
+  }
+}
+
+type FieldRowLike = Layout['types'][number]['fields'][number];
 const TY_HIDE_DELAY = 0; // ms — type-hint hides immediately on mouse-out (only the 200ms fade-out transition still plays)
 const TY_TEXT_GAP = 4;
 const TY_BG_PAD_X = 4;
@@ -135,16 +191,15 @@ const COLOR_ARROW_CANONICAL = '#94a3b8'; // slate-400: at_lca / within_budget �
 // arrowhead can pick it up via context-stroke without per-state JS.
 const COLOR_ARROW_SOFT = '#f59e0b'; // amber: drift_below
 const COLOR_ARROW_HARD = '#ef4444'; // red:   drift_above / drift_sideways
-const COLOR_MEMBER_CANONICAL = '#3b82f6'; // blue-500: canonical ownership member
-const COLOR_MEMBER_DRIFT_BELOW = '#d97706'; // amber-600: deeper label for drift_below
+const COLOR_MEMBER_DRIFT_BELOW = '#d97706'; // amber-600: drift_below dot color
 // Re-exports get their own dedicated color and dashed style so they read
 // as a separate edge category — they're not ownership, they're naming.
 // The violet stroke alone is enough identity, so re-exports can afford
 // the subtler short-symmetric pattern.
 const COLOR_ARROW_REEXPORT = '#a855f7'; // violet-500
-// Blue for cross-module call arrows. Matches the row-name color used by
-// callableRowColor() for rows that have any external outgoing call, so a
-// row labeled in blue draws blue arrows to its callees in other modules.
+// Blue for cross-module call arrows. Matches the locality-glyph color
+// for rows that have any external outgoing call, so a row's `→` indicator
+// and its outgoing arrows render in the same blue.
 const COLOR_CALL_EXTERNAL = '#2563eb';
 const REEXPORT_DASH = '2 2';
 // Method-reference arrows show up far more often than re-exports and
@@ -164,10 +219,10 @@ const ARROW_MARKER_IDS: Readonly<Record<DriftClass, string>> = {
 
 function arrowColor(a: Layout['arrows'][number]): string {
   if (a.kind === 'reexport') return COLOR_ARROW_REEXPORT;
-  // Call arrows are colored by locality, matching the row-name color
-  // policy in callableRowColor: cross-module calls draw attention in blue,
-  // same-module calls recede into the canonical grey background. Locality
-  // is set at routing time so the renderer doesn't recompute it.
+  // Call arrows are colored by locality, matching the locality-glyph
+  // color shown on the source row: cross-module calls draw attention in
+  // blue, same-module calls recede into the canonical grey background.
+  // Locality is set at routing time so the renderer doesn't recompute it.
   if (a.kind === 'call') {
     return a.locality === 'external' ? COLOR_CALL_EXTERNAL : COLOR_ARROW_CANONICAL;
   }
@@ -175,60 +230,6 @@ function arrowColor(a: Layout['arrows'][number]): string {
   if (c === 'at_lca' || c === 'within_budget') return COLOR_ARROW_CANONICAL;
   if (c === 'drift_below') return COLOR_ARROW_SOFT;
   return COLOR_ARROW_HARD;
-}
-
-export function memberRowColorForArrows(
-  arrows: readonly Layout['arrows'][number][],
-): string | null {
-  let strongest: Layout['arrows'][number] | null = null;
-  let strongestRank = 0;
-  for (const arrow of arrows) {
-    if (arrow.kind !== 'ownership') continue;
-    const rank = driftSeverity(arrow.driftClass);
-    if (rank > strongestRank) {
-      strongest = arrow;
-      strongestRank = rank;
-    }
-  }
-  return strongest === null ? null : memberColorForDriftClass(strongest.driftClass);
-}
-
-export function memberColorForDriftClass(driftClass: DriftClass | null): string | null {
-  if (driftClass === null) return null;
-  switch (driftClass) {
-    case 'at_lca':
-    case 'within_budget':
-      return COLOR_MEMBER_CANONICAL;
-    case 'drift_below':
-      return COLOR_MEMBER_DRIFT_BELOW;
-    case 'drift_above':
-    case 'drift_sideways':
-      return COLOR_ARROW_HARD;
-  }
-}
-
-export function callableRowColor(row: {
-  readonly callsOutsideModule: boolean;
-  readonly hasExternalCalls?: boolean;
-  readonly hasUnresolvedCalls?: boolean;
-  readonly hasOutgoingCalls: boolean;
-}): string {
-  if (row.hasExternalCalls ?? row.callsOutsideModule) return '#2563eb';
-  if (row.hasUnresolvedCalls === true) return '#f97316';
-  return row.hasOutgoingCalls ? COLOR_FIELD_NAME : COLOR_FIELD_TY;
-}
-
-function driftSeverity(driftClass: DriftClass): number {
-  switch (driftClass) {
-    case 'drift_above':
-    case 'drift_sideways':
-      return 3;
-    case 'drift_below':
-      return 2;
-    case 'at_lca':
-    case 'within_budget':
-      return 1;
-  }
 }
 
 /** One-character kind marker rendered between the visibility dot and the
@@ -1440,11 +1441,21 @@ function renderFieldsForType(
     const display = fieldRowDisplayParts(f, opts.expandedBucketIds);
     const fontWeight = isBucketHeader ? 600 : isSelected ? 600 : 400;
     const fontStyle = isCallable ? 'italic' : isBorrow ? 'italic' : 'normal';
-    // Field rows expose drift at the member label. Canonical arrows stay
-    // subdued grey in the canvas, but canonical members use blue so normal
-    // ownership rows stand out from rows with no emitted ownership arrow.
-    const memberColor = f.kind === 'field' ? memberColorForDriftClass(f.memberDriftClass) : null;
-    const fillColor = isCallable ? callableRowColor(f) : (memberColor ?? COLOR_FIELD_NAME);
+    // Row name color encodes ownership flavor at the boundary the row
+    // represents:
+    //  - Field rows: color follows the field's type (`&T` → shared,
+    //    `&mut T` → mut, `*const/*mut T` → raw, otherwise move).
+    //  - Callable rows: color follows the receiver shape (`&self` → shared,
+    //    `&mut self` → mut, otherwise move). Locality is a separate
+    //    glyph; drift is a separate dot. Buckets keep the default name color.
+    let fillColor: string;
+    if (f.kind === 'field') {
+      fillColor = borrowFlavorColor(borrowFlavor(f.tyText));
+    } else if (isCallable) {
+      fillColor = borrowFlavorColor(selfKindFlavor(f.selfKind));
+    } else {
+      fillColor = COLOR_FIELD_NAME;
+    }
     // Method indent is baked into f.x by the layout, so localX already
     // reflects it — no renderer-side offset to apply.
 
@@ -1479,6 +1490,31 @@ function renderFieldsForType(
       chevron.remove();
     }
 
+    // Drift dot: a small filled circle to the left of the field name.
+    // Only field rows carry drift; callables and buckets never get a dot.
+    // Canonical placements (at_lca / within_budget) render no dot — the
+    // absence is the signal "this row is where structural ownership
+    // expected it". Drift below = amber, drift above/sideways = red.
+    let driftDot = fg.select<SVGCircleElement>('circle.drift-dot');
+    const driftColor = f.kind === 'field' ? driftDotColor(f.memberDriftClass) : null;
+    if (driftColor !== null) {
+      if (driftDot.empty()) {
+        driftDot = fg
+          .insert('circle', 'text.field-row')
+          .attr('class', 'drift-dot')
+          .attr('r', DRIFT_DOT_RADIUS)
+          .style('pointer-events', 'none');
+      }
+      driftDot
+        .attr('fill', driftColor)
+        .transition('move')
+        .duration(ANIM_MS)
+        .attr('cx', localX - DRIFT_DOT_OFFSET)
+        .attr('cy', localY);
+    } else if (!driftDot.empty()) {
+      driftDot.remove();
+    }
+
     const incomingActive =
       f.functionFullPath !== null && opts.incomingCallTargetsShown.has(f.functionFullPath);
     let incomingMarker = fg.select<SVGTextElement>('text.incoming-call-marker');
@@ -1509,35 +1545,39 @@ function renderFieldsForType(
       incomingMarker.remove();
     }
 
-    // Signature toggle: callable rows show a small `(..)` glyph right after
-    // the function name. Click toggles the expansion. Geometry already
-    // reserved room between the name and arrowSourceX for this glyph.
-    let sigToggle = fg.select<SVGTextElement>('text.signature-toggle');
-    if (isCallable && f.functionFullPath !== null) {
-      if (sigToggle.empty()) {
-        sigToggle = fg
+    // Locality glyph: a small `→` painted after the callable row name.
+    // Color encodes local-only (grey), touches-external (blue), or
+    // has-unresolved (orange). CLICK target for arrow selection — the
+    // glyph IS the affordance "this row has outgoing call arrows; click
+    // to show/hide them". Hidden when the row has no outgoing calls; the
+    // reserved space remains so arrowSourceX is stable across redraws.
+    let localityGlyph = fg.select<SVGTextElement>('text.locality-glyph');
+    if (isCallable && f.hasOutgoingCalls && f.localityGlyphX !== undefined) {
+      if (localityGlyph.empty()) {
+        localityGlyph = fg
           .insert('text', 'text.field-ty')
-          .attr('class', 'signature-toggle')
+          .attr('class', 'locality-glyph')
           .attr('dy', '0.32em')
           .attr('font-size', INCOMING_CALL_MARKER_FONT_SIZE)
           .attr('font-weight', 600)
-          .attr('fill', COLOR_CHEVRON)
           .style('cursor', 'pointer')
-          .text('(..)');
+          .text(LOCALITY_GLYPH);
       }
-      const functionFullPath = f.functionFullPath;
-      sigToggle.on('click', (event: MouseEvent) => {
-        event.stopPropagation();
-        opts.onToggleSignature(functionFullPath);
-      });
-      // 4px gap matches SIGNATURE_TOGGLE_GAP reserved in geometry.
-      sigToggle
+      localityGlyph
+        .attr('fill', localityGlyphColor(f))
         .transition('move')
         .duration(ANIM_MS)
-        .attr('x', localX + f.textWidth + 4)
+        .attr('x', f.localityGlyphX - d.x)
         .attr('y', localY);
-    } else if (!sigToggle.empty()) {
-      sigToggle.remove();
+      if (callableKind !== null) {
+        const kindForClick = callableKind;
+        localityGlyph.on('click', (event: MouseEvent) => {
+          event.stopPropagation();
+          opts.onSelectField(d.fullPath, f.name, kindForClick);
+        });
+      }
+    } else if (!localityGlyph.empty()) {
+      localityGlyph.remove();
     }
 
     const tyText = fg
@@ -1551,11 +1591,17 @@ function renderFieldsForType(
       event.stopPropagation();
       if (isBucketHeader) {
         if (f.bucketId !== null) opts.onToggle(f.bucketId);
-      } else if (f.kind === 'field' || f.kind === 'method' || f.kind === 'function') {
-        // Method rows participate in selection just like fields. The
-        // kind is part of the selection key so a struct field and a
-        // method with the same name highlight independently.
-        opts.onSelectField(d.fullPath, f.name, f.kind);
+      } else if (isCallable && f.functionFullPath !== null) {
+        // Callable name click: ONLY expand the signature. Arrow selection
+        // moved to the `→` glyph on the row's right side, so each
+        // affordance owns exactly one effect and never side-effects the
+        // other.
+        opts.onToggleSignature(f.functionFullPath);
+      } else if (f.kind === 'field') {
+        // Field rows keep name-click → selection. Fields have no
+        // signature to expand and selecting them is the only useful row
+        // action.
+        opts.onSelectField(d.fullPath, f.name, 'field');
       }
     };
     text.on('click', handleRowClick);
@@ -1661,7 +1707,8 @@ function renderSignatureArgRow(
   // DOM node carried a callable or field row instead of a signature arg.
   fg.select<SVGTextElement>('text.method-bucket-chevron').remove();
   fg.select<SVGTextElement>('text.incoming-call-marker').remove();
-  fg.select<SVGTextElement>('text.signature-toggle').remove();
+  fg.select<SVGTextElement>('text.locality-glyph').remove();
+  fg.select<SVGCircleElement>('circle.drift-dot').remove();
 }
 
 function hoveredTextRight(text: Selection<SVGTextElement, unknown, null, undefined>): number {

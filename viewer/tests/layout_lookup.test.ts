@@ -46,6 +46,7 @@ const layout: Layout = {
           x: 116,
           y: 64,
           textWidth: 32,
+          leftPortX: 116,
           arrowSourceX: 156,
           targets: [],
           callTargets: [],
