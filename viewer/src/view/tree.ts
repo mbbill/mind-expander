@@ -31,6 +31,7 @@ import {
   splitModuleDisplayLabel,
 } from '../analysis/layout_metrics.ts';
 import { type Layout, ROW_H } from '../analysis/layout_model.ts';
+import type { OwnershipIndex } from '../analysis/ownership.ts';
 import { LOCALITY_GLYPH } from '../layout/geometry.ts';
 import { colorForVisibility } from './encoding.ts';
 import { ANIM_MS, type ZoomLayers } from './zoom.ts';
@@ -185,6 +186,13 @@ const CALLABLE_DEBUG_MAX_CALLS = 24;
 const METHOD_BUCKET_CHEVRON_OFFSET = 12;
 const METHOD_BUCKET_CHEVRON_FONT_SIZE = 14;
 const INCOMING_CALL_MARKER_FONT_SIZE = 11;
+// On hover the call markers grow to draw attention to the affordance
+// and to expose the call count alongside. The non-hover size is the
+// canonical row metric so click hit areas stay predictable.
+const CALL_MARKER_HOVER_FONT_SIZE = 14;
+const CALL_MARKER_HOVER_DURATION_MS = 80;
+// Gap between a hover count badge `(N)` and its anchor glyph.
+const CALL_COUNT_BADGE_GAP = 4;
 const COLOR_ARROW_CANONICAL = '#94a3b8'; // slate-400: at_lca / within_budget — neutral context
 // Highlighted-canonical color (#3b82f6 blue) is applied via CSS in
 // index.html (`.canonical.highlighted { stroke: ... }`) so the marker
@@ -295,6 +303,10 @@ export interface TreeRenderOptions {
   readonly expandedBucketIds: ReadonlySet<string>;
   /** Arrows in any selected field's chain — drawn highlighted by default. */
   readonly selectedArrows: ReadonlySet<Layout['arrows'][number]>;
+  /** Static ownership index. Read by the type debug overlay to expose
+   *  what the analysis says about owners/owns, so the user can compare
+   *  against the routed (rendered) counts and spot routing gaps. */
+  readonly ownership: OwnershipIndex;
   /** Hover on a type's dot → show the incoming-ownership popover. The
    *  callback receives the type's full path and a `getDotScreenPos`
    *  closure that returns the dot's current screen-space center. The
@@ -1246,6 +1258,23 @@ function renderTypes(
   //   - ghost re-export → reveal canonical target so the violet arrow
   //     becomes visible (same action as the dot click)
   //   - real type without fields → no action, default cursor.
+  // Header-level hover hooks fire the debug panel anywhere in the type
+  // header, not just on the label glyphs or the dot. The transparent
+  // expand-hit rect is rendered AFTER the label (so it paints on top of
+  // it) with a transparent fill, which under SVG's default
+  // `visiblePainted` pointer rule catches events the label would
+  // otherwise see. Attaching the hover here means hovering anywhere in
+  // the header — including the gaps between label glyphs — triggers
+  // the panel. The label and dot hovers below still fire too, so moving
+  // smoothly across the header keeps the panel visible via the shared
+  // hide timer.
+  const headerDebugMouseenter = function (this: SVGRectElement, _event: MouseEvent, d: Layout['types'][number]): void {
+    if (!layoutDebugEnabled()) return;
+    showTypeDebugPanel(layout, opts.ownership, d, this);
+  };
+  const headerDebugMouseleave = (): void => {
+    if (layoutDebugEnabled()) hideCallableDebugPanel();
+  };
   merged
     .select<SVGRectElement>('rect.expand-hit')
     .attr('cursor', (d) => (d.hasFields || d.isGhost ? 'pointer' : 'default'))
@@ -1256,7 +1285,9 @@ function renderTypes(
       } else if (d.hasFields) {
         opts.onToggle(d.id);
       }
-    });
+    })
+    .on('mouseenter', headerDebugMouseenter)
+    .on('mouseleave', headerDebugMouseleave);
 
   // Chevron click is intentionally stronger than name click: it toggles the
   // type and selects/deselects all member rows that can emit arrows.
@@ -1266,7 +1297,9 @@ function renderTypes(
     .on('click', (event: MouseEvent, d) => {
       event.stopPropagation();
       if (d.hasFields) opts.onToggleTypeMembers(d.fullPath);
-    });
+    })
+    .on('mouseenter', headerDebugMouseenter)
+    .on('mouseleave', headerDebugMouseleave);
 
   // Refresh dot handlers each draw. Click semantics:
   //   - real type dot → expand every owner (and its module ancestors)
@@ -1289,8 +1322,29 @@ function renderTypes(
         const r = node.getBoundingClientRect();
         return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
       });
+      // Debug overlay coexists with the owner popover on dot hover — the
+      // owner popover answers "who points at this?" while the debug
+      // panel exposes the layout-level facts the owner popover hides
+      // (kind, visibility, routed-arrow counts, ghost target, etc.).
+      if (layoutDebugEnabled()) showTypeDebugPanel(layout, opts.ownership, d, node);
     })
-    .on('mouseleave', () => opts.onHideOwners());
+    .on('mouseleave', () => {
+      opts.onHideOwners();
+      if (layoutDebugEnabled()) hideCallableDebugPanel();
+    });
+
+  // Debug overlay also fires on the type's label text — the dot is a
+  // small target, the label covers the rest of the header. Same panel,
+  // same hide timer, so moving between dot and label feels continuous.
+  merged
+    .select<SVGTextElement>('text.header-label')
+    .on('mouseenter', function (_event: MouseEvent, d) {
+      if (!layoutDebugEnabled()) return;
+      showTypeDebugPanel(layout, opts.ownership, d, this as SVGTextElement);
+    })
+    .on('mouseleave', () => {
+      if (layoutDebugEnabled()) hideCallableDebugPanel();
+    });
 
   // Sub-data-join for field rows inside each type group.
   merged.each(function (d) {
@@ -1526,10 +1580,11 @@ function renderFieldsForType(
           .attr('dy', '0.32em')
           .style('cursor', 'pointer');
       }
+      const markerColor = incomingActive ? '#2563eb' : COLOR_CHEVRON;
       incomingMarker
         .attr('font-size', INCOMING_CALL_MARKER_FONT_SIZE)
         .attr('font-weight', incomingActive ? 700 : 500)
-        .attr('fill', incomingActive ? '#2563eb' : COLOR_CHEVRON)
+        .attr('fill', markerColor)
         .text('→')
         .transition('move')
         .duration(ANIM_MS)
@@ -1541,8 +1596,52 @@ function renderFieldsForType(
         if (callableKind === null) return;
         opts.onToggleIncomingCalls(d.fullPath, f.name, callableKind, functionFullPath);
       });
+      // Hover: grow the marker and reveal a count badge to its left so
+      // the user can see how many incoming calls there are without
+      // clicking. The badge is pointer-events: none so it never steals
+      // hover from the marker itself.
+      const incomingCount = f.incomingCallRefs?.length ?? 0;
+      const fgSel = fg;
+      incomingMarker
+        .on('mouseenter', function () {
+          select(this)
+            .transition('marker-hover')
+            .duration(CALL_MARKER_HOVER_DURATION_MS)
+            .attr('font-size', CALL_MARKER_HOVER_FONT_SIZE);
+          let badge = fgSel.select<SVGTextElement>('text.incoming-count-badge');
+          if (badge.empty()) {
+            badge = fgSel
+              .insert('text', 'text.field-row')
+              .attr('class', 'incoming-count-badge')
+              .attr('dy', '0.32em')
+              .attr('font-size', INCOMING_CALL_MARKER_FONT_SIZE)
+              .attr('text-anchor', 'end')
+              .style('pointer-events', 'none')
+              .style('opacity', 0);
+          }
+          badge
+            .text(`(${incomingCount})`)
+            .attr('fill', markerColor)
+            .attr('x', localX - INCOMING_CALL_MARKER_OFFSET - CALL_COUNT_BADGE_GAP)
+            .attr('y', localY)
+            .transition('marker-hover')
+            .duration(CALL_MARKER_HOVER_DURATION_MS)
+            .style('opacity', 1);
+        })
+        .on('mouseleave', function () {
+          select(this)
+            .transition('marker-hover')
+            .duration(CALL_MARKER_HOVER_DURATION_MS)
+            .attr('font-size', INCOMING_CALL_MARKER_FONT_SIZE);
+          fgSel
+            .select<SVGTextElement>('text.incoming-count-badge')
+            .transition('marker-hover')
+            .duration(CALL_MARKER_HOVER_DURATION_MS)
+            .style('opacity', 0);
+        });
     } else if (!incomingMarker.empty()) {
       incomingMarker.remove();
+      fg.select<SVGTextElement>('text.incoming-count-badge').remove();
     }
 
     // Locality glyph: a small `→` painted after the callable row name.
@@ -1563,11 +1662,13 @@ function renderFieldsForType(
           .style('cursor', 'pointer')
           .text(LOCALITY_GLYPH);
       }
+      const glyphColor = localityGlyphColor(f);
+      const glyphX = f.localityGlyphX - d.x;
       localityGlyph
-        .attr('fill', localityGlyphColor(f))
+        .attr('fill', glyphColor)
         .transition('move')
         .duration(ANIM_MS)
-        .attr('x', f.localityGlyphX - d.x)
+        .attr('x', glyphX)
         .attr('y', localY);
       if (callableKind !== null) {
         const kindForClick = callableKind;
@@ -1576,8 +1677,51 @@ function renderFieldsForType(
           opts.onSelectField(d.fullPath, f.name, kindForClick);
         });
       }
+      // Hover: grow + reveal outgoing-count badge. Anchored to the
+      // glyph's right edge; placed past arrowSourceX (only visible while
+      // hovering, so overlapping arrow-exit space is acceptable).
+      const outgoingCount = f.callRefs?.length ?? 0;
+      const fgSel = fg;
+      const glyphRight = (f.arrowSourceX ?? glyphX) - d.x;
+      localityGlyph
+        .on('mouseenter', function () {
+          select(this)
+            .transition('marker-hover')
+            .duration(CALL_MARKER_HOVER_DURATION_MS)
+            .attr('font-size', CALL_MARKER_HOVER_FONT_SIZE);
+          let badge = fgSel.select<SVGTextElement>('text.locality-count-badge');
+          if (badge.empty()) {
+            badge = fgSel
+              .insert('text', 'text.field-row')
+              .attr('class', 'locality-count-badge')
+              .attr('dy', '0.32em')
+              .attr('font-size', INCOMING_CALL_MARKER_FONT_SIZE)
+              .style('pointer-events', 'none')
+              .style('opacity', 0);
+          }
+          badge
+            .text(`(${outgoingCount})`)
+            .attr('fill', glyphColor)
+            .attr('x', glyphRight + CALL_COUNT_BADGE_GAP)
+            .attr('y', localY)
+            .transition('marker-hover')
+            .duration(CALL_MARKER_HOVER_DURATION_MS)
+            .style('opacity', 1);
+        })
+        .on('mouseleave', function () {
+          select(this)
+            .transition('marker-hover')
+            .duration(CALL_MARKER_HOVER_DURATION_MS)
+            .attr('font-size', INCOMING_CALL_MARKER_FONT_SIZE);
+          fgSel
+            .select<SVGTextElement>('text.locality-count-badge')
+            .transition('marker-hover')
+            .duration(CALL_MARKER_HOVER_DURATION_MS)
+            .style('opacity', 0);
+        });
     } else if (!localityGlyph.empty()) {
       localityGlyph.remove();
+      fg.select<SVGTextElement>('text.locality-count-badge').remove();
     }
 
     const tyText = fg
@@ -1623,8 +1767,15 @@ function renderFieldsForType(
         for (const a of hover) union.add(a);
         applyArrowHighlight(zoomLayer, union);
       }
-      if (isCallable && layoutDebugEnabled()) {
-        showCallableDebugPanel(layout, d, f, rowKind, text.node());
+      // Debug overlay: hover any expanded row to inspect its layout facts.
+      // Callable rows get the call-graph variant, field rows get the
+      // ownership variant. method_bucket headers get no panel.
+      if (layoutDebugEnabled()) {
+        if (isCallable) {
+          showCallableDebugPanel(layout, d, f, rowKind, text.node());
+        } else if (f.kind === 'field') {
+          showFieldDebugPanel(layout, d, f, text.node());
+        }
       }
       // Callable rows no longer flash their signature on hover — the
       // signature is now an explicit click affordance via the (..) toggle.
@@ -1644,7 +1795,9 @@ function renderFieldsForType(
       if (callableKind === null) {
         applyArrowHighlight(zoomLayer, opts.selectedArrows);
       }
-      if (isCallable) hideCallableDebugPanel();
+      // Hide whichever debug variant was showing — both callable and
+      // field rows route through the same panel + hide timer.
+      if (isCallable || f.kind === 'field') hideCallableDebugPanel();
       if (isCallable) return;
       if (!node) return;
       if (node.__sfTyTimer !== undefined) clearTimeout(node.__sfTyTimer);
@@ -1708,6 +1861,8 @@ function renderSignatureArgRow(
   fg.select<SVGTextElement>('text.method-bucket-chevron').remove();
   fg.select<SVGTextElement>('text.incoming-call-marker').remove();
   fg.select<SVGTextElement>('text.locality-glyph').remove();
+  fg.select<SVGTextElement>('text.incoming-count-badge').remove();
+  fg.select<SVGTextElement>('text.locality-count-badge').remove();
   fg.select<SVGCircleElement>('circle.drift-dot').remove();
 }
 
@@ -1773,6 +1928,136 @@ function showCallableDebugPanel(
 
   panel.style.display = 'block';
   positionCallableDebugPanel(panel, anchorNode.getBoundingClientRect());
+}
+
+// Debug overlay for a hovered field row. Shares panel + hide/show
+// machinery with the callable variant — only the content differs.
+// Renders when layoutDebugEnabled(); off by default.
+function showFieldDebugPanel(
+  layout: Layout,
+  typeNode: Layout['types'][number],
+  row: Layout['types'][number]['fields'][number],
+  anchorNode: SVGTextElement | null,
+): void {
+  if (anchorNode === null) return;
+  cancelCallableDebugPanelHide();
+
+  const panel = ensureCallableDebugPanel();
+  panel.replaceChildren();
+
+  appendDiv(panel, 'cd-kicker', 'field facts');
+  appendDiv(panel, 'cd-title', row.name);
+  appendDiv(panel, 'cd-path', `${typeNode.fullPath}::${row.name}`);
+
+  const summary = appendDiv(panel, 'cd-grid');
+  appendDebugPair(summary, 'type', row.tyText === '' ? '(none)' : row.tyText);
+  appendDebugPair(summary, 'ownership', row.ownership);
+  appendDebugPair(summary, 'container', typeNode.fullPath);
+  appendDebugPair(summary, 'module', typeNode.modulePath || '(crate root)');
+  appendDebugPair(summary, 'kind', row.kind);
+  appendDebugPair(summary, 'drift class', row.memberDriftClass ?? '(none)');
+  appendDebugPair(
+    summary,
+    'borrow flavor',
+    row.tyText === '' ? '(no type)' : borrowFlavor(row.tyText),
+  );
+
+  const outgoingOwnership = renderableArrows(layout).filter(
+    (arrow) =>
+      arrow.kind === 'ownership' &&
+      arrow.fromTypeId === typeNode.fullPath &&
+      arrow.fromFieldName === row.name &&
+      arrow.fromRowKind === 'field',
+  );
+  const incomingOwnership = renderableArrows(layout).filter(
+    (arrow) =>
+      arrow.kind === 'ownership' &&
+      arrow.toTypeId === typeNode.fullPath &&
+      arrow.toFieldName === row.name,
+  );
+  appendDebugPair(summary, 'routed outgoing', String(outgoingOwnership.length));
+  appendDebugPair(summary, 'routed incoming', String(incomingOwnership.length));
+
+  appendArrowSection(panel, 'Outgoing ownership arrows', outgoingOwnership, 'outgoing');
+  appendArrowSection(panel, 'Incoming ownership arrows', incomingOwnership, 'incoming');
+
+  panel.style.display = 'block';
+  positionCallableDebugPanel(panel, anchorNode.getBoundingClientRect());
+}
+
+// Debug overlay for a hovered type header. Anchored to whichever element
+// fires the hover — typically the header label, the hit rect, or the
+// dot. Shows the type identity facts plus the static ownership counts
+// (how many types own this one / how many it owns) so the user can
+// compare against routed arrows to spot routing gaps.
+function showTypeDebugPanel(
+  layout: Layout,
+  ownership: OwnershipIndex,
+  typeNode: Layout['types'][number],
+  anchorNode: SVGGraphicsElement | null,
+): void {
+  if (anchorNode === null) return;
+  cancelCallableDebugPanelHide();
+
+  const panel = ensureCallableDebugPanel();
+  panel.replaceChildren();
+
+  appendDiv(panel, 'cd-kicker', typeNode.isGhost ? 're-export facts' : 'type facts');
+  appendDiv(panel, 'cd-title', typeNode.label);
+  appendDiv(panel, 'cd-path', typeNode.fullPath);
+
+  const summary = appendDiv(panel, 'cd-grid');
+  appendDebugPair(summary, 'kind', typeNode.typeKind);
+  appendDebugPair(summary, 'visibility', typeNode.visibility);
+  appendDebugPair(summary, 'module', typeNode.modulePath || '(crate root)');
+  appendDebugPair(summary, 'fields', String(typeNode.fields.length));
+  appendDebugPair(summary, 'total fields', String(typeNode.totalFieldCount));
+  appendDebugPair(summary, 'expanded', typeNode.expanded ? 'yes' : 'no');
+  appendDebugPair(summary, 'has fields', typeNode.hasFields ? 'yes' : 'no');
+  appendDebugPair(summary, 'is ghost', typeNode.isGhost ? 'yes' : 'no');
+  if (typeNode.ghostTarget !== null) {
+    appendDebugPair(summary, 'ghost target', typeNode.ghostTarget);
+  }
+
+  // Static ownership counts come from the analysis index — they don't
+  // depend on what's currently expanded or routed. Comparing them with
+  // the rendered arrow lists below makes routing gaps visible: "5 owners
+  // exist but only 2 incoming arrows routed → 3 owners are collapsed".
+  const owners = ownership.ownedBy.get(typeNode.fullPath) ?? [];
+  const owns = ownership.owns.get(typeNode.fullPath) ?? [];
+  appendDebugPair(summary, 'owners', String(owners.length));
+  appendDebugPair(summary, 'owns', String(owns.length));
+
+  appendTypeListSection(panel, 'Owners (analysis)', owners);
+  appendTypeListSection(panel, 'Owns (analysis)', owns);
+
+  const outgoing = renderableArrows(layout).filter((arrow) => arrow.fromTypeId === typeNode.id);
+  const incoming = renderableArrows(layout).filter((arrow) => arrow.toTypeId === typeNode.id);
+  appendArrowSection(panel, 'Outgoing arrows (routed)', outgoing, 'outgoing');
+  appendArrowSection(panel, 'Incoming arrows (routed)', incoming, 'incoming');
+
+  panel.style.display = 'block';
+  positionCallableDebugPanel(panel, anchorNode.getBoundingClientRect());
+}
+
+// Renders a list of type fullPaths under a section title. Caps the
+// displayed entries to keep the panel scannable; if the analysis records
+// more, the cap line shows the overflow count.
+function appendTypeListSection(
+  panel: HTMLDivElement,
+  title: string,
+  typePaths: readonly string[],
+): void {
+  appendDiv(panel, 'cd-section-title', title);
+  if (typePaths.length === 0) {
+    appendDiv(panel, 'cd-empty', 'none');
+    return;
+  }
+  const list = appendDiv(panel, 'cd-list');
+  for (const path of typePaths.slice(0, CALLABLE_DEBUG_MAX_CALLS)) {
+    appendDiv(list, 'cd-line', path);
+  }
+  appendMoreIfNeeded(panel, typePaths.length);
 }
 
 function hideCallableDebugPanel(): void {

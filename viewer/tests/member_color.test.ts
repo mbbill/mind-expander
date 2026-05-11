@@ -99,6 +99,46 @@ describe('locality signal lives on a `→` glyph after the callable name', () =>
   });
 });
 
+describe('hover on the call markers grows them and shows a count badge', () => {
+  const source = treeSource();
+
+  it('the left incoming marker grows on hover and reveals an incoming-count badge', () => {
+    // Both wiring (the badge class + the count source) and the size
+    // animation are pinned so a future refactor can't silently drop one
+    // of the affordances.
+    expect(source).toContain("'incoming-count-badge'");
+    expect(source).toContain('f.incomingCallRefs');
+    expect(source).toMatch(
+      /incomingMarker[\s\S]*?\.on\(\s*'mouseenter'[\s\S]*?CALL_MARKER_HOVER_FONT_SIZE/,
+    );
+    expect(source).toMatch(
+      /incomingMarker[\s\S]*?\.on\(\s*'mouseleave'[\s\S]*?INCOMING_CALL_MARKER_FONT_SIZE/,
+    );
+  });
+
+  it('the right locality glyph grows on hover and reveals an outgoing-count badge', () => {
+    expect(source).toContain("'locality-count-badge'");
+    expect(source).toContain('f.callRefs');
+    expect(source).toMatch(
+      /localityGlyph[\s\S]*?\.on\(\s*'mouseenter'[\s\S]*?CALL_MARKER_HOVER_FONT_SIZE/,
+    );
+    expect(source).toMatch(
+      /localityGlyph[\s\S]*?\.on\(\s*'mouseleave'[\s\S]*?INCOMING_CALL_MARKER_FONT_SIZE/,
+    );
+  });
+
+  it('count badges are pointer-events: none so they cannot steal hover from the glyph', () => {
+    // Each badge insertion sets pointer-events: none. Without this, the
+    // badge would catch the cursor as it expands into view, the marker
+    // would lose hover state, and the badge would immediately hide
+    // again — a flicker loop.
+    const badgeBlocks = source.match(/incoming-count-badge[\s\S]{0,400}/g) ?? [];
+    expect(badgeBlocks.some((block) => block.includes("'pointer-events', 'none'"))).toBe(true);
+    const localityBadgeBlocks = source.match(/locality-count-badge[\s\S]{0,400}/g) ?? [];
+    expect(localityBadgeBlocks.some((b) => b.includes("'pointer-events', 'none'"))).toBe(true);
+  });
+});
+
 describe('callable click handlers are split between name and `→`', () => {
   const source = treeSource();
 

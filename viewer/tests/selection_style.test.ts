@@ -62,7 +62,9 @@ describe('selected arrow styling', () => {
     const source = treeSource();
     expect(cssRule('#callable-debug')).toContain('position: fixed');
     expect(source).toContain('function showCallableDebugPanel');
-    expect(source).toContain('isCallable && layoutDebugEnabled()');
+    // Debug overlay gates on layoutDebugEnabled() first, then dispatches
+    // to the per-row-kind variant. Pin both the gate and the dispatch.
+    expect(source).toMatch(/layoutDebugEnabled\(\)[\s\S]{0,200}?showCallableDebugPanel/);
     expect(source).toContain('row.callRefs');
     expect(source).toContain('row.callTargets');
   });
@@ -78,6 +80,38 @@ describe('selected arrow styling', () => {
     expect(source).toContain('hit.arrow.toFieldName');
     expect(source).toContain('arrowDisambigGroupElement');
     expect(source).toContain('path-prefix');
+  });
+
+  it('renders a debug overlay for hovered field rows when debug mode is on', () => {
+    // Hovering a field with debug enabled invokes the field variant of
+    // the shared hover-debug panel; mouseleave hides via the same timer.
+    const source = treeSource();
+    expect(source).toContain('showFieldDebugPanel');
+    expect(source).toMatch(/layoutDebugEnabled\(\)[\s\S]{0,200}?showFieldDebugPanel/);
+    expect(source).toContain('field facts');
+  });
+
+  it('renders a debug overlay for hovered type headers when debug mode is on', () => {
+    // The debug panel fires from FOUR header surfaces, so hovering
+    // anywhere in the type header opens it: the dot, the label text,
+    // and the two transparent hit rects (expand-hit + expand-arrow-hit).
+    // Rect.expand-hit paints on top of the label under SVG's
+    // visiblePainted rule, so without hover on the rects the label
+    // handler never fires for areas not covered by glyphs.
+    const source = treeSource();
+    expect(source).toContain('showTypeDebugPanel');
+    expect(source).toContain('type facts');
+    // Static ownership counts (so the user can compare against routed
+    // arrows to spot routing gaps) are part of the panel content.
+    expect(source).toContain("'owners'");
+    expect(source).toContain("'owns'");
+    expect(source).toContain("Owners (analysis)");
+    expect(source).toContain("Owns (analysis)");
+    expect(source).toContain('headerDebugMouseenter');
+    expect(source).toMatch(/rect\.expand-hit[\s\S]{0,800}?headerDebugMouseenter/);
+    expect(source).toMatch(/rect\.expand-arrow-hit[\s\S]{0,500}?headerDebugMouseenter/);
+    expect(source).toMatch(/text\.header-label[\s\S]{0,300}?showTypeDebugPanel/);
+    expect(source).toMatch(/circle\.type-dot[\s\S]{0,1500}?showTypeDebugPanel/);
   });
 
   it('colors signature rows by ownership flavor', () => {

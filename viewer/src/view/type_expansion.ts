@@ -102,6 +102,28 @@ export function targetExpansionIdsForMemberRow(
   return [...out];
 }
 
+/**
+ * Names of the fields on `ownerTypeId` whose ownership targets include
+ * `targetTypePath`. Used by the "expand all owners" affordance to also
+ * select those fields, so drifted (non-canonical) ownership arrows are
+ * allowed through the routing filter. Without this, expanding an owner
+ * type makes its rows visible but a drifted incoming arrow would still
+ * be suppressed because drifted arrows are opt-in per-field.
+ */
+export function ownerFieldsPointingTo(
+  ownership: OwnershipIndex,
+  ownerTypeId: string,
+  targetTypePath: string,
+): string[] {
+  const fields = ownership.fieldTargets.get(ownerTypeId);
+  if (fields === undefined) return [];
+  const out: string[] = [];
+  for (const [fieldName, targets] of fields) {
+    if (targets.includes(targetTypePath)) out.push(fieldName);
+  }
+  return out;
+}
+
 export function callerExpansionIdsForFunction(
   functionFullPath: string,
   calls: FunctionCallIndex,

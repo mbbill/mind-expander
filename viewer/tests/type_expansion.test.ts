@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { FunctionCallIndex } from '../src/analysis/calls.ts';
 import type { DriftIndex } from '../src/analysis/drift.ts';
@@ -9,6 +10,7 @@ import {
   callerExpansionIdsForFunction,
   forwardRoutedTargetModulesFor,
   memberArrowRowsForType,
+  ownerFieldsPointingTo,
   targetExpansionIdsForArrowTarget,
   targetExpansionIdsForMemberRow,
   targetModulesForMemberRow,
@@ -361,5 +363,56 @@ describe('type expansion target modules', () => {
       'c::dst::Target',
       'c::dst::Target::__methods_pub',
     ]);
+  });
+});
+
+describe('expand-all-owners wires field selections so drifted arrows render', () => {
+  // Source-snapshot guard: when expanding owners, main.ts must add each
+  // owner's matching-field key to selectedFields so the drifted ownership
+  // arrow gets through the routing filter. Without this, clicking a
+  // type's red dot expands the owners but the incoming red arrow stays
+  // hidden — the bug this commit fixes.
+  it('toggleExpandAllOwnersOf calls ownerFieldsPointingTo and selects via fieldKey', () => {
+    const source = readFileSync(
+      new URL('../src/main.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toMatch(
+      /toggleExpandAllOwnersOf[\s\S]*?ownerFieldsPointingTo\(ownership, ownerId, typePath\)[\s\S]*?selectedFields\.add\(fieldKey\(ownerId, fieldName, 'field'\)\)/,
+    );
+  });
+});
+
+describe('ownerFieldsPointingTo', () => {
+  it('returns the field names on an owner that point at the target type', () => {
+    // Owner has three fields. Two of them name the target type; one names
+    // an unrelated type. Only the matching two should be returned.
+    const owner = 'c::m::Store';
+    const target = 'c::m::Caller';
+    const idx = ownership(
+      new Map([
+        [
+          owner,
+          new Map([
+            ['caller_a', [target]],
+            ['unrelated', ['c::m::Other']],
+            ['caller_b', [target]],
+          ]),
+        ],
+      ]),
+    );
+
+    expect(ownerFieldsPointingTo(idx, owner, target)).toEqual(['caller_a', 'caller_b']);
+  });
+
+  it('returns empty when the owner has no fields recorded', () => {
+    expect(ownerFieldsPointingTo(ownership(new Map()), 'c::Missing', 'c::Target')).toEqual([]);
+  });
+
+  it('returns empty when none of the owner fields point at the target', () => {
+    const idx = ownership(
+      new Map([['c::m::Store', new Map([['x', ['c::m::A']], ['y', ['c::m::B']]])]]),
+    );
+    expect(ownerFieldsPointingTo(idx, 'c::m::Store', 'c::m::Caller')).toEqual([]);
   });
 });

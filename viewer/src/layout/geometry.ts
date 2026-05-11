@@ -1048,22 +1048,27 @@ function formatCallableSignature(fn: FnFacts): string {
 
 function computeGlobalXStart(
   root: ModuleNode,
-  _state: ViewState,
+  state: ViewState,
   measure: (s: string) => number,
   measureBold: (s: string) => number,
 ): number {
-  // Walk the WHOLE module tree (collapsed and all) so the type pane
-  // x doesn't shift when modules are toggled. Per row, derive the chip's
-  // right edge the same way measureModuleHitWidth does so the type pane
-  // starts after the widest possible chip.
+  // Walk only the CURRENTLY VISIBLE modules — a module is visible when
+  // all its ancestors are expanded; the root is always visible. Using
+  // the visible set keeps the type pane snug against the actually-rendered
+  // module column. Tradeoff: expanding a deeply-nested module with a
+  // long path can grow globalXStart and shift the type pane right; the
+  // alternative (walking the whole tree to pre-reserve worst-case space)
+  // produces a giant default gap when no long-path modules are open.
   let maxLabelEnd = 0;
-  const walk = (n: TreeNode, modDepth: number): void => {
+  const walk = (n: TreeNode, modDepth: number, parentExpanded: boolean): void => {
     if (n.kind !== 'module') return;
+    if (modDepth > 0 && !parentExpanded) return;
     const labelX = LEFT_PAD + modDepth * INDENT_PX + MODULE_GLYPH_W;
     const chipWidth = measureModuleHitWidth(n.id, measure, measureBold);
     if (labelX + chipWidth > maxLabelEnd) maxLabelEnd = labelX + chipWidth;
-    for (const c of n.children) walk(c, modDepth + 1);
+    const expanded = state.isExpanded(n.id);
+    for (const c of n.children) walk(c, modDepth + 1, expanded);
   };
-  walk(root, 0);
+  walk(root, 0, /* root parent is implicitly expanded */ true);
   return maxLabelEnd + MODULE_BAND_X_GAP;
 }

@@ -402,6 +402,30 @@ describe('computeGeometry — basic placement', () => {
     expect(real?.x).toBeGreaterThan(fnGroup?.x ?? 0);
   });
 
+  it('computes globalXStart from visible modules only, not from collapsed deep paths', () => {
+    // When a deeply-nested module is collapsed, its long full-path label
+    // is NOT rendered in the module column — so its width must not
+    // pre-reserve space in globalXStart. Walking the whole tree (the
+    // previous behavior) produced a giant default gap whenever any
+    // long-path module existed anywhere, even if hidden.
+    const c = crateFacts('c', [
+      mod('', [ty('c', '', 'A')]),
+      mod(
+        `${'reallyLongModule'.repeat(4)}::deeper::path`,
+        [ty('c', `${'reallyLongModule'.repeat(4)}::deeper::path`, 'Hidden')],
+      ),
+    ]);
+    // Expand only the crate root and one shallow module — the long-path
+    // module stays collapsed.
+    const collapsed = computeGeometry(buildInputs(c, [], ['c']));
+    // Now expand the long-path module to force its label visible.
+    const expanded = computeGeometry(
+      buildInputs(c, [], ['c', `c::${'reallyLongModule'.repeat(4)}`, `c::${'reallyLongModule'.repeat(4)}::deeper`]),
+    );
+
+    expect(collapsed.globalXStart).toBeLessThan(expanded.globalXStart);
+  });
+
   it('reserves a global leftmost column for module-level function groups', () => {
     // The reserved fn column is global: a function group in `with_fns` pushes
     // every type — including bands that have no function groups, like `plain`

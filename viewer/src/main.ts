@@ -36,7 +36,7 @@ import {
   callableBucketIdsForType,
   callerExpansionIdsForFunction,
   forwardRoutedTargetModulesFor,
-  memberArrowRowsForType,
+  ownerFieldsPointingTo,
   sourceExpansionIdsForArrowSource,
   targetExpansionIdsForArrowTarget,
   targetExpansionIdsForMemberRow,
@@ -499,6 +499,7 @@ async function main(): Promise<void> {
         incomingCallTargetsShown,
         selectedArrows,
         expandedBucketIds,
+        ownership,
         onToggle: (id) => {
           // Anchor the clicked item in both axes: expansion can change a
           // type's physical group, so preserving only y lets the target drift
@@ -531,27 +532,17 @@ async function main(): Promise<void> {
           const before = lookupPoint(lastLayout, typePath);
           const wasExpanded = state.isExpanded(typePath);
           state.toggle(typePath);
-          const rows = memberArrowRowsForType(typePath, ownership, calls);
-          if (wasExpanded) {
-            for (const row of rows)
-              selectedFields.delete(fieldKey(typePath, row.rowName, row.rowKind));
-          } else {
-            // Chevron-open means "open this type for inspection": expose
-            // function rows, but only field rows become selected by default.
-            for (const row of rows) {
-              if (row.rowKind !== 'field') continue;
-              selectedFields.add(fieldKey(typePath, row.rowName, row.rowKind));
-              for (const targetId of targetExpansionIdsForMemberRow(
-                typePath,
-                row.rowName,
-                row.rowKind,
-                ownership,
-                calls,
-                crateName,
-              )) {
-                state.expand(targetId);
-              }
-            }
+          if (!wasExpanded) {
+            // Chevron-open exposes the type's member rows. Method buckets
+            // get expanded so function/method rows render by default —
+            // they're useful as a structural overview.
+            //
+            // Field selections (the thing that materializes ownership
+            // arrows) are deliberately NOT auto-set: the user opts in
+            // per-row via name click, so opening a type doesn't flood
+            // the canvas with arrows. The collapse path likewise leaves
+            // selectedFields alone so a manual selection survives a
+            // chevron-collapse → chevron-expand cycle.
             for (const bucketId of callableBucketIdsForType(typePath, calls)) {
               state.expand(bucketId);
             }
@@ -753,10 +744,22 @@ async function main(): Promise<void> {
       const allExpanded = ownerIds.every((id) => state.isExpanded(id));
       if (allExpanded) {
         for (const ownerId of ownerIds) state.collapse(ownerId);
+        // Intentionally do NOT clear selectedFields here. Collapsing the
+        // owner hides the field row (and its arrow) automatically; keeping
+        // the selection sticky means a follow-up expand reveals the arrow
+        // immediately rather than requiring another click.
       } else {
         for (const ownerId of ownerIds) {
           for (const m of ancestorModuleIds(ownerId, crateName)) state.expand(m);
           state.expand(ownerId);
+          // Also select the owner's field(s) that actually point at this
+          // type, so a drifted (non-canonical) ownership arrow is allowed
+          // through the routing filter. Without this, expanding the owner
+          // makes the field row visible but routing still drops the
+          // arrow because drifted arrows are opt-in.
+          for (const fieldName of ownerFieldsPointingTo(ownership, ownerId, typePath)) {
+            selectedFields.add(fieldKey(ownerId, fieldName, 'field'));
+          }
         }
       }
       draw();
