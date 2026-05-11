@@ -436,6 +436,49 @@ describe('routeArrows obstacle routing', () => {
     expect(routing.arrows).toEqual([]);
   });
 
+  it('tags arrows crossing crate boundaries as isCrossCrate', () => {
+    // Source type lives in crate `cli`; target in crate `core`. The
+    // routing layer compares the leading `::` segment of each endpoint
+    // and stamps the flag so the renderer can paint cross-crate edges
+    // with a distinct dash pattern.
+    const source = typeBox(
+      'cli::App',
+      { x: 0, y: 40, width: 40 },
+      [row('module', { y: 40, arrowSourceX: 32, target: 'core::Module' })],
+    );
+    const target = typeBox('core::Module', { x: 120, y: 40, width: 40 });
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('cli::App', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('core::Module', { x: 120, y: 28, width: 40, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    expect(routing.arrows[0]?.isCrossCrate).toBe(true);
+  });
+
+  it('does not tag same-crate arrows as cross-crate', () => {
+    const source = typeBox('crate::A', { x: 0, y: 40, width: 40 }, [
+      row('field', { y: 40, arrowSourceX: 32, target: 'crate::B' }),
+    ]);
+    const target = typeBox('crate::B', { x: 120, y: 40, width: 40 });
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('crate::A', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('crate::B', { x: 120, y: 28, width: 40, height: 24 }),
+      ]),
+      routingInputs(),
+      measure,
+    );
+
+    // Undefined or explicitly false — both encode "not cross-crate".
+    expect(routing.arrows[0]?.isCrossCrate ?? false).toBe(false);
+  });
+
   it('materializes incoming function-call arrows for active target functions only', () => {
     const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
       callRow('caller', {
@@ -590,7 +633,7 @@ function sfNanoCoreRoutingInputs(expandedIds: readonly string[]): LayoutInputs {
   }
 
   const staticRoot = buildModuleTree(crate);
-  const ownership = buildOwnershipIndex(facts, 'sf-nano-core');
+  const ownership = buildOwnershipIndex(facts);
   const typeModule = collectTypeModule(staticRoot);
   const drift = computeDrift(ownership, typeModule);
   const depth = computeOwnershipDepth(ownership, collectTypeIds(staticRoot), drift);

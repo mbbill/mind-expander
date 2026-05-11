@@ -73,14 +73,14 @@ describe('type expansion target modules', () => {
       lca: new Map(),
     };
 
-    expect(forwardRoutedTargetModulesFor(source, idx, depth, driftIndex, 'c')).toEqual([
+    expect(forwardRoutedTargetModulesFor(source, idx, depth, driftIndex)).toEqual([
       'c',
       'c::dst',
     ]);
   });
 
   it('computes ancestor module ids for a type path', () => {
-    expect(ancestorModuleIds('c::a::b::Type', 'c')).toEqual(['c', 'c::a', 'c::a::b']);
+    expect(ancestorModuleIds('c::a::b::Type')).toEqual(['c', 'c::a', 'c::a::b']);
   });
 
   it('returns target modules for a selected member row regardless of drift route class', () => {
@@ -97,11 +97,11 @@ describe('type expansion target modules', () => {
     );
 
     const callIndex = calls();
-    expect(targetModulesForMemberRow('c::Owner', 'red', 'field', idx, callIndex, 'c')).toEqual([
+    expect(targetModulesForMemberRow('c::Owner', 'red', 'field', idx, callIndex)).toEqual([
       'c',
       'c::drifted',
     ]);
-    expect(targetModulesForMemberRow('c::Owner', 'orange', 'field', idx, callIndex, 'c')).toEqual([
+    expect(targetModulesForMemberRow('c::Owner', 'orange', 'field', idx, callIndex)).toEqual([
       'c',
       'c::deep',
     ]);
@@ -155,7 +155,7 @@ describe('type expansion target modules', () => {
     };
 
     expect(
-      targetExpansionIdsForMemberRow('c::src::Owner', 'caller', 'method', idx, callIndex, 'c'),
+      targetExpansionIdsForMemberRow('c::src::Owner', 'caller', 'method', idx, callIndex),
     ).toEqual([
       'c',
       'c::src',
@@ -311,7 +311,7 @@ describe('type expansion target modules', () => {
       rowsByType: new Map(),
     };
 
-    expect(callerExpansionIdsForFunction('c::dst::Target::callee', callIndex, 'c')).toEqual([
+    expect(callerExpansionIdsForFunction('c::dst::Target::callee', callIndex)).toEqual([
       'c',
       'c::src',
       'c::src::Owner',
@@ -357,7 +357,7 @@ describe('type expansion target modules', () => {
       driftClass: 'at_lca',
     };
 
-    expect(targetExpansionIdsForArrowTarget(arrow, callIndex, 'c')).toEqual([
+    expect(targetExpansionIdsForArrowTarget(arrow, callIndex)).toEqual([
       'c',
       'c::dst',
       'c::dst::Target',

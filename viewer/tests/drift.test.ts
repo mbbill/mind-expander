@@ -18,7 +18,7 @@ function tm(entries: [string, string][]): Map<string, string> {
 describe('computeDrift', () => {
   it('type at LCA gets at_lca', () => {
     // Owners in `c::a` and `c::b` → LCA = `c`. Target lives in `c`. → at_lca.
-    const idx = buildOwnershipIndex(facts([edge('c::a::A', 'c::T'), edge('c::b::B', 'c::T')]), 'c');
+    const idx = buildOwnershipIndex(facts([edge('c::a::A', 'c::T'), edge('c::b::B', 'c::T')]));
     const drift = computeDrift(
       idx,
       tm([
@@ -33,8 +33,7 @@ describe('computeDrift', () => {
   it('type within budget (depth-diff = 1, default maxBelowLca=1)', () => {
     const idx = buildOwnershipIndex(
       facts([edge('c::a::A', 'c::a::sub::T'), edge('c::a::B', 'c::a::sub::T')]),
-      'c',
-    );
+      );
     const drift = computeDrift(
       idx,
       tm([
@@ -47,7 +46,7 @@ describe('computeDrift', () => {
   });
 
   it('type drifted below budget (depth-diff > maxBelowLca)', () => {
-    const idx = buildOwnershipIndex(facts([edge('c::a::A', 'c::a::sub::deeper::T')]), 'c');
+    const idx = buildOwnershipIndex(facts([edge('c::a::A', 'c::a::sub::deeper::T')]));
     const drift = computeDrift(
       idx,
       tm([
@@ -62,8 +61,7 @@ describe('computeDrift', () => {
     // Owners in c::a::sub. LCA = c::a::sub. Target lives at c (above LCA).
     const idx = buildOwnershipIndex(
       facts([edge('c::a::sub::A', 'c::T'), edge('c::a::sub::B', 'c::T')]),
-      'c',
-    );
+      );
     const drift = computeDrift(
       idx,
       tm([
@@ -92,8 +90,7 @@ describe('computeDrift', () => {
     // 'y' is not a descendant of 'x' nor an ancestor. → sideways.
     const idx = buildOwnershipIndex(
       facts([edge('c::x::a::A', 'c::y::T'), edge('c::x::b::B', 'c::y::T')]),
-      'c',
-    );
+      );
     const drift = computeDrift(
       idx,
       tm([
@@ -106,7 +103,7 @@ describe('computeDrift', () => {
   });
 
   it('type with no owners defaults to at_lca', () => {
-    const idx = buildOwnershipIndex(facts([]), 'c');
+    const idx = buildOwnershipIndex(facts([]));
     const drift = computeDrift(idx, tm([['c::Loner', '']]));
     expect(drift.typeClass.get('c::Loner')).toBe('at_lca');
   });
@@ -117,8 +114,7 @@ describe('computeDrift', () => {
         edge('c::a::A', 'c::a::sub::T'), // within_budget
         edge('c::a::B', 'c::a::sub::deeper::U'), // drift_below
       ]),
-      'c',
-    );
+      );
     const drift = computeDrift(
       idx,
       tm([

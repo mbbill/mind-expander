@@ -796,7 +796,7 @@ describe('buildLayout — Layout shape', () => {
       ],
     };
     const root = buildModuleTree(c);
-    const calls = buildFunctionCallIndex(facts, 'c', root);
+    const calls = buildFunctionCallIndex(facts, root);
     const layout = buildLayout({
       ...buildInputs(c, [], ['c', 'c::m', 'c::m::__fn_pub', 'c::other']),
       calls,

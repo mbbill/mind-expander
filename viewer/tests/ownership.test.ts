@@ -24,24 +24,28 @@ describe('buildOwnershipIndex', () => {
       edge('c::A', 'c::E', 'fn_return'),
       { from: 'c::A', to: 'c::F', kind: 'borrows_immut', via: 'struct_field', origin: 'field f' },
     ]);
-    const idx = buildOwnershipIndex(f, 'c');
+    const idx = buildOwnershipIndex(f);
     expect(idx.owns.get('c::A')).toEqual(['c::B', 'c::D']);
   });
 
-  it('drops cross-crate edges', () => {
+  it('includes cross-crate edges (workspace-wide ownership)', () => {
+    // Multi-crate viewer surfaces dependency arrows that cross crate
+    // boundaries. The analysis layer no longer drops them — the
+    // extractor's job is to emit only workspace-internal edges.
     const f = facts([
       edge('c::A', 'd::X', 'struct_field'),
       edge('e::Y', 'c::B', 'struct_field'),
       edge('c::A', 'c::B', 'struct_field'),
     ]);
-    const idx = buildOwnershipIndex(f, 'c');
-    expect(idx.owns.get('c::A')).toEqual(['c::B']);
-    expect(idx.ownedBy.get('c::B')).toEqual(['c::A']);
+    const idx = buildOwnershipIndex(f);
+    expect(idx.owns.get('c::A')).toEqual(['d::X', 'c::B']);
+    expect(idx.ownedBy.get('c::B')).toEqual(['e::Y', 'c::A']);
+    expect(idx.ownedBy.get('d::X')).toEqual(['c::A']);
   });
 
   it('drops self-loops', () => {
     const f = facts([edge('c::A', 'c::A', 'struct_field')]);
-    const idx = buildOwnershipIndex(f, 'c');
+    const idx = buildOwnershipIndex(f);
     expect(idx.owns.has('c::A')).toBe(false);
   });
 
@@ -50,7 +54,7 @@ describe('buildOwnershipIndex', () => {
       edge('c::A', 'c::B', 'struct_field'),
       edge('c::A', 'c::B', 'enum_variant_payload'),
     ]);
-    const idx = buildOwnershipIndex(f, 'c');
+    const idx = buildOwnershipIndex(f);
     expect(idx.owns.get('c::A')).toEqual(['c::B']);
   });
 });
@@ -62,8 +66,7 @@ describe('buildOwnershipIndex — function signature edges', () => {
         { from: 'c::Foo', to: 'c::Bar', kind: 'owns', via: 'fn_param', origin: 'fn m param x' },
         { from: 'c::Foo', to: 'c::Baz', kind: 'owns', via: 'fn_return', origin: 'fn m -> ret' },
       ]),
-      'c',
-    );
+      );
     expect(idx.methodTargets.size).toBe(0);
     expect(idx.owns.get('c::Foo')).toBeUndefined();
   });
@@ -73,8 +76,7 @@ describe('computeOwnershipDepth', () => {
   it('roots get depth 0, owned types get longest-path depth', () => {
     const idx = buildOwnershipIndex(
       facts([edge('c::A', 'c::B'), edge('c::B', 'c::C'), edge('c::A', 'c::C')]),
-      'c',
-    );
+      );
     const d = computeOwnershipDepth(idx, ['c::A', 'c::B', 'c::C']);
     expect(d.get('c::A')).toBe(0);
     expect(d.get('c::B')).toBe(1);
@@ -82,7 +84,7 @@ describe('computeOwnershipDepth', () => {
   });
 
   it('isolated types get depth 0', () => {
-    const idx = buildOwnershipIndex(facts([]), 'c');
+    const idx = buildOwnershipIndex(facts([]));
     const d = computeOwnershipDepth(idx, ['c::Foo', 'c::Bar']);
     expect(d.get('c::Foo')).toBe(0);
     expect(d.get('c::Bar')).toBe(0);
@@ -96,8 +98,7 @@ describe('computeOwnershipDepth', () => {
         edge('c::E', 'c::F', 'enum_variant_payload', 'field Some::value'),
         edge('c::E', 'c::G', 'enum_variant_payload', 'field Other'),
       ]),
-      'c',
-    );
+      );
     expect(idx.fieldTargets.get('c::A')?.get('cmd')).toEqual(['c::B']);
     expect(idx.fieldTargets.get('c::A')?.get('other')).toEqual(['c::C']);
     // Enum variant payloads keep the full `Variant::payload` form so that
@@ -114,8 +115,7 @@ describe('computeOwnershipDepth', () => {
     // it from depth computation lets C bump A to 1 and A bump B to 2.
     const idx = buildOwnershipIndex(
       facts([edge('c::A', 'c::B'), edge('c::B', 'c::A'), edge('c::C', 'c::A')]),
-      'c',
-    );
+      );
     const d = computeOwnershipDepth(idx, ['c::A', 'c::B', 'c::C']);
     expect(d.get('c::C')).toBe(0);
     expect(d.get('c::A')).toBe(1);

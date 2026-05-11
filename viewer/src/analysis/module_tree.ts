@@ -2,7 +2,7 @@
 // with types as leaves. No DOM, no D3, no view state — view-state machinery
 // keys off the stable `id` field of each node.
 
-import type { CrateFacts, FieldFacts, FnFacts, ReExport, TypeKind } from '../data/schema.ts';
+import type { CrateFacts, Facts, FieldFacts, FnFacts, ReExport, TypeKind } from '../data/schema.ts';
 import {
   BUCKET_LABEL,
   BUCKET_ORDER,
@@ -162,6 +162,41 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
   }
 
   return root as ModuleNode;
+}
+
+/** Synthetic id used as the root of a multi-crate workspace tree. Not a
+ *  real Rust path — the renderer skips painting this node and treats each
+ *  child crate-root as a top-level module. */
+export const WORKSPACE_ROOT_ID = '<workspace>';
+
+/**
+ * Build a single tree over all crates in `facts`. Each crate's tree (the
+ * one produced by `buildModuleTree`) becomes a child of a virtual workspace
+ * root. The workspace root itself is rendered invisibly — its presence is
+ * a structural convenience so the rest of the layout/render pipeline
+ * (which expects exactly one root) keeps working unchanged. Crate names
+ * end up acting as top-level "module" labels in the rendered tree.
+ *
+ * Crate children are ordered alphabetically by crate name for stable
+ * layout across reloads. Topological dep-order would be more meaningful
+ * for layered architectures, but it requires a dep graph that the
+ * extractor doesn't currently emit — alphabetical keeps determinism
+ * without that data.
+ */
+export function buildWorkspaceTree(facts: Facts, options: BuildOptions = {}): ModuleNode {
+  const crateNames = Object.keys(facts.crates).sort();
+  const children = crateNames.map((name) => {
+    const crate = facts.crates[name];
+    if (crate === undefined) throw new Error(`Crate ${name} listed but missing in facts.crates`);
+    return buildModuleTree(crate, options);
+  });
+  return {
+    kind: 'module',
+    id: WORKSPACE_ROOT_ID,
+    label: WORKSPACE_ROOT_ID,
+    path: '',
+    children,
+  };
 }
 
 /**

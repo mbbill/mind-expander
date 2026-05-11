@@ -27,16 +27,21 @@ export interface OwnershipIndex {
 
 const STRUCTURAL_VIAS: readonly string[] = ['struct_field', 'union_field', 'enum_variant_payload'];
 
-export function buildOwnershipIndex(facts: Facts, crateName: string): OwnershipIndex {
-  const inCrate = (fullPath: string): boolean => fullPath.startsWith(`${crateName}::`);
-
+/**
+ * Build a workspace-wide ownership index over every edge in `facts`.
+ * Cross-crate edges (`from` and `to` in different crates) are included
+ * unchanged — the multi-crate viewer surfaces them so dependency
+ * direction reads across crate boundaries. Self-loops are dropped at
+ * the index level. The extractor is responsible for emitting only
+ * edges whose endpoints exist in the workspace.
+ */
+export function buildOwnershipIndex(facts: Facts): OwnershipIndex {
   const owns = new Map<string, string[]>();
   const ownedBy = new Map<string, string[]>();
   const fieldTargets = new Map<string, Map<string, string[]>>();
   const methodTargets = new Map<string, Map<string, string[]>>();
 
   for (const e of facts.edges) {
-    if (!inCrate(e.from) || !inCrate(e.to)) continue;
     if (e.from === e.to) continue; // ignore self-loops at index level too
 
     // Structural ownership index — drives per-field arrows + depth.

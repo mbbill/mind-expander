@@ -2,7 +2,11 @@ import { zoomTransform } from 'd3';
 import { type FunctionCallIndex, buildFunctionCallIndex } from './analysis/calls.ts';
 import { computeDrift } from './analysis/drift.ts';
 import { type Layout, callArrowKey, rowArrowKey } from './analysis/layout_model.ts';
-import { type TreeNode, buildModuleTree } from './analysis/module_tree.ts';
+import {
+  type TreeNode,
+  WORKSPACE_ROOT_ID,
+  buildWorkspaceTree,
+} from './analysis/module_tree.ts';
 import {
   type OwnershipIndex,
   buildOwnershipIndex,
@@ -73,7 +77,6 @@ interface RenderCtx {
   readonly incomingCallTargetsShown: ReadonlySet<string>;
   readonly ownership: OwnershipIndex;
   readonly calls: FunctionCallIndex;
-  readonly crateName: string;
   readonly draw: () => void;
   /** Set of ids that are types (vs modules). Used to filter ViewState's
    *  expanded ids when computing the type-level focus set. */
@@ -120,27 +123,23 @@ async function main(): Promise<void> {
   const facts = await tryLoadFacts();
   if (!facts) return;
 
-  const select = document.querySelector<HTMLSelectElement>('#crate');
   const svg = document.querySelector<SVGSVGElement>('#tree');
   const minimapRoot = document.querySelector<HTMLElement>('#minimap');
-  if (!select || !svg) {
-    showError('missing required DOM elements (#crate, #tree)');
+  if (!svg) {
+    showError('missing required DOM element (#tree)');
     return;
   }
+  // The crate dropdown is gone — multi-crate mode renders all workspace
+  // crates stacked vertically. Hide the wrapper if it exists for
+  // backwards compatibility with existing HTML.
+  const crateSelectEl = document.querySelector<HTMLElement>('#crate');
+  if (crateSelectEl) crateSelectEl.style.display = 'none';
 
   const crateNames = Object.keys(facts.crates).sort();
-  for (const name of crateNames) {
-    const opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = name;
-    select.append(opt);
-  }
-  const initial = crateNames.includes(PREFERRED_CRATE) ? PREFERRED_CRATE : crateNames[0];
-  if (!initial) {
+  if (crateNames.length === 0) {
     showError('facts.json contains no crates');
     return;
   }
-  select.value = initial;
 
   // Single canvas-backed measurer for the whole session — one canvas
   // element, one font binding, results memoized per string. Field names
@@ -408,15 +407,10 @@ async function main(): Promise<void> {
     }, 100);
   });
 
-  const renderFor = (crateName: string): void => {
-    const crate = facts.crates[crateName];
-    if (!crate) {
-      showError(`crate '${crateName}' not found in facts.json`);
-      return;
-    }
-    const staticRoot = buildModuleTree(crate);
-    const ownership = buildOwnershipIndex(facts, crateName);
-    const calls = buildFunctionCallIndex(facts, crateName, staticRoot);
+  const setupWorkspace = (): void => {
+    const staticRoot = buildWorkspaceTree(facts);
+    const ownership = buildOwnershipIndex(facts);
+    const calls = buildFunctionCallIndex(facts, staticRoot);
     const allTypeIds = collectTypeIds(staticRoot);
     const typeModule = collectTypeModuleMap(staticRoot);
     const drift = computeDrift(ownership, typeModule);
@@ -425,7 +419,12 @@ async function main(): Promise<void> {
     const typeIdSet = new Set(allTypeIds);
     const typeInfo = collectTypeInfo(staticRoot);
 
-    const state = new ViewState([staticRoot.id]);
+    // Default expand: workspace root (so crates render as top-level
+    // labels) + the PREFERRED_CRATE if it exists, so the user lands on a
+    // populated view rather than a list of collapsed crate names.
+    const initialExpanded: string[] = [staticRoot.id];
+    if (crateNames.includes(PREFERRED_CRATE)) initialExpanded.push(PREFERRED_CRATE);
+    const state = new ViewState(initialExpanded);
     const selectedFields = new Set<string>();
     const incomingCallTargetsShown = new Set<string>();
     // Per-crate set of ghost ids whose violet re-export arrow the user
@@ -512,8 +511,7 @@ async function main(): Promise<void> {
               id,
               ownership,
               depth,
-              drift,
-              crateName,
+              drift
             )) {
               state.expand(moduleId);
             }
@@ -564,8 +562,7 @@ async function main(): Promise<void> {
               fieldName,
               kind,
               ownership,
-              calls,
-              crateName,
+              calls
             )) {
               state.expand(targetId);
             }
@@ -583,8 +580,7 @@ async function main(): Promise<void> {
             incomingCallTargetsShown.add(functionFullPath);
             for (const targetId of callerExpansionIdsForFunction(
               functionFullPath,
-              calls,
-              crateName,
+              calls
             )) {
               state.expand(targetId);
             }
@@ -636,7 +632,7 @@ async function main(): Promise<void> {
             ghostArrowsShown.delete(ghostId);
           } else {
             ghostArrowsShown.add(ghostId);
-            for (const m of ancestorModuleIds(target, crateName)) state.expand(m);
+            for (const m of ancestorModuleIds(target)) state.expand(m);
             state.expand(target);
             // Mirror type-toggle's forward-LCA target expansion so a followed
             // ghost exposes the same routeable forward ownership arrows as a
@@ -647,8 +643,7 @@ async function main(): Promise<void> {
                 target,
                 ownership,
                 depth,
-                drift,
-                crateName,
+                drift
               )) {
                 state.expand(moduleId);
               }
@@ -683,7 +678,7 @@ async function main(): Promise<void> {
             hits,
             anchorX: anchor.x,
             anchorY: anchor.y,
-            qualifiedTypePath: (fullPath) => qualifiedTypePath(fullPath, typeInfo, crateName),
+            qualifiedTypePath: (fullPath) => qualifiedTypePath(fullPath, typeInfo),
           });
         },
       });
@@ -694,7 +689,7 @@ async function main(): Promise<void> {
       // Make the target visible: expand it (so its module is in focus
       // relevance and its row renders), expand its containing modules,
       // redraw, then center the viewport on its new y.
-      for (const m of ancestorModuleIds(typeId, crateName)) state.expand(m);
+      for (const m of ancestorModuleIds(typeId)) state.expand(m);
       state.expand(typeId);
       draw();
       const y = lookupY(lastLayout, typeId);
@@ -715,8 +710,8 @@ async function main(): Promise<void> {
     ): void => {
       const ids =
         endpoint === 'target'
-          ? targetExpansionIdsForArrowTarget(arrow, calls, crateName)
-          : sourceExpansionIdsForArrowSource(arrow, calls, crateName);
+          ? targetExpansionIdsForArrowTarget(arrow, calls)
+          : sourceExpansionIdsForArrowSource(arrow, calls);
       for (const id of ids) state.expand(id);
       draw();
       const point = arrowEndpointLayoutPoint(lastLayout, arrow, endpoint);
@@ -750,7 +745,7 @@ async function main(): Promise<void> {
         // immediately rather than requiring another click.
       } else {
         for (const ownerId of ownerIds) {
-          for (const m of ancestorModuleIds(ownerId, crateName)) state.expand(m);
+          for (const m of ancestorModuleIds(ownerId)) state.expand(m);
           state.expand(ownerId);
           // Also select the owner's field(s) that actually point at this
           // type, so a drifted (non-canonical) ownership arrow is allowed
@@ -775,7 +770,11 @@ async function main(): Promise<void> {
       selectedFields.clear();
       incomingCallTargetsShown.clear();
       state.clear();
+      // Restore the initial expand set: workspace root + preferred crate
+      // so the user lands on a populated view rather than a list of
+      // collapsed crate names.
       state.expand(staticRoot.id);
+      if (crateNames.includes(PREFERRED_CRATE)) state.expand(PREFERRED_CRATE);
       ghostArrowsShown.clear();
       if (currentCtx) {
         currentCtx.focusMode = false;
@@ -797,7 +796,6 @@ async function main(): Promise<void> {
       incomingCallTargetsShown,
       ownership,
       calls,
-      crateName,
       draw,
       typeIdSet,
       typeInfo,
@@ -813,8 +811,7 @@ async function main(): Promise<void> {
     draw();
   };
 
-  renderFor(initial);
-  select.addEventListener('change', () => renderFor(select.value));
+  setupWorkspace();
 }
 
 async function tryLoadFacts(): Promise<Facts | null> {
@@ -883,13 +880,14 @@ function computeFocus(ctx: RenderCtx): { modules: ReadonlySet<string> } {
     incomingCallTargetsShown,
     ownership,
     calls,
-    crateName,
     typeIdSet,
   } = ctx;
-  const modules = new Set<string>([crateName]);
+  // Workspace root is always in focus so every crate-level label can
+  // render. Per-type ancestors below add their own crate roots as needed.
+  const modules = new Set<string>([WORKSPACE_ROOT_ID]);
 
   const addAncestors = (typeFullPath: string): void => {
-    for (const m of ancestorModuleIds(typeFullPath, crateName)) modules.add(m);
+    for (const m of ancestorModuleIds(typeFullPath)) modules.add(m);
   };
 
   for (const id of state.expandedIds()) {
@@ -917,8 +915,7 @@ function computeFocus(ctx: RenderCtx): { modules: ReadonlySet<string> } {
         parsed.fieldName,
         parsed.kind,
         ownership,
-        calls,
-        crateName,
+        calls
       )) {
         modules.add(moduleId);
       }
@@ -982,15 +979,18 @@ function collectTypeInfo(root: TreeNode): Map<string, TypeInfo> {
 function qualifiedTypePath(
   fullPath: string,
   typeInfo: ReadonlyMap<string, TypeInfo>,
-  crateName: string,
 ): string {
   const info = typeInfo.get(fullPath);
+  const crateName = fullPath.split('::', 1)[0] ?? '';
   if (info !== undefined) {
-    if (isFunctionGroupPath(fullPath)) return info.modulePath;
-    return info.modulePath === '' ? info.label : `${info.modulePath}::${info.label}`;
+    if (isFunctionGroupPath(fullPath)) {
+      return info.modulePath === '' ? crateName : `${crateName}::${info.modulePath}`;
+    }
+    return info.modulePath === ''
+      ? `${crateName}::${info.label}`
+      : `${crateName}::${info.modulePath}::${info.label}`;
   }
-
-  return stripCratePrefix(stripFunctionGroupPath(fullPath), crateName);
+  return stripFunctionGroupPath(fullPath);
 }
 
 function isFunctionGroupPath(fullPath: string): boolean {
@@ -1000,11 +1000,6 @@ function isFunctionGroupPath(fullPath: string): boolean {
 function stripFunctionGroupPath(fullPath: string): string {
   const markerIndex = fullPath.indexOf('::__fn_');
   return markerIndex === -1 ? fullPath : fullPath.slice(0, markerIndex);
-}
-
-function stripCratePrefix(fullPath: string, crateName: string): string {
-  const prefix = `${crateName}::`;
-  return fullPath.startsWith(prefix) ? fullPath.slice(prefix.length) : fullPath;
 }
 
 function updateFocusModeIndicator(active: boolean): void {

@@ -142,6 +142,11 @@ export interface Arrow {
   readonly kind: ArrowKind;
   readonly driftClass: DriftClass;
   readonly locality?: ArrowLocality;
+  /** True when source and target live in different workspace crates. Used
+   *  by the renderer to apply a distinct dash style so cross-crate edges
+   *  stand out against intra-crate ones. Derived in routing.ts from the
+   *  head segments of fromTypeId / toTypeId. */
+  readonly isCrossCrate?: boolean;
 }
 
 /**

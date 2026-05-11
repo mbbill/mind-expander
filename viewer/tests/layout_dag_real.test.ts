@@ -44,7 +44,7 @@ function sfNanoCoreInputs(expandedIds: readonly string[]): LayoutInputs {
   }
 
   const staticRoot = buildModuleTree(crate);
-  const ownership = buildOwnershipIndex(facts, 'sf-nano-core');
+  const ownership = buildOwnershipIndex(facts);
   const typeModule = collectTypeModule(staticRoot);
   const drift = computeDrift(ownership, typeModule);
   const depth = computeOwnershipDepth(ownership, collectTypeIds(staticRoot), drift);

@@ -16,7 +16,6 @@ export function forwardRoutedTargetModulesFor(
   ownership: OwnershipIndex,
   depth: ReadonlyMap<string, number>,
   drift: DriftIndex,
-  crateName: string,
 ): string[] {
   const fields = ownership.fieldTargets.get(typeId);
   const sourceDepth = depth.get(typeId);
@@ -29,7 +28,7 @@ export function forwardRoutedTargetModulesFor(
       if (targetDepth === undefined) continue;
       const driftClass = drift.typeClass.get(targetFullPath) ?? 'at_lca';
       if (!isForwardOwnershipTarget(sourceDepth, targetDepth, driftClass)) continue;
-      for (const id of ancestorModuleIds(targetFullPath, crateName)) {
+      for (const id of ancestorModuleIds(targetFullPath)) {
         out.add(id);
       }
     }
@@ -51,14 +50,13 @@ export function targetModulesForMemberRow(
   rowKind: 'field' | 'method' | 'function',
   ownership: OwnershipIndex,
   calls: FunctionCallIndex,
-  crateName: string,
 ): string[] {
   const out = new Set<string>();
   if (rowKind === 'field') {
     const targets = ownership.fieldTargets.get(typeId)?.get(rowName);
     if (targets === undefined) return [];
     for (const target of targets) {
-      for (const id of ancestorModuleIds(target, crateName)) {
+      for (const id of ancestorModuleIds(target)) {
         out.add(id);
       }
     }
@@ -80,10 +78,9 @@ export function targetExpansionIdsForMemberRow(
   rowKind: 'field' | 'method' | 'function',
   ownership: OwnershipIndex,
   calls: FunctionCallIndex,
-  crateName: string,
 ): string[] {
   if (rowKind === 'field') {
-    return targetModulesForMemberRow(typeId, rowName, rowKind, ownership, calls, crateName);
+    return targetModulesForMemberRow(typeId, rowName, rowKind, ownership, calls);
   }
 
   const out = new Set<string>();
@@ -93,7 +90,7 @@ export function targetExpansionIdsForMemberRow(
   if (row === undefined) return [];
 
   for (const target of calls.callTargetsByFunction.get(row.functionFullPath) ?? []) {
-    for (const id of ancestorModuleIds(target.typeId, crateName)) {
+    for (const id of ancestorModuleIds(target.typeId)) {
       out.add(id);
     }
     out.add(target.typeId);
@@ -127,12 +124,11 @@ export function ownerFieldsPointingTo(
 export function callerExpansionIdsForFunction(
   functionFullPath: string,
   calls: FunctionCallIndex,
-  crateName: string,
 ): string[] {
   const out = new Set<string>();
   for (const call of calls.incomingCallsByFunction.get(functionFullPath) ?? []) {
     const caller = call.callerRow;
-    for (const id of ancestorModuleIds(caller.typeId, crateName)) {
+    for (const id of ancestorModuleIds(caller.typeId)) {
       out.add(id);
     }
     out.add(caller.typeId);
@@ -144,24 +140,21 @@ export function callerExpansionIdsForFunction(
 export function targetExpansionIdsForArrowTarget(
   arrow: Arrow,
   calls: FunctionCallIndex,
-  crateName: string,
 ): string[] {
-  return endpointExpansionIds(arrow, 'target', calls, crateName);
+  return endpointExpansionIds(arrow, 'target', calls);
 }
 
 export function sourceExpansionIdsForArrowSource(
   arrow: Arrow,
   calls: FunctionCallIndex,
-  crateName: string,
 ): string[] {
-  return endpointExpansionIds(arrow, 'source', calls, crateName);
+  return endpointExpansionIds(arrow, 'source', calls);
 }
 
 function endpointExpansionIds(
   arrow: Arrow,
   endpoint: 'source' | 'target',
   calls: FunctionCallIndex,
-  crateName: string,
 ): string[] {
   // Whichever endpoint the user is navigating to must be visible after a
   // redraw: expand ancestor modules, the containing type, and (for call
@@ -171,7 +164,7 @@ function endpointExpansionIds(
   const rowName = endpoint === 'target' ? arrow.toFieldName : arrow.fromFieldName;
   const rowKind = endpoint === 'target' ? arrow.toRowKind : arrow.fromRowKind;
   const out = new Set<string>();
-  for (const id of ancestorModuleIds(typeId, crateName)) {
+  for (const id of ancestorModuleIds(typeId)) {
     out.add(id);
   }
   out.add(typeId);
@@ -215,9 +208,21 @@ export function callableBucketIdsForType(
 }
 
 // `crate::a::b::Type` -> [`crate`, `crate::a`, `crate::a::b`].
-export function ancestorModuleIds(typeFullPath: string, crateName: string): string[] {
+/**
+ * Module ids on the path from the crate root to (but not including) the
+ * type itself. The crate is derived from the type's full path — the first
+ * `::`-separated segment — so the same helper works across all crates in
+ * a workspace.
+ *
+ * For `sf-nano-core::vm::store::Store` returns
+ *   ['sf-nano-core', 'sf-nano-core::vm', 'sf-nano-core::vm::store'].
+ *
+ * Returns [] for a single-segment fullPath (no crate prefix).
+ */
+export function ancestorModuleIds(typeFullPath: string): string[] {
   const segments = typeFullPath.split('::');
-  if (segments[0] !== crateName || segments.length < 2) return [];
+  if (segments.length < 2) return [];
+  const crateName = segments[0] ?? '';
   const ids = [crateName];
   let path = '';
   for (let i = 1; i < segments.length - 1; i++) {

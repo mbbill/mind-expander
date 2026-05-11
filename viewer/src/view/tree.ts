@@ -66,6 +66,11 @@ export const FONT_SIZE_FIELD = BASE_FONT_SIZE;
 // Stays within the grid-derived band height — at 14px the
 // cap-height plus descender comfortably fits.
 const FONT_SIZE_MODULE_LEAF = 14;
+// Crate names sit one tier above plain modules in the hierarchy. Slightly
+// bigger leaf type + bold + their own band-background tint visually
+// separate them from the chip-style module rows below. Kept modest so a
+// crate name doesn't dominate the canvas next to its module chips.
+const FONT_SIZE_CRATE_LEAF = 15;
 const FONT_SIZE_MODULE_PREFIX = 12; // base size — bumped to read clearly when the label sits over diagram content
 const FONT_SIZE_MODULE_CHEVRON = 14; // bumped above the base + bold so the
 // "+/-" expand affordance reads clearly without changing direction-neutral
@@ -216,6 +221,11 @@ const REEXPORT_DASH = '2 2';
 // pattern keeps them rhythmically distinct from re-export's symmetric
 // short dashes. Saves animation for a future data-flow layer.
 const METHOD_DASH = '4 3';
+// Cross-crate arrows: a Morse-code style dash-dot-dot pattern. Reads as
+// "boundary-crossing" without competing with the call/reexport dash
+// rhythms. Same stroke color as intra-crate — the user's color logic
+// (canonical / drift / locality) keeps applying.
+const CROSS_CRATE_DASH = '6 2 1 2 1 2';
 
 const ARROW_MARKER_IDS: Readonly<Record<DriftClass, string>> = {
   at_lca: 'sf-arrow-canonical',
@@ -662,34 +672,92 @@ function ensureGroup(
   return g;
 }
 
+// Band backgrounds carry a tier signal:
+//   - Crate-tier bands (modDepth 0) get a deeper, always-on tint so the
+//     crate boundary reads as a section break.
+//   - Module-tier bands keep the subtle alternating stripe pattern so a
+//     user can trace any type back horizontally to its module label.
+const COLOR_BAND_BG_MODULE = '#f1f5f9'; // slate-100 — light stripe for modules
+const COLOR_BAND_BG_CRATE = '#e2e8f0'; // slate-200 — slightly darker than module stripe
+// Thin horizontal divider painted only between adjacent crate-tier bands.
+// Module bands already separate visually via alternating slate/white
+// stripes, so a divider there would be visual noise. Crates share the
+// same slate-200 tint and would blend without an explicit line.
+const COLOR_BAND_DIVIDER = '#cbd5e1'; // slate-300
+const BAND_DIVIDER_HEIGHT = 1;
+
 function renderBandBackgrounds(
   g: Selection<SVGGElement, unknown, null, undefined>,
   layout: Layout,
 ): void {
-  // Subtle alternating tint per module band so the user can trace a horizontal
-  // lane from any type back to its module label on the left frozen column.
-  // Drawn first (so types and arrows render on top) and stretched far past
-  // the visible viewport so panning never reveals an unfilled edge.
-  const tinted = layout.modules.filter((_m, i) => i % 2 === 1);
-  const sel = g
-    .selectAll<SVGRectElement, Layout['modules'][number]>('rect')
-    .data(tinted, (m) => m.id);
+  // Build a per-band fill: always tint crate bands; among module-tier
+  // bands, tint every other one. Drawn first so types and arrows paint
+  // on top; rect stretched far past the visible viewport so panning
+  // never reveals an unfilled edge.
+  const tinted: { row: Layout['modules'][number]; fill: string }[] = [];
+  let moduleAlternation = 0;
+  for (const m of layout.modules) {
+    if (m.modDepth === 0) {
+      tinted.push({ row: m, fill: COLOR_BAND_BG_CRATE });
+      moduleAlternation = 0; // reset stripe phase under each crate so
+      // submodule bands always start un-tinted next to the crate header
+    } else {
+      moduleAlternation += 1;
+      if (moduleAlternation % 2 === 0) tinted.push({ row: m, fill: COLOR_BAND_BG_MODULE });
+    }
+  }
+  // Layer 1: tinted background rects.
+  const bgGroup = ensureGroup(g, 'band-bg-fills');
+  const sel = bgGroup
+    .selectAll<SVGRectElement, { row: Layout['modules'][number]; fill: string }>('rect')
+    .data(tinted, (entry) => entry.row.id);
   sel.exit().transition('exit').duration(ANIM_MS).style('opacity', 0).remove();
   const enter = sel
     .enter()
     .append('rect')
     .attr('x', -10000)
-    .attr('y', (m) => m.y)
+    .attr('y', (entry) => entry.row.y)
     .attr('width', 20000)
-    .attr('height', (m) => m.bandHeight)
-    .attr('fill', '#f1f5f9')
+    .attr('height', (entry) => entry.row.bandHeight)
+    .attr('fill', (entry) => entry.fill)
     .style('opacity', 0);
   enter.transition('enter').duration(ANIM_MS).style('opacity', 1);
   sel
+    .attr('fill', (entry) => entry.fill)
     .transition('move')
     .duration(ANIM_MS)
-    .attr('y', (m) => m.y)
-    .attr('height', (m) => m.bandHeight);
+    .attr('y', (entry) => entry.row.y)
+    .attr('height', (entry) => entry.row.bandHeight);
+
+  // Layer 2: hairline dividers ONLY between adjacent crate-tier bands.
+  // Module-tier bands already separate via their alternating slate/white
+  // stripes; crates share the slate-200 tint and would blend without an
+  // explicit line. Anchor each divider on the LOWER crate band's id so
+  // d3's data-join keeps the same DOM element when crates re-order.
+  const dividers: { id: string; y: number }[] = [];
+  for (let i = 1; i < layout.modules.length; i++) {
+    const prev = layout.modules[i - 1];
+    const cur = layout.modules[i];
+    if (prev !== undefined && cur !== undefined && prev.modDepth === 0 && cur.modDepth === 0) {
+      dividers.push({ id: cur.id, y: cur.y });
+    }
+  }
+  const dividerGroup = ensureGroup(g, 'band-dividers');
+  const divSel = dividerGroup
+    .selectAll<SVGRectElement, { id: string; y: number }>('rect')
+    .data(dividers, (d) => d.id);
+  divSel.exit().remove();
+  const divEnter = divSel
+    .enter()
+    .append('rect')
+    .attr('x', -10000)
+    .attr('width', 20000)
+    .attr('height', BAND_DIVIDER_HEIGHT)
+    .attr('fill', COLOR_BAND_DIVIDER)
+    .attr('pointer-events', 'none')
+    .attr('y', (d) => d.y);
+  divEnter.style('opacity', 0).transition('enter').duration(ANIM_MS).style('opacity', 1);
+  divSel.transition('move').duration(ANIM_MS).attr('y', (d) => d.y);
 }
 
 function ensureArrowMarker(layer: Selection<SVGGElement, unknown, null, undefined>): void {
@@ -781,6 +849,9 @@ function renderArrows(
     .attr('d', (a) => polylinePath(a.waypoints))
     .attr('stroke', (a) => arrowColor(a))
     .attr('stroke-dasharray', (a) => {
+      // Cross-crate wins regardless of kind — the boundary-crossing
+      // pattern is more important than the kind-specific rhythm.
+      if (a.isCrossCrate === true) return CROSS_CRATE_DASH;
       if (a.kind === 'reexport') return REEXPORT_DASH;
       if (a.kind === 'call') return METHOD_DASH;
       return null;
@@ -986,12 +1057,14 @@ function renderModules(
     .attr('class', 'prefix')
     .attr('font-size', FONT_SIZE_MODULE_PREFIX)
     .attr('fill', COLOR_MODULE_PREFIX);
-  // The crate-root row gets a bolder leaf so the crate name stands out
-  // as the top of the hierarchy. Submodules use the default weight.
+  // Crate rows (modDepth 0 — the top tier under the hidden workspace
+  // root) get a bigger, bold leaf so they read as section headers.
+  // Submodules use the default size and weight; the chip background
+  // (rendered separately) carries their visual identity instead.
   moduleText
     .append('tspan')
     .attr('class', 'leaf')
-    .attr('font-size', FONT_SIZE_MODULE_LEAF)
+    .attr('font-size', (d) => (d.modDepth === 0 ? FONT_SIZE_CRATE_LEAF : FONT_SIZE_MODULE_LEAF))
     .attr('font-weight', (d) => (d.modDepth === 0 ? 700 : 400));
 
   enter
@@ -1055,6 +1128,18 @@ function renderModules(
   };
   merged.each(function (d) {
     const rowG = select(this);
+
+    // Crate tier (modDepth 0 under the hidden workspace root) renders
+    // as a plain bold heading — no chip cluster, no border. The band
+    // background (rendered separately) carries its identity. Sweep any
+    // leftover chip DOM in case a row's tier ever changes across redraws.
+    if (d.modDepth === 0) {
+      rowG.select<SVGClipPathElement>('clipPath').remove();
+      rowG.select('g.prefix-bgs').selectAll<SVGRectElement, unknown>('rect.seg').remove();
+      rowG.select<SVGRectElement>('rect.cluster-border').remove();
+      return;
+    }
+
     const prefixSegs: RowSeg[] = d.prefixSegments.map((s) => ({
       ...s,
       fill: colorForSegment(s.name),

@@ -218,6 +218,13 @@ function buildArrowLayers(arrows: readonly Arrow[]): readonly ArrowLayer[] {
 }
 
 function emitRoutedArrow(request: RouteRequest, field: RoutingField): Arrow {
+  // Cross-crate test compares the leading `::`-separated segment of each
+  // endpoint's id. Workspace ids are crate-qualified by construction
+  // (extractor emits crate-prefixed paths), so a head mismatch is exactly
+  // "source and target live in different crates".
+  const fromCrate = request.fromTypeId.split('::', 1)[0] ?? '';
+  const toCrate = request.toTypeId.split('::', 1)[0] ?? '';
+  const isCrossCrate = fromCrate !== toCrate;
   const arrow: Arrow = {
     waypoints: routeAroundBlocks(request, field),
     fromTypeId: request.fromTypeId,
@@ -227,6 +234,7 @@ function emitRoutedArrow(request: RouteRequest, field: RoutingField): Arrow {
     kind: request.kind,
     driftClass: request.driftClass,
     ...(request.locality !== undefined ? { locality: request.locality } : {}),
+    ...(isCrossCrate ? { isCrossCrate: true } : {}),
   };
   if (request.toFieldName !== undefined && request.toRowKind !== undefined) {
     return { ...arrow, toFieldName: request.toFieldName, toRowKind: request.toRowKind };

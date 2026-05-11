@@ -88,7 +88,7 @@ describe('buildFunctionCallIndex', () => {
       ),
     ]);
     const root = buildModuleTree(crate);
-    const idx = buildFunctionCallIndex(facts(crate), 'c', root);
+    const idx = buildFunctionCallIndex(facts(crate), root);
 
     expect(idx.rowByFunction.get('c::caller')).toMatchObject({
       typeId: 'c::__fn_pub',

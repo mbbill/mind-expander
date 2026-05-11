@@ -114,6 +114,16 @@ describe('selected arrow styling', () => {
     expect(source).toMatch(/circle\.type-dot[\s\S]{0,1500}?showTypeDebugPanel/);
   });
 
+  it('renders cross-crate arrows with a distinct dash pattern', () => {
+    // Cross-crate arrows share color with intra-crate ones but get a
+    // distinct dash so the boundary stands out. The dash pattern wins
+    // over the per-kind rhythms.
+    const source = treeSource();
+    expect(source).toContain('CROSS_CRATE_DASH');
+    expect(source).toMatch(/CROSS_CRATE_DASH\s*=\s*'6 2 1 2 1 2'/);
+    expect(source).toMatch(/isCrossCrate === true.*CROSS_CRATE_DASH/);
+  });
+
   it('colors signature rows by ownership flavor', () => {
     // Moves are the common case so they reuse the neutral grey
     // (COLOR_FIELD_TY) — no separate hex. Borrows are the interesting

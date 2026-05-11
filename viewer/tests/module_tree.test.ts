@@ -3,10 +3,13 @@ import {
   type ModuleNode,
   type TreeNode,
   type TypeNode,
+  WORKSPACE_ROOT_ID,
   buildModuleTree,
+  buildWorkspaceTree,
 } from '../src/analysis/module_tree.ts';
 import type {
   CrateFacts,
+  Facts,
   FnFacts,
   ModuleFacts,
   ReExport,
@@ -485,5 +488,43 @@ describe('buildModuleTree — type re-export ghosts', () => {
     const outer = findModule(root, 'outer');
     const g = typeChildren(outer as ModuleNode)[0] as TypeNode;
     expect(g.typeKind).toBe('struct');
+  });
+});
+
+describe('buildWorkspaceTree', () => {
+  it('wraps each crate tree under a virtual workspace root', () => {
+    const facts: Facts = {
+      crates: {
+        b: crateOf('b', [mod('', [ty('b', '', 'BType')])]),
+        a: crateOf('a', [mod('', [ty('a', '', 'AType')])]),
+      },
+      edges: [],
+    };
+    const ws = buildWorkspaceTree(facts);
+    expect(ws.id).toBe(WORKSPACE_ROOT_ID);
+    // Crates ordered alphabetically — stable across reloads even if the
+    // JSON object key order is unspecified.
+    expect(ws.children.map((c) => (c.kind === 'module' ? c.label : c.id))).toEqual(['a', 'b']);
+  });
+
+  it('preserves crate-level structure: a crate child IS a buildModuleTree result', () => {
+    const facts: Facts = {
+      crates: {
+        c: crateOf('c', [mod('', [ty('c', '', 'Root')]), mod('inner', [ty('c', 'inner', 'I')])]),
+      },
+      edges: [],
+    };
+    const ws = buildWorkspaceTree(facts);
+    expect(ws.children).toHaveLength(1);
+    const crateRoot = ws.children[0];
+    if (crateRoot?.kind !== 'module') throw new Error('expected module');
+    expect(crateRoot.label).toBe('c');
+    expect(findModule(crateRoot, 'inner')).toBeDefined();
+  });
+
+  it('returns an empty workspace tree when facts has no crates', () => {
+    const ws = buildWorkspaceTree({ crates: {}, edges: [] });
+    expect(ws.id).toBe(WORKSPACE_ROOT_ID);
+    expect(ws.children).toEqual([]);
   });
 });

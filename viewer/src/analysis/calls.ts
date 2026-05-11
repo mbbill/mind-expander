@@ -34,11 +34,10 @@ export interface FunctionCallIndex {
   readonly rowsByType: ReadonlyMap<string, readonly FunctionRowRef[]>;
 }
 
-export function buildFunctionCallIndex(
-  facts: Facts,
-  crateName: string,
-  root: ModuleNode,
-): FunctionCallIndex {
+export function buildFunctionCallIndex(facts: Facts, root: ModuleNode): FunctionCallIndex {
+  // Crate name per TypeNode is the head of its fullPath; workspace tree
+  // wraps multiple crates so we derive per-node instead of taking one
+  // global crateName parameter.
   const rowByFunction = new Map<string, FunctionRowRef>();
   const rowsByType = new Map<string, FunctionRowRef[]>();
 
@@ -55,6 +54,7 @@ export function buildFunctionCallIndex(
       return;
     }
 
+    const nodeCrate = node.fullPath.split('::', 1)[0] ?? '';
     if (node.typeKind === 'function_group') {
       for (const fn of node.functions) {
         addRow({
@@ -62,7 +62,7 @@ export function buildFunctionCallIndex(
           typeId: node.fullPath,
           rowName: fn.fn.name,
           rowKind: 'function',
-          moduleId: moduleId(crateName, node.modulePath),
+          moduleId: moduleId(nodeCrate, node.modulePath),
           bucketId: null,
         });
       }
@@ -76,7 +76,7 @@ export function buildFunctionCallIndex(
           typeId: node.fullPath,
           rowName: method.name,
           rowKind: 'method',
-          moduleId: moduleId(crateName, node.modulePath),
+          moduleId: moduleId(nodeCrate, node.modulePath),
           bucketId: methodBucketId(node.fullPath, bucket.bucket),
         });
       }
@@ -88,11 +88,8 @@ export function buildFunctionCallIndex(
   const callsByFunction = new Map<string, FunctionCallRef[]>();
   const incomingCallsByFunction = new Map<string, FunctionCallRef[]>();
   const nonLocal = new Set<string>();
-  const inCrate = (path: string): boolean => path.startsWith(`${crateName}::`);
 
   for (const edge of facts.call_edges ?? []) {
-    if (!inCrate(edge.caller)) continue;
-
     const callerRow = rowByFunction.get(edge.caller);
     if (callerRow === undefined) continue;
 

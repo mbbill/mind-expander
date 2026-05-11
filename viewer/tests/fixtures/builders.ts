@@ -49,7 +49,7 @@ export function facts(crate: CrateFacts, edges: Edge[]): Facts {
 export function buildInputs(crate: CrateFacts, edges: Edge[], expandedIds: string[]): LayoutInputs {
   const f = facts(crate, edges);
   const root = buildModuleTree(crate);
-  const ownership = buildOwnershipIndex(f, crate.name);
+  const ownership = buildOwnershipIndex(f);
   const typeModule = collectTypeModule(root);
   const drift = computeDrift(ownership, typeModule);
   const depth = computeOwnershipDepth(ownership, collectIds(root), drift);

@@ -42,6 +42,7 @@ import {
   type ModuleNode,
   type TreeNode,
   type TypeNode,
+  WORKSPACE_ROOT_ID,
   methodBucketId,
 } from '../analysis/module_tree.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
@@ -264,6 +265,39 @@ function collectVisibleModuleBands(
   if (focusModules !== undefined && !focusModules.has(node.id)) return [];
 
   const expanded = state.isExpanded(node.id);
+
+  // The workspace root is structural, not a real module — it just wraps
+  // crate trees so the layout pipeline has a single root. Don't emit a
+  // band for it; recurse into its children (the crates) at modDepth 0
+  // so they act as the top tier in the rendered hierarchy.
+  if (node.id === WORKSPACE_ROOT_ID) {
+    const out: ModuleBandSpec[] = [];
+    if (expanded) {
+      for (const child of node.children) {
+        if (child.kind !== 'module') continue;
+        out.push(
+          ...collectVisibleModuleBands(
+            child,
+            modDepth,
+            /* parentExpanded */ true,
+            state,
+            focusModules,
+            ownership,
+            drift,
+            methodsHidden,
+            fieldArrowsShown,
+            callArrowsShown,
+            calls,
+            placementPlan,
+            measure,
+            measureBold,
+          ),
+        );
+      }
+    }
+    return out;
+  }
+
   const hasChildren = node.children.length > 0;
   const labelX = LEFT_PAD + modDepth * INDENT_PX + MODULE_GLYPH_W;
   let semanticItems: readonly SemanticBandItem[] = [];
