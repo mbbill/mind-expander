@@ -79,4 +79,18 @@ describe('selected arrow styling', () => {
     expect(source).toContain('arrowDisambigGroupElement');
     expect(source).toContain('path-prefix');
   });
+
+  it('colors signature rows by ownership flavor', () => {
+    // Moves are the common case so they reuse the neutral grey
+    // (COLOR_FIELD_TY) — no separate hex. Borrows are the interesting
+    // non-default cases and get a hue shift each. If anyone deletes the
+    // palette constants or the borrowFlavor wiring, the visual ownership
+    // cue silently regresses.
+    const source = treeSource();
+    expect(source).toContain('COLOR_BORROW_MOVE = COLOR_FIELD_TY');
+    expect(source).toContain("#c2410c"); // shared → orange-700
+    expect(source).toContain("#7c3aed"); // mut → violet-600
+    expect(source).toContain('borrowFlavor');
+    expect(source).toContain('borrowFlavorColor');
+  });
 });

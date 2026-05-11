@@ -13,6 +13,7 @@
 
 import { type Selection, pointer, select, zoomTransform } from 'd3';
 import { type ArrowHit, pickArrowsAtPoint } from '../analysis/arrow_hit.ts';
+import { type BorrowFlavor, borrowFlavor } from '../analysis/borrow_flavor.ts';
 import type { DriftClass } from '../analysis/drift.ts';
 import {
   BASE_FONT_SIZE,
@@ -98,6 +99,26 @@ const COLOR_CHEVRON_EXPAND = '#22c55e'; // green-500
 const COLOR_CHEVRON_COLLAPSE = '#ef4444'; // red-500
 const COLOR_FIELD_NAME = '#334155';
 const COLOR_FIELD_TY = '#94a3b8'; // slate-400, grey for the on-hover type hint
+// Ownership-flavor palette for signature rows. Encodes how a parameter or
+// return crosses the function boundary. Moves are the common case in
+// idiomatic Rust signatures, so they render in the same neutral grey as
+// non-signature type hints — the eye scans past them. Borrows are the
+// interesting non-default case (caller retains ownership), so they get a
+// hue shift: orange for shared, violet for exclusive mutation.
+const COLOR_BORROW_MOVE = COLOR_FIELD_TY; // neutral grey: the common baseline
+const COLOR_BORROW_SHARED = '#c2410c'; // orange-700: temporary read-only handoff
+const COLOR_BORROW_MUT = '#7c3aed'; // violet-600: exclusive write borrow
+
+function borrowFlavorColor(flavor: BorrowFlavor): string {
+  switch (flavor) {
+    case 'move':
+      return COLOR_BORROW_MOVE;
+    case 'shared':
+      return COLOR_BORROW_SHARED;
+    case 'mut':
+      return COLOR_BORROW_MUT;
+  }
+}
 const TY_HIDE_DELAY = 0; // ms — type-hint hides immediately on mouse-out (only the 200ms fade-out transition still plays)
 const TY_TEXT_GAP = 4;
 const TY_BG_PAD_X = 4;
@@ -1600,22 +1621,31 @@ function renderSignatureArgRow(
   localX: number,
   localY: number,
 ): void {
-  // '->' is the return-type prefix; render it in the same grey as the type
-  // so the row reads as "type only". All other names (params + self) are
-  // identifier-like and render in the normal row name color.
+  // Ownership flavor drives color. For self rows the ownership annotation
+  // lives on the NAME (`&mut self` / `&self` / `self`); for params and the
+  // return row it lives on the TYPE text. The single borrowFlavor helper
+  // handles both because both shapes start with `&` or not.
   const isReturn = row.name === '->';
+  const isSelf = !isReturn && row.tyText === '';
+  const flavor = borrowFlavor(isSelf ? row.name : row.tyText);
+  const flavorColor = borrowFlavorColor(flavor);
+  // Param/return row names stay in their baseline colors so the user's eye
+  // can still scan a column of names quickly. The flavor decoration lives
+  // on the type half. Self rows get the flavor on the name itself because
+  // there is no type text to carry it.
+  const nameColor = isSelf ? flavorColor : isReturn ? COLOR_FIELD_TY : COLOR_FIELD_NAME;
   const text = fg
     .select<SVGTextElement>('text.field-row')
     .attr('font-style', 'normal')
     .attr('font-weight', 400)
-    .attr('fill', isReturn ? COLOR_FIELD_TY : COLOR_FIELD_NAME)
+    .attr('fill', nameColor)
     .text(row.name);
   text.on('click', null).on('mouseenter', null).on('mouseleave', null);
   text.transition('move').duration(ANIM_MS).attr('x', localX).attr('y', localY);
 
   const ty = fg.select<SVGTextElement>('text.field-ty');
   ty.text(row.tyText)
-    .attr('fill', COLOR_FIELD_TY)
+    .attr('fill', flavorColor)
     .style('opacity', row.tyText === '' ? 0 : 1)
     .style('pointer-events', 'none');
   ty.transition('move')
