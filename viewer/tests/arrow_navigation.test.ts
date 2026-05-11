@@ -1,200 +1,237 @@
 import { describe, expect, it } from 'vitest';
-import { INCOMING_CALL_MARKER_OFFSET } from '../src/analysis/layout_metrics.ts';
-import type { Arrow, FieldRow, Layout, TypeBox } from '../src/analysis/layout_model.ts';
+import type { Arrow, Layout } from '../src/analysis/layout_model.ts';
 import { arrowEndpointLayoutPoint } from '../src/view/arrow_navigation.ts';
 
 describe('arrowEndpointLayoutPoint', () => {
-  it('resolves the source endpoint to the caller row right edge (arrowSourceX)', () => {
-    const layout = testLayout({
-      types: [
-        type('Caller', { x: 0, y: 20, width: 80, height: 40 }, [
-          row({ name: 'caller', kind: 'method', x: 8, y: 30, arrowSourceX: 60 }),
-        ]),
-        type('Callee', { x: 200, y: 80, width: 80, height: 40 }, [
-          row({ name: 'callee', kind: 'method', x: 208, y: 90, arrowSourceX: 260 }),
-        ]),
+  it('returns the fresh arrow waypoints[0] for the source endpoint', () => {
+    const stale = callArrow({
+      waypoints: [
+        { x: 0, y: 0 },
+        { x: 9, y: 9 },
       ],
     });
-    const a = callArrow('Caller', 'caller', 'Callee', 'callee');
-
-    expect(arrowEndpointLayoutPoint(layout, a, 'source')).toEqual({ x: 60, y: 30 });
-  });
-
-  it('resolves the target endpoint to the callee row arrow-tip x, not the label left edge', () => {
-    // arrowTargetEntryPoint = row.x - markerOffset(if any) - LABEL_GAP(4).
-    // No incoming marker → just row.x - 4.
-    const layout = testLayout({
-      types: [
-        type('Caller', { x: 0, y: 20, width: 80, height: 40 }, [
-          row({ name: 'caller', kind: 'method', x: 8, y: 30, arrowSourceX: 60 }),
-        ]),
-        type('Callee', { x: 200, y: 80, width: 80, height: 40 }, [
-          row({ name: 'callee', kind: 'method', x: 208, y: 90, arrowSourceX: 260 }),
-        ]),
+    const fresh = callArrow({
+      waypoints: [
+        { x: 60, y: 30 },
+        { x: 120, y: 30 },
+        { x: 120, y: 90 },
+        { x: 204, y: 90 },
       ],
     });
-    const a = callArrow('Caller', 'caller', 'Callee', 'callee');
+    const layout = layoutWith([fresh]);
 
-    expect(arrowEndpointLayoutPoint(layout, a, 'target')).toEqual({ x: 204, y: 90 });
+    expect(arrowEndpointLayoutPoint(layout, stale, 'source')).toEqual({ x: 60, y: 30 });
   });
 
-  it('subtracts the incoming-call marker offset from the callee target point', () => {
-    const layout = testLayout({
-      types: [
-        type('Caller', { x: 0, y: 20, width: 80, height: 40 }, [
-          row({ name: 'caller', kind: 'method', x: 8, y: 30, arrowSourceX: 60 }),
-        ]),
-        type('Callee', { x: 200, y: 80, width: 80, height: 40 }, [
-          row({
-            name: 'callee',
-            kind: 'method',
-            x: 208,
-            y: 90,
-            arrowSourceX: 260,
-            hasIncomingCalls: true,
-          }),
-        ]),
+  it('returns the fresh arrow last waypoint for the target endpoint', () => {
+    const stale = callArrow({
+      waypoints: [
+        { x: 0, y: 0 },
+        { x: 9, y: 9 },
       ],
     });
-    const a = callArrow('Caller', 'caller', 'Callee', 'callee');
-
-    expect(arrowEndpointLayoutPoint(layout, a, 'target')).toEqual({
-      x: 208 - INCOMING_CALL_MARKER_OFFSET - 4,
-      y: 90,
-    });
-  });
-
-  it('falls back to the type box left-mid edge when the arrow has no row target', () => {
-    const layout = testLayout({
-      types: [
-        type('Caller', { x: 0, y: 20, width: 80, height: 40 }, [
-          row({ name: 'caller', kind: 'method', x: 8, y: 30, arrowSourceX: 60 }),
-        ]),
-        type('Target', { x: 200, y: 80, width: 120, height: 60 }, []),
+    const fresh = callArrow({
+      waypoints: [
+        { x: 60, y: 30 },
+        { x: 120, y: 30 },
+        { x: 120, y: 90 },
+        { x: 204, y: 90 },
       ],
     });
-    const a = ownershipArrow('Caller', 'caller', 'Target');
+    const layout = layoutWith([fresh]);
 
-    expect(arrowEndpointLayoutPoint(layout, a, 'target')).toEqual({ x: 200, y: 110 });
+    expect(arrowEndpointLayoutPoint(layout, stale, 'target')).toEqual({ x: 204, y: 90 });
   });
 
-  it('returns null when the endpoint type is not in the current layout', () => {
-    const layout = testLayout({ types: [] });
-    const a = callArrow('Caller', 'caller', 'Callee', 'callee');
-    expect(arrowEndpointLayoutPoint(layout, a, 'source')).toBeNull();
-    expect(arrowEndpointLayoutPoint(layout, a, 'target')).toBeNull();
+  it('reads from the fresh layout even when the stale arrow has different waypoints', () => {
+    // Regression guard for the original bug: the consumer must not derive
+    // endpoints from row/type positions or from the clicked arrow's stale
+    // waypoints — it must read the freshly routed arrow's waypoints.
+    const stale = callArrow({
+      waypoints: [
+        { x: 0, y: 0 },
+        { x: 9, y: 9 },
+      ],
+    });
+    const fresh = callArrow({
+      waypoints: [
+        { x: 1000, y: 2000 },
+        { x: 3000, y: 4000 },
+      ],
+    });
+
+    expect(arrowEndpointLayoutPoint(layoutWith([fresh]), stale, 'source')).toEqual({
+      x: 1000,
+      y: 2000,
+    });
+    expect(arrowEndpointLayoutPoint(layoutWith([fresh]), stale, 'target')).toEqual({
+      x: 3000,
+      y: 4000,
+    });
+  });
+
+  it('matches arrows by edge identity (kind + from + to), not by waypoint shape', () => {
+    const target = callArrow({
+      fromTypeId: 'Caller',
+      fromFieldName: 'caller',
+      toTypeId: 'Callee',
+      toFieldName: 'callee',
+      waypoints: [
+        { x: 10, y: 10 },
+        { x: 20, y: 20 },
+      ],
+    });
+    const decoy = callArrow({
+      fromTypeId: 'Other',
+      fromFieldName: 'caller',
+      toTypeId: 'Callee',
+      toFieldName: 'callee',
+      waypoints: [
+        { x: 999, y: 999 },
+        { x: 1000, y: 1000 },
+      ],
+    });
+
+    expect(
+      arrowEndpointLayoutPoint(
+        layoutWith([decoy, target]),
+        callArrow({
+          fromTypeId: 'Caller',
+          fromFieldName: 'caller',
+          toTypeId: 'Callee',
+          toFieldName: 'callee',
+        }),
+        'source',
+      ),
+    ).toEqual({ x: 10, y: 10 });
+  });
+
+  it('distinguishes ownership and call arrows that share endpoints', () => {
+    // The Arrow.kind is part of edge identity. An ownership edge from a
+    // field row and a call edge from a method row could share fromTypeId +
+    // toTypeId by coincidence — they must not be confused.
+    const ownership = ownershipArrow({
+      fromTypeId: 'Source',
+      fromFieldName: 'member',
+      toTypeId: 'Target',
+      waypoints: [
+        { x: 1, y: 1 },
+        { x: 2, y: 2 },
+      ],
+    });
+    const call = callArrow({
+      fromTypeId: 'Source',
+      fromFieldName: 'member',
+      toTypeId: 'Target',
+      toFieldName: 'callee',
+      waypoints: [
+        { x: 7, y: 7 },
+        { x: 8, y: 8 },
+      ],
+    });
+    const layout = layoutWith([ownership, call]);
+
+    expect(
+      arrowEndpointLayoutPoint(
+        layout,
+        ownershipArrow({ fromTypeId: 'Source', fromFieldName: 'member', toTypeId: 'Target' }),
+        'target',
+      ),
+    ).toEqual({ x: 2, y: 2 });
+    expect(
+      arrowEndpointLayoutPoint(
+        layout,
+        callArrow({
+          fromTypeId: 'Source',
+          fromFieldName: 'member',
+          toTypeId: 'Target',
+          toFieldName: 'callee',
+        }),
+        'target',
+      ),
+    ).toEqual({ x: 8, y: 8 });
+  });
+
+  it('returns null when the arrow is not in the fresh layout', () => {
+    const stale = callArrow({
+      waypoints: [
+        { x: 0, y: 0 },
+        { x: 9, y: 9 },
+      ],
+    });
+    expect(arrowEndpointLayoutPoint(layoutWith([]), stale, 'source')).toBeNull();
+    expect(arrowEndpointLayoutPoint(layoutWith([]), stale, 'target')).toBeNull();
+  });
+
+  it('returns null when the matched arrow has fewer than two waypoints', () => {
+    // routing emits degenerate single-waypoint routes when no clear path
+    // exists; navigation has nothing useful to anchor on in that case.
+    const degenerate = callArrow({ waypoints: [{ x: 5, y: 5 }] });
+    const layout = layoutWith([degenerate]);
+    const stale = callArrow({
+      waypoints: [
+        { x: 0, y: 0 },
+        { x: 9, y: 9 },
+      ],
+    });
+
+    expect(arrowEndpointLayoutPoint(layout, stale, 'source')).toBeNull();
+    expect(arrowEndpointLayoutPoint(layout, stale, 'target')).toBeNull();
   });
 
   it('returns null when the layout itself is null', () => {
-    const a = callArrow('Caller', 'caller', 'Callee', 'callee');
-    expect(arrowEndpointLayoutPoint(null, a, 'source')).toBeNull();
-    expect(arrowEndpointLayoutPoint(null, a, 'target')).toBeNull();
+    const stale = callArrow({
+      waypoints: [
+        { x: 0, y: 0 },
+        { x: 9, y: 9 },
+      ],
+    });
+    expect(arrowEndpointLayoutPoint(null, stale, 'source')).toBeNull();
+    expect(arrowEndpointLayoutPoint(null, stale, 'target')).toBeNull();
   });
 });
 
-function callArrow(
-  fromTypeId: string,
-  fromFieldName: string,
-  toTypeId: string,
-  toFieldName: string,
+function callArrow(input: Partial<Arrow> & { readonly waypoints?: Arrow['waypoints'] }): Arrow {
+  return {
+    waypoints: input.waypoints ?? [
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+    ],
+    fromTypeId: input.fromTypeId ?? 'Caller',
+    fromFieldName: input.fromFieldName ?? 'caller',
+    fromRowKind: input.fromRowKind ?? 'method',
+    toTypeId: input.toTypeId ?? 'Callee',
+    toFieldName: input.toFieldName ?? 'callee',
+    toRowKind: input.toRowKind ?? 'method',
+    kind: 'call',
+    driftClass: input.driftClass ?? 'at_lca',
+  };
+}
+
+function ownershipArrow(
+  input: Partial<Arrow> & { readonly waypoints?: Arrow['waypoints'] },
 ): Arrow {
   return {
-    waypoints: [
+    waypoints: input.waypoints ?? [
       { x: 0, y: 0 },
       { x: 1, y: 1 },
     ],
-    fromTypeId,
-    fromFieldName,
-    fromRowKind: 'method',
-    toTypeId,
-    toFieldName,
-    toRowKind: 'method',
-    kind: 'call',
-    driftClass: 'at_lca',
-  };
-}
-
-function ownershipArrow(fromTypeId: string, fromFieldName: string, toTypeId: string): Arrow {
-  return {
-    waypoints: [
-      { x: 0, y: 0 },
-      { x: 1, y: 1 },
-    ],
-    fromTypeId,
-    fromFieldName,
-    fromRowKind: 'field',
-    toTypeId,
+    fromTypeId: input.fromTypeId ?? 'Source',
+    fromFieldName: input.fromFieldName ?? 'member',
+    fromRowKind: input.fromRowKind ?? 'field',
+    toTypeId: input.toTypeId ?? 'Target',
     kind: 'ownership',
-    driftClass: 'at_lca',
+    driftClass: input.driftClass ?? 'at_lca',
   };
 }
 
-function row(input: {
-  name: string;
-  kind: 'field' | 'method' | 'function';
-  x: number;
-  y: number;
-  arrowSourceX: number;
-  hasIncomingCalls?: boolean;
-}): FieldRow {
-  return {
-    name: input.name,
-    tyText: '',
-    ownership: 'primitive',
-    x: input.x,
-    y: input.y,
-    arrowSourceX: input.arrowSourceX,
-    targets: [],
-    callTargets: [],
-    callRefs: [],
-    incomingCallRefs: [],
-    functionFullPath: null,
-    callsOutsideModule: false,
-    hasExternalCalls: false,
-    hasUnresolvedCalls: false,
-    hasOutgoingCalls: false,
-    hasIncomingCalls: input.hasIncomingCalls ?? false,
-    kind: input.kind,
-    bucketId: null,
-    memberDriftClass: null,
-  };
-}
-
-function type(
-  id: string,
-  rect: { x: number; y: number; width: number; height: number },
-  fields: readonly FieldRow[],
-): TypeBox {
-  return {
-    id,
-    label: id,
-    typeKind: 'struct',
-    visibility: 'pub',
-    fullPath: id,
-    modulePath: '',
-    col: 0,
-    x: rect.x,
-    y: rect.y,
-    width: rect.width,
-    headerArrowX: null,
-    headerHitWidth: rect.width,
-    height: rect.height,
-    hasFields: fields.length > 0,
-    expanded: fields.length > 0,
-    totalFieldCount: fields.length,
-    isGhost: false,
-    ghostTarget: null,
-    fields,
-  };
-}
-
-function testLayout(input: { types: readonly TypeBox[] }): Layout {
+function layoutWith(arrows: readonly Arrow[]): Layout {
   return {
     modules: [],
-    types: input.types,
+    types: [],
     arrowLayers: [],
-    arrows: [],
-    totalHeight: 200,
-    totalWidth: 400,
+    arrows,
+    totalHeight: 0,
+    totalWidth: 0,
   };
 }

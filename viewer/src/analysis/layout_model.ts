@@ -109,6 +109,15 @@ export type ArrowLayerId = 'ownership' | 'reexport' | 'call' | 'debug';
 export type ArrowLocality = 'local' | 'external';
 
 export interface Arrow {
+  /** Routed orthogonal polyline in data space. **Contract:** `waypoints[0]`
+   *  is the arrow's source endpoint and `waypoints[length-1]` is its target
+   *  endpoint, both in data-space coordinates. The producer (routing.ts) is
+   *  the single source of truth for these points; consumers that need to
+   *  pan/navigate to an endpoint MUST read from the rendered arrow's
+   *  waypoints rather than re-deriving from row/type positions. Re-deriving
+   *  has historically drifted from the producer's formulas (different
+   *  treatment of obstacles, mid-y fallbacks, etc.) and caused navigation
+   *  to land off-target. */
   readonly waypoints: readonly ArrowWaypoint[];
   readonly fromTypeId: string;
   readonly fromFieldName: string;
@@ -119,6 +128,28 @@ export interface Arrow {
   readonly kind: ArrowKind;
   readonly driftClass: DriftClass;
   readonly locality?: ArrowLocality;
+}
+
+/**
+ * Identity comparison for arrows across layout rebuilds. Two arrows are
+ * "the same arrow" if they share kind and both endpoints (typeId + fieldName
+ * + rowKind on each side). Waypoints intentionally do not participate —
+ * a redraw routes the arrow differently but it is still the same logical edge.
+ *
+ * Used by navigation to find the freshly routed copy of a clicked arrow in
+ * the rebuilt Layout, so the pan target is the producer's current endpoint
+ * rather than the clicked arrow's stale waypoints.
+ */
+export function isSameArrowEdge(a: Arrow, b: Arrow): boolean {
+  return (
+    a.kind === b.kind &&
+    a.fromTypeId === b.fromTypeId &&
+    a.fromFieldName === b.fromFieldName &&
+    a.fromRowKind === b.fromRowKind &&
+    a.toTypeId === b.toTypeId &&
+    a.toFieldName === b.toFieldName &&
+    a.toRowKind === b.toRowKind
+  );
 }
 
 export interface ArrowLayer {
