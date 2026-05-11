@@ -260,18 +260,6 @@ export interface TreeRenderOptions {
     kind: 'method' | 'function',
     functionFullPath: string,
   ) => void;
-  /** Hover on a callable row → request a transient call-arrow layer for that
-   *  single row. Leaving the row clears only that preview layer. */
-  readonly onPreviewCallArrows: (
-    typePath: string,
-    fieldName: string,
-    kind: 'method' | 'function',
-  ) => Layout | null;
-  readonly onClearCallArrowPreview: (
-    typePath: string,
-    fieldName: string,
-    kind: 'method' | 'function',
-  ) => void;
   /** Set of "typePath::fieldName" keys currently selected. */
   readonly selectedFields: ReadonlySet<string>;
   readonly incomingCallTargetsShown: ReadonlySet<string>;
@@ -1502,18 +1490,14 @@ function renderFieldsForType(
     // DOM node so it survives re-renders (data-join keeps the same element).
     const node = text.node() as (SVGTextElement & { __sfTyTimer?: number | undefined }) | null;
     text.on('mouseenter', () => {
-      const activeLayout =
-        callableKind === null
-          ? layout
-          : (opts.onPreviewCallArrows(d.fullPath, f.name, callableKind) ?? layout);
       if (callableKind === null) {
-        const hover = directArrowsFrom(activeLayout, d.fullPath, f.name, rowKind);
+        const hover = directArrowsFrom(layout, d.fullPath, f.name, rowKind);
         const union = new Set<Layout['arrows'][number]>(opts.selectedArrows);
         for (const a of hover) union.add(a);
         applyArrowHighlight(zoomLayer, union);
       }
       if (isCallable && layoutDebugEnabled()) {
-        showCallableDebugPanel(activeLayout, d, f, rowKind, text.node());
+        showCallableDebugPanel(layout, d, f, rowKind, text.node());
       }
       if (node?.__sfTyTimer !== undefined) {
         clearTimeout(node.__sfTyTimer);
@@ -1525,9 +1509,7 @@ function renderFieldsForType(
       tyText.transition('ty').duration(120).style('opacity', 1);
     });
     text.on('mouseleave', () => {
-      if (callableKind !== null) {
-        opts.onClearCallArrowPreview(d.fullPath, f.name, callableKind);
-      } else {
+      if (callableKind === null) {
         applyArrowHighlight(zoomLayer, opts.selectedArrows);
       }
       if (isCallable) hideCallableDebugPanel();

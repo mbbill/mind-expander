@@ -427,7 +427,6 @@ async function main(): Promise<void> {
     const state = new ViewState([staticRoot.id]);
     const selectedFields = new Set<string>();
     const incomingCallTargetsShown = new Set<string>();
-    let previewCallArrowKey: string | null = null;
     // Per-crate set of ghost ids whose violet re-export arrow the user
     // has opted to display. Default empty: arrows are off until the
     // user clicks the corresponding ghost row. Cleared by resetAll.
@@ -450,7 +449,6 @@ async function main(): Promise<void> {
           callArrowsShown.add(callArrowKey(parsed.typePath, parsed.fieldName, parsed.kind));
         }
       }
-      if (previewCallArrowKey !== null) callArrowsShown.add(previewCallArrowKey);
       const buildArgs = {
         staticRoot,
         ownership,
@@ -603,19 +601,6 @@ async function main(): Promise<void> {
           const after = lookupMemberRowPoint(lastLayout, typePath, fieldName, kind);
           const delta = anchorTranslation(before, after);
           if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
-        },
-        onPreviewCallArrows: (typePath, fieldName, kind) => {
-          const next = callArrowKey(typePath, fieldName, kind);
-          if (previewCallArrowKey === next) return lastLayout;
-          previewCallArrowKey = next;
-          draw();
-          return lastLayout;
-        },
-        onClearCallArrowPreview: (typePath, fieldName, kind) => {
-          const current = callArrowKey(typePath, fieldName, kind);
-          if (previewCallArrowKey !== current) return;
-          previewCallArrowKey = null;
-          draw();
         },
         onShowOwners: (typePath, getDotScreenPos) => {
           const ownerIds = ownership.ownedBy.get(typePath);
@@ -778,7 +763,6 @@ async function main(): Promise<void> {
     const resetAll = (): void => {
       selectedFields.clear();
       incomingCallTargetsShown.clear();
-      previewCallArrowKey = null;
       state.clear();
       state.expand(staticRoot.id);
       ghostArrowsShown.clear();
