@@ -268,24 +268,62 @@ function callLocality(
 }
 
 function routeAroundBlocks(request: RouteRequest, field: RoutingField): readonly ArrowWaypoint[] {
+  // Preferred shape: row port → forced source-side exit → A* middle →
+  // target-entry trunk → target's left edge. The forced exit encodes a
+  // semantic rule the geometry alone can't see: outgoing calls always
+  // exit on the right, ownership arrows exit toward the target. A pure
+  // shortest-path A* would happily route an outgoing call out the left
+  // edge if the callee sat there, which would slice back through the
+  // caller's text. The pre-positioned exit prevents that.
   const targetEntry = {
     x: request.targetBounds.left - TARGET_ENTRY_GAP,
     y: request.end.y,
   };
-  const finalStubClear = field.segmentIsClear(targetEntry, request.end, {
+  const exit = sourceExitForTarget(request);
+  const sourceStubClear = field.segmentIsClear(request.start, exit.point, {
+    ignoreTypeId: request.fromTypeId,
+  });
+  const targetStubClear = field.segmentIsClear(targetEntry, request.end, {
     ignoreTypeId: request.toTypeId,
   });
-  if (!finalStubClear) return unroutedHiddenRoute(request);
 
-  const exit = sourceExitForTarget(request);
-  if (!field.segmentIsClear(request.start, exit.point, { ignoreTypeId: request.fromTypeId })) {
-    return unroutedHiddenRoute(request);
+  if (sourceStubClear && targetStubClear) {
+    const middle = field.routeMiddle(exit.point, targetEntry);
+    if (middle !== null) {
+      return compactDuplicateWaypoints([request.start, ...middle, request.end]);
+    }
   }
 
-  const middle = field.routeMiddle(exit.point, targetEntry);
-  if (middle === null) return unroutedHiddenRoute(request);
+  // Preferred shape unavailable — either a stub is blocked by some
+  // other obstacle, or A* can't connect exit to targetEntry through the
+  // clear field. Fall back to a full start-to-end A* with source/target
+  // ignores, so the search can leave the source / approach the target
+  // through their own clearance rings without those rings rejecting
+  // their own row's segment. The complete pathfinder always returns a
+  // route for two clear endpoints, so the arrow stays visible — hiding
+  // it would falsely tell the user there's no relationship.
+  const direct = field.routeMiddle(request.start, request.end, {
+    ignoreNearStart: request.fromTypeId,
+    ignoreNearGoal: request.toTypeId,
+  });
+  if (direct !== null) {
+    return compactDuplicateWaypoints(direct);
+  }
 
-  return compactDuplicateWaypoints([request.start, ...middle, request.end]);
+  // Last-resort visible fallback. The perimeter buffer built into the
+  // routing field makes any two clear endpoints connected, so reaching
+  // here means start or goal sits inside an obstacle — a real layout
+  // bug worth logging. Emit a degenerate L-path so the arrow is at
+  // least visible while the cause gets diagnosed.
+  console.error(
+    `routing: pathfinder returned no route for ${request.fromTypeId} → ${request.toTypeId}; emitting direct fallback`,
+  );
+  return compactDuplicateWaypoints([
+    request.start,
+    { x: targetEntry.x, y: request.start.y },
+    targetEntry,
+    request.end,
+  ]);
 }
 
 function callOutgoingSourcePort(
@@ -324,14 +362,13 @@ function callTargetEndX(row: { readonly x: number; readonly hasIncomingCalls: bo
   return row.x - (row.hasIncomingCalls ? INCOMING_CALL_MARKER_OFFSET : 0) - CALL_TARGET_LABEL_GAP;
 }
 
-function unroutedHiddenRoute(request: RouteRequest): readonly ArrowWaypoint[] {
-  // A visible route must be a checked orthogonal path. If no checked path is
-  // available, keep the arrow degenerate instead of leaking a diagonal fallback
-  // through blocks.
-  return [request.start];
-}
-
 function sourceExitForTarget(request: RouteRequest): RouteExit {
+  // Forced exit point on the requested side of the source. Pushes the
+  // exit out past the source's clearance ring so the search graph can
+  // reach it from the row port without being blocked by the source's
+  // own clearance. The exit's monotonicity (always away from the row
+  // text) keeps the visible stub from cutting back through the row
+  // label even when block fragments lag behind a long callable name.
   const left = {
     point: {
       x: Math.min(request.sourceBounds.left, request.start.x) - BLOCK_LEFT_CLEARANCE_X,
@@ -344,10 +381,6 @@ function sourceExitForTarget(request: RouteRequest): RouteExit {
       y: request.start.y,
     },
   };
-
-  // The exit is deliberately monotonic away from the source row anchor. This
-  // keeps the visible source stub outside the row label even if block fragments
-  // lag behind a long callable label or split-row protrusion.
   return request.sourceSide === 'left' ? left : right;
 }
 

@@ -176,23 +176,33 @@ describe('routeArrows obstacle routing', () => {
     expect(routing.arrows[0]?.waypoints[1]).toEqual({ x: 404, y: 120 });
   });
 
-  it('does not use the opposite source exit as a route fallback', () => {
+  it('routes around a blocker pinned against the source-exit lane instead of hiding the arrow', () => {
+    // The previous router rule was "if the source's exit stub isn't
+    // clear, hide the arrow with a degenerate single-point route."
+    // That hid valid relationships. The pathfinder is complete: it must
+    // find an orthogonal detour around the blocker and emit a real
+    // multi-segment route that doesn't cross any obstacle. A missing
+    // arrow misleads the user — a visible route is the requirement.
     const source = typeBox('Source', { x: 120, y: 40, width: 40 }, [
       row('right_target', { y: 40, arrowSourceX: 128, target: 'Target' }),
     ]);
     const target = typeBox('Target', { x: 240, y: 40, width: 40 });
+    const blocker = obstacle('RightExitBlocker', { x: 148, y: 36, width: 8, height: 8 });
     const routing = routeArrows(
       geometry([source, target]),
       obstacleMap([
         obstacle('Source', { x: 120, y: 28, width: 40, height: 24 }),
         obstacle('Target', { x: 240, y: 28, width: 40, height: 24 }),
-        obstacle('RightExitBlocker', { x: 148, y: 36, width: 8, height: 8 }),
+        blocker,
       ]),
       routingInputs(),
       measure,
     );
 
-    expect(routing.arrows[0]?.waypoints).toEqual([{ x: 128, y: 40 }]);
+    const waypoints = routing.arrows[0]?.waypoints ?? [];
+    expect(waypoints.length).toBeGreaterThan(2);
+    expectAxisAlignedSegments(waypoints);
+    expect(segmentsIntersectObstacle(waypoints, blocker)).toBe(false);
   });
 
   it('prefers the right-side vertical lane when equal-cost detours exist', () => {
@@ -259,23 +269,33 @@ describe('routeArrows obstacle routing', () => {
     expect(segmentsIntersectObstacle(waypoints, blocker)).toBe(false);
   });
 
-  it('does not draw an unchecked diagonal when target-entry clearance is blocked', () => {
+  it('detours around a target-entry blocker with axis-aligned segments', () => {
+    // Previously the router gave up here and emitted a single-point
+    // degenerate route — a hidden arrow. The pathfinder is complete and
+    // must produce a real orthogonal detour: multiple waypoints, each
+    // segment axis-aligned, none of them crossing the blocker. The
+    // arrow stays visible; what changes is only HOW it approaches the
+    // target, not WHETHER it's drawn.
     const source = typeBox('Source', { x: 0, y: 20, width: 40 }, [
       row('target', { y: 20, arrowSourceX: 32, target: 'Target' }),
     ]);
     const target = typeBox('Target', { x: 120, y: 80, width: 40 });
+    const blocker = obstacle('EntryBlocker', { x: 108, y: 76, width: 4, height: 8 });
     const routing = routeArrows(
       geometry([source, target]),
       obstacleMap([
         obstacle('Source', { x: 0, y: 8, width: 40, height: 24 }),
         obstacle('Target', { x: 120, y: 68, width: 40, height: 24 }),
-        obstacle('EntryBlocker', { x: 108, y: 76, width: 4, height: 8 }),
+        blocker,
       ]),
       routingInputs(),
       measure,
     );
 
-    expect(routing.arrows[0]?.waypoints).toEqual([{ x: 32, y: 20 }]);
+    const waypoints = routing.arrows[0]?.waypoints ?? [];
+    expect(waypoints.length).toBeGreaterThan(2);
+    expectAxisAlignedSegments(waypoints);
+    expect(segmentsIntersectObstacle(waypoints, blocker)).toBe(false);
   });
 
   it('keeps debug obstacles tied to the real obstacle model', () => {

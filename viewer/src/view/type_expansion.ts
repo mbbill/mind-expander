@@ -214,8 +214,8 @@ export function callableBucketIdsForType(
  * `::`-separated segment — so the same helper works across all crates in
  * a workspace.
  *
- * For `sf-nano-core::vm::store::Store` returns
- *   ['sf-nano-core', 'sf-nano-core::vm', 'sf-nano-core::vm::store'].
+ * For `my-crate::a::b::Foo` returns
+ *   ['my-crate', 'my-crate::a', 'my-crate::a::b'].
  *
  * Returns [] for a single-segment fullPath (no crate prefix).
  */

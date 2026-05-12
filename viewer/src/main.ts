@@ -56,7 +56,6 @@ import {
 import { attachZoom } from './view/zoom.ts';
 
 const FACTS_URL = '/data/facts.json';
-const PREFERRED_CRATE = 'sf-nano-core';
 const SCALE_MAX = 1.5;
 // Padding factor so content doesn't kiss the viewport edge at the fit scale.
 const FIT_PADDING = 0.95;
@@ -438,11 +437,11 @@ async function main(): Promise<void> {
     const typeIdSet = new Set(allTypeIds);
     const typeInfo = collectTypeInfo(staticRoot);
 
-    // Default expand: workspace root (so crates render as top-level
-    // labels) + the PREFERRED_CRATE if it exists, so the user lands on a
-    // populated view rather than a list of collapsed crate names.
+    // Default expand: workspace root only — the user lands on a list of
+    // collapsed crate bands and picks which one(s) to expand. The viewer
+    // intentionally has no notion of a "primary" crate; this codebase is
+    // a general-purpose multi-crate viewer, not a single-project frontend.
     const initialExpanded: string[] = [staticRoot.id];
-    if (crateNames.includes(PREFERRED_CRATE)) initialExpanded.push(PREFERRED_CRATE);
     const state = new ViewState(initialExpanded);
     const selectedFields = new Set<string>();
     const incomingCallTargetsShown = new Set<string>();
@@ -865,11 +864,10 @@ async function main(): Promise<void> {
       incomingCallTargetsShown.clear();
       specificCallArrowsShown.clear();
       state.clear();
-      // Restore the initial expand set: workspace root + preferred crate
-      // so the user lands on a populated view rather than a list of
-      // collapsed crate names.
+      // Restore the initial expand set: workspace root only. Reset
+      // mirrors the boot default — see the same comment at construction
+      // time. No crate is treated as primary by this viewer.
       state.expand(staticRoot.id);
-      if (crateNames.includes(PREFERRED_CRATE)) state.expand(PREFERRED_CRATE);
       ghostArrowsShown.clear();
       if (currentCtx) {
         currentCtx.focusMode = false;
