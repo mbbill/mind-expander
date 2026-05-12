@@ -9,6 +9,7 @@
 
 import type { ArrowHit } from '../analysis/arrow_hit.ts';
 import type { ArrowEndpoint } from './arrow_navigation.ts';
+import { cratePrefixOf, stripCratePrefix } from './display_path.ts';
 
 const MARGIN = 8;
 const TRANSFORM_EPSILON = 0.000001;
@@ -178,8 +179,17 @@ export function arrowDisambigViewportAction(
 }
 
 export interface ArrowEndpointLabel {
+  /** Module-path prefix BETWEEN the crate name and the main label. Always
+   *  set; '' when there's no module path (e.g., function lives directly
+   *  in the crate root). The crate name itself, when shown, sits in
+   *  `crateName` so it can be styled distinctly. */
   readonly prefix: string;
   readonly main: string;
+  /** Crate name to render in the cross-crate accent color. Present only
+   *  when this endpoint's crate differs from the row's anchor crate;
+   *  same-crate endpoints omit this so the crate name stays out of the
+   *  way. */
+  readonly crateName?: string;
 }
 
 export interface ArrowDisambigRowModel {
@@ -261,16 +271,22 @@ export function arrowDisambigRowModel(
   hit: ArrowHit,
   qualifiedTypePath: (fullPath: string) => string,
 ): ArrowDisambigRowModel {
+  // Anchor on the source's crate: in a single-arrow row the source is
+  // "where you are", so its crate is the implicit context. The target
+  // keeps its crate name when it crosses to a different crate.
+  const anchorCrate = cratePrefixOf(hit.arrow.fromTypeId);
   return {
     source: endpointLabelParts(
       qualifiedTypePath(hit.arrow.fromTypeId),
       hit.arrow.fromFieldName,
       hit.arrow.fromRowKind,
+      anchorCrate,
     ),
     target: endpointLabelParts(
       qualifiedTypePath(hit.arrow.toTypeId),
       hit.arrow.toFieldName,
       hit.arrow.toRowKind,
+      anchorCrate,
     ),
   };
 }
@@ -286,6 +302,14 @@ function arrowDisambigGroupElement(
 ): HTMLElement {
   const route = document.createElement('div');
   route.className = 'arrow-route';
+  // Anchor crate = the SHARED endpoint's crate. Every other entry in
+  // the group compares against it: same crate → strip crate prefix
+  // (redundant); different crate → keep it so the cross-crate hop is
+  // visible at a glance.
+  const anchorCrate =
+    group.kind === 'by-source'
+      ? cratePrefixOf(group.shared.arrow.fromTypeId)
+      : cratePrefixOf(group.shared.arrow.toTypeId);
   if (group.kind === 'by-source') {
     // One source on top, one indented `-> target` per arrow underneath.
     // Clicking the source navigates to the source row (any hit in the
@@ -294,6 +318,7 @@ function arrowDisambigGroupElement(
       qualifiedTypePath(group.shared.arrow.fromTypeId),
       group.shared.arrow.fromFieldName,
       group.shared.arrow.fromRowKind,
+      anchorCrate,
     );
     route.appendChild(
       endpointLineElement('source', sourceLabel, (endpoint, anchor) =>
@@ -305,6 +330,7 @@ function arrowDisambigGroupElement(
         qualifiedTypePath(hit.arrow.toTypeId),
         hit.arrow.toFieldName,
         hit.arrow.toRowKind,
+        anchorCrate,
       );
       route.appendChild(
         endpointLineElement('target', targetLabel, (endpoint, anchor) =>
@@ -320,6 +346,7 @@ function arrowDisambigGroupElement(
         qualifiedTypePath(hit.arrow.fromTypeId),
         hit.arrow.fromFieldName,
         hit.arrow.fromRowKind,
+        anchorCrate,
       );
       route.appendChild(
         endpointLineElement('source', sourceLabel, (endpoint, anchor) =>
@@ -331,6 +358,7 @@ function arrowDisambigGroupElement(
       qualifiedTypePath(group.shared.arrow.toTypeId),
       group.shared.arrow.toFieldName,
       group.shared.arrow.toRowKind,
+      anchorCrate,
     );
     route.appendChild(
       endpointLineElement('target', targetLabel, (endpoint, anchor) =>
@@ -359,6 +387,14 @@ function endpointLineElement(
     glyph.className = 'route-arrow';
     glyph.textContent = '→';
     line.appendChild(glyph);
+  }
+  if (label.crateName !== undefined && label.crateName !== '') {
+    // Cross-crate accent: leads the line so the boundary registers
+    // before the module path / member name. Same purple as the picker.
+    const crate = document.createElement('span');
+    crate.className = 'path-crate';
+    crate.textContent = `${label.crateName}::`;
+    line.appendChild(crate);
   }
   if (label.prefix !== '') {
     const prefix = document.createElement('span');
@@ -393,11 +429,20 @@ function endpointLabelParts(
   typePath: string,
   rowName: string | undefined,
   rowKind: 'field' | 'method' | 'function' | undefined,
+  anchorCrate: string,
 ): ArrowEndpointLabel {
-  if (rowKind === 'function') {
-    return splitQualifiedName(endpointPath(typePath, '::', rowName, rowKind));
+  const separator: '::' | '.' = rowKind === 'function' ? '::' : '.';
+  const fullDisplay = endpointPath(typePath, separator, rowName, rowKind);
+  const ownCrate = cratePrefixOf(typePath);
+  const withoutCrate = stripCratePrefix(fullDisplay, ownCrate);
+  const parts = splitQualifiedName(withoutCrate);
+  // Cross-crate endpoints surface the crate name as its own segment so
+  // the popup can render it in the accent color. Same-crate endpoints
+  // omit it — the crate is implicit from the dialog's anchor.
+  if (ownCrate !== '' && ownCrate !== anchorCrate) {
+    return { ...parts, crateName: ownCrate };
   }
-  return splitQualifiedName(endpointPath(typePath, '.', rowName, rowKind));
+  return parts;
 }
 
 function endpointPath(

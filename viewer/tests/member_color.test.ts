@@ -90,12 +90,14 @@ describe('locality signal lives on a `→` glyph after the callable name', () =>
     expect(source).toMatch(/return COLOR_FIELD_TY/);
   });
 
-  it('the `→` glyph is the click target for arrow selection on callables', () => {
+  it('the `→` glyph opens the per-edge call-target picker for callables', () => {
     // Clicking the row name expands the signature; clicking the `→`
-    // glyph toggles the call arrows. Pinning the wiring at the source
-    // level so future refactors can't silently flip the affordance.
+    // glyph opens the picker so the user can reveal a single outgoing
+    // edge instead of the whole row's "show all" toggle. Pinning the
+    // wiring at the source level so future refactors can't silently
+    // change the affordance.
     expect(source).toMatch(/localityGlyph\.on\(\s*'click'/);
-    expect(source).toMatch(/onSelectField\(d\.fullPath, f\.name, kindForClick\)/);
+    expect(source).toMatch(/onPickOutgoingCall\(callerFullPath,/);
   });
 });
 

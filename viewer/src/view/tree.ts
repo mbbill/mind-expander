@@ -36,15 +36,12 @@ import { LOCALITY_GLYPH } from '../layout/geometry.ts';
 import { colorForVisibility } from './encoding.ts';
 import { ANIM_MS, type ZoomLayers } from './zoom.ts';
 
-// Screen-space hit tolerances for arrow click navigation. Converted to
+// Screen-space hit tolerance for arrow click navigation. Converted to
 // data-space by dividing by the current zoom scale, so the on-screen hit
-// area stays roughly constant regardless of zoom level.
-// `ARROW_ENDPOINT_PX` defines the arc-length window at each end of the
-// polyline that counts as a direct-nav zone (source / target). Beyond
-// that window, the click falls into the middle and opens the disambig
-// popup so the user picks a direction explicitly.
+// area stays roughly constant regardless of zoom level. The zone split
+// (first half / second half of arc length) lives in `arrow_hit.ts` and
+// doesn't need a separate threshold.
 const ARROW_HIT_PX = 8;
-const ARROW_ENDPOINT_PX = 50;
 
 const TYPE_RADIUS = 4;
 // Module rows still use a left chevron for expand/collapse.
@@ -294,15 +291,27 @@ export interface TreeRenderOptions {
   readonly onToggleTypeMembers: (typePath: string) => void;
   /** Click on a field name → toggle its selection. */
   readonly onSelectField: (typePath: string, fieldName: string, kind: FieldKeyKind) => void;
-  readonly onToggleIncomingCalls: (
-    typePath: string,
-    fieldName: string,
-    kind: 'method' | 'function',
-    functionFullPath: string,
-  ) => void;
   /** Click on a function/method row's `(..)` glyph → toggle whether that
    *  function's signature is expanded into indented argument rows. */
   readonly onToggleSignature: (functionFullPath: string) => void;
+  /** Click on the right `→` locality glyph of a callable row. If the
+   *  callable has 0 outgoing calls, no-op. If exactly 1, toggle it
+   *  directly. If 2+, the host opens the floating call-target picker
+   *  fanning right from the cursor so the user picks one callee. */
+  readonly onPickOutgoingCall: (
+    callerFullPath: string,
+    anchor: { readonly x: number; readonly y: number },
+  ) => void;
+  /** Symmetric for the left `→` marker — opens the picker fanning
+   *  leftward (callers flow into the row from the left). */
+  readonly onPickIncomingCaller: (
+    calleeFullPath: string,
+    anchor: { readonly x: number; readonly y: number },
+  ) => void;
+  /** Currently revealed per-edge call arrows. Keys are
+   *  `specificCallArrowKey(caller, callee)`. The picker bolds rows
+   *  whose key is in this set so the user sees current state. */
+  readonly specificCallArrowsShown: ReadonlySet<string>;
   /** Set of "typePath::fieldName" keys currently selected. */
   readonly selectedFields: ReadonlySet<string>;
   readonly incomingCallTargetsShown: ReadonlySet<string>;
@@ -655,7 +664,6 @@ function installArrowClickHandler(
     const k = zoomTransform(svgEl).k || 1;
     const hits = pickArrowsAtPoint({ x, y }, hitTestableArrows(layout), {
       hitTolerance: ARROW_HIT_PX / k,
-      endpointRadius: ARROW_ENDPOINT_PX / k,
     });
     if (hits.length === 0) return;
     event.stopPropagation();
@@ -1679,7 +1687,9 @@ function renderFieldsForType(
       incomingMarker.on('click', (event: MouseEvent) => {
         event.stopPropagation();
         if (callableKind === null) return;
-        opts.onToggleIncomingCalls(d.fullPath, f.name, callableKind, functionFullPath);
+        // Picker fans LEFT (callers flow into the row). Host handles
+        // 0/1/many. Same model as the right `→` glyph but mirrored.
+        opts.onPickIncomingCaller(functionFullPath, { x: event.clientX, y: event.clientY });
       });
       // Hover: grow the marker and reveal a count badge to its left so
       // the user can see how many incoming calls there are without
@@ -1755,11 +1765,15 @@ function renderFieldsForType(
         .duration(ANIM_MS)
         .attr('x', glyphX)
         .attr('y', localY);
-      if (callableKind !== null) {
-        const kindForClick = callableKind;
+      if (callableKind !== null && f.functionFullPath !== null) {
+        const callerFullPath = f.functionFullPath;
         localityGlyph.on('click', (event: MouseEvent) => {
           event.stopPropagation();
-          opts.onSelectField(d.fullPath, f.name, kindForClick);
+          // Picker opens (or auto-toggles a single edge) instead of
+          // flipping the whole row's "show all outgoing" toggle. The
+          // host decides 0/1/many handling — we just pass the click
+          // anchor in screen coords so the picker can fan rightward.
+          opts.onPickOutgoingCall(callerFullPath, { x: event.clientX, y: event.clientY });
         });
       }
       // Hover: grow + reveal outgoing-count badge. Anchored to the

@@ -1,23 +1,23 @@
 // Pure hit-testing for arrows: given a click point in data-space, find
-// which arrows are within tolerance and classify each candidate by the
-// part of the polyline the click landed on. Lives in analysis/ so it can
+// which arrows are within tolerance and classify each candidate by which
+// half of the polyline the click landed on. Lives in analysis/ so it can
 // be unit-tested without DOM.
 //
-// Zones are direction-aware affordances:
-//   - 'source' = first `endpointRadius` of arc length, near the arrow's
-//                origin. Direct click here navigates forward (to target).
-//   - 'target' = last `endpointRadius` of arc length, near the arrowhead.
-//                Direct click here navigates backward (to source).
-//   - 'middle' = everything else. Direct click here opens the disambig
-//                popup so the user picks a direction.
+// Zone is a direction-aware affordance: a click in the FIRST half of the
+// arc length means "I'm at the source — take me to the target"
+// ('source'); a click in the SECOND half means "I'm at the target — take
+// me back to the source" ('target'). There is no 'middle' zone — every
+// hit lands on one side or the other so a single-arrow click always
+// resolves to a direction without a disambiguation popup. The popup is
+// only used when MULTIPLE arrows live under the cursor.
 //
-// Arc length (not Euclidean distance) is used so a click "near the source"
-// on a long L-shaped route still feels close to the origin even if the
-// click is far from the origin in straight-line distance.
+// Arc length (not Euclidean distance) is used so the split runs along
+// the polyline — on an L-shaped route, the corner sits at half arc
+// length, which often differs from the geometric midpoint.
 
 import type { Arrow, ArrowWaypoint } from './layout_model.ts';
 
-export type ArrowHitZone = 'source' | 'target' | 'middle';
+export type ArrowHitZone = 'source' | 'target';
 
 export interface ArrowHit {
   readonly arrow: Arrow;
@@ -32,11 +32,6 @@ export interface ArrowHitOptions {
    *  units — caller should pass `pixelTol / zoomScale` so the on-screen
    *  hit area stays roughly constant regardless of zoom level. */
   readonly hitTolerance: number;
-  /** Arc length (in data-space units) measured from each polyline endpoint
-   *  that counts as the source / target zone. Same scaling rule as
-   *  `hitTolerance`. On short polylines (<= 2*endpointRadius) each zone is
-   *  clamped to half the polyline length so source and target never overlap. */
-  readonly endpointRadius: number;
 }
 
 export function pickArrowsAtPoint(
@@ -52,7 +47,7 @@ export function pickArrowsAtPoint(
     if (projection.distance > options.hitTolerance) continue;
     hits.push({
       arrow: a,
-      zone: zoneForProjection(projection.arcLength, polylineLength(w), options.endpointRadius),
+      zone: zoneForProjection(projection.arcLength, polylineLength(w)),
       distance: projection.distance,
     });
   }
@@ -60,17 +55,11 @@ export function pickArrowsAtPoint(
   return hits;
 }
 
-function zoneForProjection(
-  arcLength: number,
-  totalLength: number,
-  endpointRadius: number,
-): ArrowHitZone {
-  // Source and target each own at most half the polyline so the two zones
-  // cannot overlap on a short arrow; ties at the midpoint resolve to source.
-  const radius = Math.min(endpointRadius, totalLength / 2);
-  if (arcLength <= radius) return 'source';
-  if (totalLength - arcLength <= radius) return 'target';
-  return 'middle';
+function zoneForProjection(arcLength: number, totalLength: number): ArrowHitZone {
+  // Split at the polyline's midpoint by arc length. Exact midpoint ties
+  // resolve to 'source' so the user lands forward by default rather than
+  // bouncing back — feels closer to the "click to advance" intuition.
+  return arcLength <= totalLength / 2 ? 'source' : 'target';
 }
 
 interface PolylineProjection {

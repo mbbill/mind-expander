@@ -1,7 +1,12 @@
 import { zoomTransform } from 'd3';
 import { type FunctionCallIndex, buildFunctionCallIndex } from './analysis/calls.ts';
 import { computeDrift } from './analysis/drift.ts';
-import { type Layout, callArrowKey, rowArrowKey } from './analysis/layout_model.ts';
+import {
+  type Layout,
+  callArrowKey,
+  rowArrowKey,
+  specificCallArrowKey,
+} from './analysis/layout_model.ts';
 import {
   type TreeNode,
   WORKSPACE_ROOT_ID,
@@ -20,6 +25,8 @@ import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
 import { ViewState } from './state/view_state.ts';
 import { anchorTranslation } from './view/anchor.ts';
 import { arrowDisambigViewportAction, createArrowDisambig } from './view/arrow_disambig.ts';
+import { type CallEdgeEntry, createCallTargetPicker } from './view/call_target_picker.ts';
+import { cratePrefixOf, stripCratePrefix } from './view/display_path.ts';
 import { type ArrowEndpoint, arrowEndpointLayoutPoint } from './view/arrow_navigation.ts';
 import { lookupLayoutPoint, lookupMemberRowPoint } from './view/layout_lookup.ts';
 import { createTextMeasurer } from './view/measure.ts';
@@ -161,8 +168,14 @@ async function main(): Promise<void> {
     previousViewportTransform = t;
     if (arrowPopupAction.kind === 'move') {
       arrowDisambig.moveBy(arrowPopupAction.dx, arrowPopupAction.dy);
+      // The call-target picker uses the same anchor-with-canvas
+      // contract: pan moves it along with the underlying row; zoom
+      // dismisses (the screen→data math doesn't survive a scale
+      // change cleanly).
+      callTargetPicker.moveBy(arrowPopupAction.dx, arrowPopupAction.dy);
     } else if (arrowPopupAction.kind === 'hide') {
       arrowDisambig.hide();
+      callTargetPicker.hide();
     }
     minimap?.update(currentCtx?.lastLayout ?? null);
   });
@@ -238,6 +251,12 @@ async function main(): Promise<void> {
       currentCtx?.navigateToArrowEndpoint(hit.arrow, endpoint, anchor);
     },
   });
+
+  // Per-edge call-arrow picker. Each row toggles ONE arrow's
+  // visibility via specificCallArrowsShown — independent of the
+  // row-level "show all" toggles. Shared across the setupWorkspace
+  // lifetime since the picker has no per-instance state.
+  const callTargetPicker = createCallTargetPicker();
 
   // Toggle focus mode. Focus is a pure render-time filter: toggling it does
   // not mutate ViewState, so there's nothing to snapshot or restore.
@@ -427,6 +446,11 @@ async function main(): Promise<void> {
     const state = new ViewState(initialExpanded);
     const selectedFields = new Set<string>();
     const incomingCallTargetsShown = new Set<string>();
+    // Per-edge call arrow visibility. Each entry is a
+    // specificCallArrowKey(callerFullPath, calleeFullPath); routing
+    // composes this with the row-level show-all sets so picking one
+    // callee from the picker reveals only that single edge.
+    const specificCallArrowsShown = new Set<string>();
     // Per-crate set of ghost ids whose violet re-export arrow the user
     // has opted to display. Default empty: arrows are off until the
     // user clicks the corresponding ghost row. Cleared by resetAll.
@@ -463,6 +487,7 @@ async function main(): Promise<void> {
         fieldArrowsShown,
         callArrowsShown,
         incomingCallTargetsShown,
+        specificCallArrowsShown,
         methodsHidden: currentCtx?.methodsHidden ?? false,
         ...(focus ? { focusModules: focus.modules } : {}),
       };
@@ -572,24 +597,13 @@ async function main(): Promise<void> {
           const delta = anchorTranslation(before, after);
           if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
         },
-        onToggleIncomingCalls: (typePath, fieldName, kind, functionFullPath) => {
-          const before = lookupMemberRowPoint(lastLayout, typePath, fieldName, kind);
-          if (incomingCallTargetsShown.has(functionFullPath)) {
-            incomingCallTargetsShown.delete(functionFullPath);
-          } else {
-            incomingCallTargetsShown.add(functionFullPath);
-            for (const targetId of callerExpansionIdsForFunction(
-              functionFullPath,
-              calls
-            )) {
-              state.expand(targetId);
-            }
-          }
-          draw();
-          const after = lookupMemberRowPoint(lastLayout, typePath, fieldName, kind);
-          const delta = anchorTranslation(before, after);
-          if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
+        onPickOutgoingCall: (callerFullPath, anchor) => {
+          openCallEdgePicker('outgoing', callerFullPath, anchor);
         },
+        onPickIncomingCaller: (calleeFullPath, anchor) => {
+          openCallEdgePicker('incoming', calleeFullPath, anchor);
+        },
+        specificCallArrowsShown,
         onToggleSignature: (functionFullPath) => {
           // The (..) toggle is a render-time detail expansion. Use the
           // existing ViewState toggle keyed by `sig::<fullPath>` so it
@@ -600,11 +614,24 @@ async function main(): Promise<void> {
         onShowOwners: (typePath, getDotScreenPos) => {
           const ownerIds = ownership.ownedBy.get(typePath);
           if (!ownerIds || ownerIds.length === 0) return;
+          // Anchor crate = the hovered type's crate. Owners in the same
+          // crate render without a crate prefix; cross-crate owners
+          // carry their crate name so the boundary is visible. Same
+          // rule as the call-target picker and arrow disambig.
+          const anchorCrate = cratePrefixOf(typePath);
           const owners = ownerIds
             .map((id) => {
               const info = typeInfo.get(id);
               if (!info) return null;
-              return { typeId: id, typeLabel: info.label, modulePath: info.modulePath };
+              const ownerCrate = cratePrefixOf(id);
+              const entry: {
+                typeId: string;
+                typeLabel: string;
+                modulePath: string;
+                crateName?: string;
+              } = { typeId: id, typeLabel: info.label, modulePath: info.modulePath };
+              if (ownerCrate !== '' && ownerCrate !== anchorCrate) entry.crateName = ownerCrate;
+              return entry;
             })
             .filter((x): x is NonNullable<typeof x> => x !== null);
           if (owners.length === 0) return;
@@ -653,27 +680,25 @@ async function main(): Promise<void> {
         },
         onArrowNavigate: (hits, anchor) => {
           if (hits.length === 0) return;
-          // Single unambiguous direct-nav zones bypass the popup. The
-          // 'source' zone (first 50px) means "I'm at source, take me to
-          // target"; the 'target' zone (last 50px) means "I'm at target,
-          // take me back to source". Middle-of-single-arrow clicks fall
-          // through to the popup so the user picks a direction explicitly.
+          // Single arrow under the cursor → direct navigation, no popup.
+          // The hit zone encodes WHICH half of the polyline the user
+          // clicked: 'source' = first half ("I'm at the source, take me
+          // to the target"), 'target' = second half ("I'm at the target,
+          // take me back to the source"). There is no middle zone — a
+          // disambig popup for a single arrow has nothing to pick from.
           if (hits.length === 1) {
             const top = hits[0];
-            if (top && top.zone === 'source') {
-              navigateToArrowEndpoint(top.arrow, 'target', anchor);
-              return;
-            }
-            if (top && top.zone === 'target') {
-              navigateToArrowEndpoint(top.arrow, 'source', anchor);
+            if (top) {
+              const endpoint = top.zone === 'source' ? 'target' : 'source';
+              navigateToArrowEndpoint(top.arrow, endpoint, anchor);
               return;
             }
           }
-          // Multi-arrow OR single-arrow-middle: open the popup. The popup
-          // captures its own click anchor on pick, so the chosen endpoint
-          // pans to where the user clicked inside the popup (not back to
-          // the original arrow-click anchor, which is far from the cursor
-          // by the time the user picks a row).
+          // Multiple arrows under the cursor → popup. The popup captures
+          // its own click anchor on pick, so the chosen endpoint pans to
+          // where the user clicked inside the popup (not back to the
+          // original arrow-click anchor, which is far from the cursor by
+          // the time the user picks a row).
           arrowDisambig.show({
             hits,
             anchorX: anchor.x,
@@ -683,6 +708,75 @@ async function main(): Promise<void> {
         },
       });
       minimap?.update(lastLayout);
+    };
+
+    // Opens the floating call-edge picker triggered from a callable
+    // row's `→` glyph (outgoing) or its incoming marker (incoming).
+    // Zero edges → no-op. One edge → toggle directly without showing
+    // the picker. Two or more → show the picker so the user can pick
+    // which arrow to reveal.
+    const openCallEdgePicker = (
+      direction: 'outgoing' | 'incoming',
+      anchorFullPath: string,
+      anchor: { readonly x: number; readonly y: number },
+    ): void => {
+      const edges = collectCallEdges(direction, anchorFullPath, calls);
+      if (edges.length === 0) return;
+      if (edges.length === 1 && edges[0] !== undefined) {
+        toggleSpecificEdge(direction, anchorFullPath, edges[0].otherFullPath);
+        return;
+      }
+      // Bold currently-active edges so the user can see state on open.
+      const entries: CallEdgeEntry[] = edges.map((edge) => ({
+        otherFullPath: edge.otherFullPath,
+        label: edge.label,
+        ...(edge.prefix !== undefined ? { prefix: edge.prefix } : {}),
+        ...(edge.crateName !== undefined ? { crateName: edge.crateName } : {}),
+        active: specificCallArrowsShown.has(
+          direction === 'outgoing'
+            ? specificCallArrowKey(anchorFullPath, edge.otherFullPath)
+            : specificCallArrowKey(edge.otherFullPath, anchorFullPath),
+        ),
+      }));
+      callTargetPicker.show({
+        entries,
+        anchorX: anchor.x,
+        anchorY: anchor.y,
+        direction,
+        onPick: (entry) => {
+          toggleSpecificEdge(direction, anchorFullPath, entry.otherFullPath);
+        },
+      });
+    };
+
+    const toggleSpecificEdge = (
+      direction: 'outgoing' | 'incoming',
+      anchorFullPath: string,
+      otherFullPath: string,
+    ): void => {
+      const callerFullPath = direction === 'outgoing' ? anchorFullPath : otherFullPath;
+      const calleeFullPath = direction === 'outgoing' ? otherFullPath : anchorFullPath;
+      const key = specificCallArrowKey(callerFullPath, calleeFullPath);
+      if (specificCallArrowsShown.has(key)) {
+        specificCallArrowsShown.delete(key);
+      } else {
+        specificCallArrowsShown.add(key);
+        // Expand the other endpoint's containing type/bucket/modules
+        // so the arrow has somewhere to land. Mirrors what
+        // onSelectField does for the row-level toggle.
+        const targetCallableRow = calls.rowByFunction.get(otherFullPath);
+        if (targetCallableRow !== undefined) {
+          for (const m of ancestorModuleIds(targetCallableRow.typeId)) state.expand(m);
+          state.expand(targetCallableRow.typeId);
+          if (targetCallableRow.bucketId !== null) state.expand(targetCallableRow.bucketId);
+        } else {
+          // Unresolved or external callee: still try to expand
+          // ancestors of the path so any matching type renders if it
+          // exists somewhere in the workspace tree.
+          for (const m of ancestorModuleIds(otherFullPath)) state.expand(m);
+        }
+      }
+      draw();
     };
 
     const navigateToType = (typeId: string): void => {
@@ -769,6 +863,7 @@ async function main(): Promise<void> {
     const resetAll = (): void => {
       selectedFields.clear();
       incomingCallTargetsShown.clear();
+      specificCallArrowsShown.clear();
       state.clear();
       // Restore the initial expand set: workspace root + preferred crate
       // so the user lands on a populated view rather than a list of
@@ -966,6 +1061,78 @@ function collectTypeModuleMap(root: TreeNode): Map<string, string> {
 
 // Lookup table for the owner popover: every type's display label and
 // containing module path, keyed by its full path. Built once per crate.
+interface CallEdgeRow {
+  /** Full path of the OTHER endpoint of the edge (callee for outgoing,
+   *  caller for incoming). */
+  readonly otherFullPath: string;
+  /** Display label of the other endpoint — usually
+   *  `Type.method()` or `module::free_fn()`. */
+  readonly label: string;
+  /** Optional module-path prefix (e.g., `vm::store::`) — the path
+   *  segments between the crate name and the function name, with the
+   *  crate already removed. */
+  readonly prefix?: string;
+  /** Cross-crate accent: present only when the edge crosses a crate
+   *  boundary from the anchor row. The picker renders it in purple so
+   *  the boundary is visible at a glance. */
+  readonly crateName?: string;
+}
+
+/** Build the list of edges to show in the picker. For 'outgoing':
+ *  enumerate `callTargetsByFunction` resolved targets — those are the
+ *  candidates the picker can toggle. For 'incoming': enumerate
+ *  `incomingCallsByFunction` and dedupe by caller. Labels strip the
+ *  anchor row's crate so same-crate callees read as `vm::store::put()`
+ *  rather than `crate::vm::store::put()`; cross-crate entries keep
+ *  their crate name so the boundary stays visible. */
+function collectCallEdges(
+  direction: 'outgoing' | 'incoming',
+  anchorFullPath: string,
+  calls: FunctionCallIndex,
+): readonly CallEdgeRow[] {
+  const anchorCrate = cratePrefixOf(anchorFullPath);
+  if (direction === 'outgoing') {
+    const targets = calls.callTargetsByFunction.get(anchorFullPath) ?? [];
+    return targets.map((target) => callEdgeLabelParts(target.functionFullPath, anchorCrate));
+  }
+  const incoming = calls.incomingCallsByFunction.get(anchorFullPath) ?? [];
+  const seen = new Set<string>();
+  const out: CallEdgeRow[] = [];
+  for (const ref of incoming) {
+    if (seen.has(ref.caller)) continue;
+    seen.add(ref.caller);
+    out.push(callEdgeLabelParts(ref.caller, anchorCrate));
+  }
+  return out;
+}
+
+function callEdgeLabelParts(fullPath: string, anchorCrate: string): CallEdgeRow {
+  // Split the path into three display segments:
+  //   crateName  — the first `::` segment (only emitted when the edge
+  //                crosses a crate boundary from the anchor row)
+  //   prefix     — the module-path segments between crate and function
+  //                name, joined with `::` and a trailing `::`
+  //   label      — the function name with `()` appended
+  // The picker renders each segment in its own span so the crate name
+  // can be styled distinctly from the rest of the qualified path.
+  const idx = fullPath.lastIndexOf('::');
+  if (idx === -1) {
+    return { otherFullPath: fullPath, label: `${fullPath}()` };
+  }
+  const beforeName = fullPath.slice(0, idx);
+  const name = fullPath.slice(idx + 2);
+  const ownCrate = cratePrefixOf(beforeName);
+  // Module portion = everything between crate and function name. Empty
+  // when the function lives directly inside the crate root.
+  const moduleTail = stripCratePrefix(beforeName, ownCrate);
+  const isCrossCrate = ownCrate !== '' && ownCrate !== anchorCrate;
+  const out: CallEdgeRow = { otherFullPath: fullPath, label: `${name}()` };
+  if (moduleTail !== '') return isCrossCrate
+    ? { ...out, crateName: ownCrate, prefix: `${moduleTail}::` }
+    : { ...out, prefix: `${moduleTail}::` };
+  return isCrossCrate ? { ...out, crateName: ownCrate } : out;
+}
+
 function collectTypeInfo(root: TreeNode): Map<string, TypeInfo> {
   const out = new Map<string, TypeInfo>();
   const walk = (n: TreeNode): void => {

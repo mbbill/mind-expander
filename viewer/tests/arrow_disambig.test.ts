@@ -7,13 +7,14 @@ import {
   groupArrowHits,
 } from '../src/view/arrow_disambig.ts';
 
+// Real `qualifiedTypePath` keeps the crate prefix on the display path
+// (e.g., `sf-nano-core::vm::instance::Instance`). Crate stripping is
+// the disambig's own responsibility — it compares each endpoint's
+// crate against the row's anchor crate and strips only when they
+// match, so cross-crate hops stay visible.
 const qualifiedTypePath = (fullPath: string): string => {
   const labels: Record<string, string> = {
-    'sf-nano-core::vm::instance::Instance': 'vm::instance::Instance',
-    'sf-nano-core::module::Module': 'module::Module',
-    'sf-nano-core::vm::store::Store': 'vm::store::Store',
-    'sf-nano-core::error::WasmError': 'error::WasmError',
-    'sf-nano-core::vm::store::__fn_pub': 'vm::store',
+    'sf-nano-core::vm::store::__fn_pub': 'sf-nano-core::vm::store',
   };
   return labels[fullPath] ?? fullPath;
 };
@@ -51,6 +52,36 @@ describe('arrowDisambigRowModel', () => {
     });
   });
 
+  it('keeps the crate prefix when the target lives in a different crate', () => {
+    // Anchor = source's crate (`sf-nano-cli`). The target is in
+    // `sf-nano-core`, so the cross-crate hop must stay visible on the
+    // target prefix even though the source's own crate is stripped.
+    const model = arrowDisambigRowModel(
+      hit(
+        callArrow(
+          'sf-nano-cli::cmd::Runner',
+          'invoke',
+          'sf-nano-core::vm::store::Store',
+          'global_mut',
+        ),
+      ),
+      qualifiedTypePath,
+    );
+
+    expect(model.source).toEqual({
+      prefix: 'cmd::',
+      main: 'Runner.invoke()',
+    });
+    // Cross-crate target: the crate name comes back as its own segment
+    // so the popup can paint it in the accent color, separate from the
+    // dim module prefix and the main label.
+    expect(model.target).toEqual({
+      crateName: 'sf-nano-core',
+      prefix: 'vm::store::',
+      main: 'Store.global_mut()',
+    });
+  });
+
   it('renders module-level functions as module path plus function name', () => {
     const model = arrowDisambigRowModel(
       hit(
@@ -61,7 +92,6 @@ describe('arrowDisambigRowModel', () => {
           'global_mut',
           'function',
         ),
-        'middle',
       ),
       qualifiedTypePath,
     );
@@ -144,7 +174,7 @@ describe('arrowDisambigViewportAction', () => {
   });
 });
 
-function hit(arrow: Arrow, zone: ArrowHit['zone'] = 'middle'): ArrowHit {
+function hit(arrow: Arrow, zone: ArrowHit['zone'] = 'source'): ArrowHit {
   return { arrow, zone, distance: 0 };
 }
 

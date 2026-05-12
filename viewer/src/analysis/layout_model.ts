@@ -45,6 +45,13 @@ export function callArrowKey(
   return `${typePath}${ROW_ARROW_KEY_SEP}${rowKind}${ROW_ARROW_KEY_SEP}${rowName}`;
 }
 
+/** Key for an individual call edge in `specificCallArrowsShown` —
+ *  identifies a particular (caller, callee) pair so the picker UI can
+ *  reveal one arrow without flipping the row-level "show all" toggles. */
+export function specificCallArrowKey(callerFullPath: string, calleeFullPath: string): string {
+  return `${callerFullPath}${ROW_ARROW_KEY_SEP}${calleeFullPath}`;
+}
+
 export interface FieldRow {
   readonly name: string;
   readonly tyText: string;
@@ -251,6 +258,13 @@ export interface LayoutInputs {
   /** Target functions whose incoming caller/callee routes should be
    *  materialized. Values are full function paths from FunctionRowRef. */
   readonly incomingCallTargetsShown?: ReadonlySet<string>;
+  /** Per-edge call arrow visibility. Keys are
+   *  `specificCallArrowKey(callerFullPath, calleeFullPath)`. Composes
+   *  additively with `callArrowsShown` and `incomingCallTargetsShown`: any
+   *  of the three matching triggers an arrow's emission. Lets the picker
+   *  UI reveal a single specific call edge without flipping the whole
+   *  caller-side or callee-side "show all" toggle. */
+  readonly specificCallArrowsShown?: ReadonlySet<string>;
   /** Legacy callers can still pass these while layout ignores them. Keeping
    *  the properties in the contract avoids UI call-site churn during removal
    *  of the old implementation. */

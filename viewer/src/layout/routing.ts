@@ -15,7 +15,7 @@ import type {
   LayoutDebug,
   LayoutInputs,
 } from '../analysis/layout_model.ts';
-import { callArrowKey } from '../analysis/layout_model.ts';
+import { callArrowKey, specificCallArrowKey } from '../analysis/layout_model.ts';
 import type { Geometry } from './geometry.ts';
 import type { ObstacleMap } from './obstacles.ts';
 import {
@@ -135,7 +135,21 @@ function collectRouteRequests(
         for (const targetRef of row.callTargets ?? []) {
           const shouldRouteIncomingCallTarget =
             inputs.incomingCallTargetsShown?.has(targetRef.functionFullPath) ?? false;
-          if (!shouldRouteOutgoingCallTargets && !shouldRouteIncomingCallTarget) continue;
+          // Per-edge picker: the user revealed THIS specific (caller, callee)
+          // pair without flipping either side's "show all" toggle. Composes
+          // additively with the two row-level toggles above.
+          const shouldRouteSpecificEdge =
+            row.functionFullPath !== null &&
+            (inputs.specificCallArrowsShown?.has(
+              specificCallArrowKey(row.functionFullPath, targetRef.functionFullPath),
+            ) ??
+              false);
+          if (
+            !shouldRouteOutgoingCallTargets &&
+            !shouldRouteIncomingCallTarget &&
+            !shouldRouteSpecificEdge
+          )
+            continue;
 
           const target = geometry.typesById.get(targetRef.typeId);
           const targetBounds = boundsByType.get(targetRef.typeId);

@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { computeDrift } from '../src/analysis/drift.ts';
 import { INCOMING_CALL_MARKER_OFFSET, LAYOUT_GRID_CELL_W } from '../src/analysis/layout_metrics.ts';
 import type { LayoutInputs } from '../src/analysis/layout_model.ts';
-import { callArrowKey, rowArrowKey } from '../src/analysis/layout_model.ts';
+import {
+  callArrowKey,
+  rowArrowKey,
+  specificCallArrowKey,
+} from '../src/analysis/layout_model.ts';
 import { type TreeNode, type TypeNode, buildModuleTree } from '../src/analysis/module_tree.ts';
 import { buildOwnershipIndex, computeOwnershipDepth } from '../src/analysis/ownership.ts';
 import { canonicalize } from '../src/data/canonicalize.ts';
@@ -479,6 +483,68 @@ describe('routeArrows obstacle routing', () => {
     expect(routing.arrows[0]?.isCrossCrate ?? false).toBe(false);
   });
 
+  it('routes a single call edge when its (caller, callee) pair is in specificCallArrowsShown', () => {
+    // Picker UI flow: the user opens the picker on a caller's `→`
+    // glyph and reveals one specific callee. Neither the row-level
+    // "show all outgoing" toggle nor "show all incoming" toggle is on,
+    // but routing emits exactly the picked edge.
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'Target',
+        targetName: 'callee',
+      }),
+    ]);
+    const target = typeBox('Target', { x: 120, y: 80, width: 40 }, [
+      callableTargetRow('callee', { x: 132, y: 80 }),
+    ]);
+    const callerFullPath = 'Source::caller';
+    const calleeFullPath = 'Target::callee';
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
+      ]),
+      routingInputs(
+        /* callArrowsShown */ undefined,
+        /* incomingCallTargetsShown */ undefined,
+        new Set([specificCallArrowKey(callerFullPath, calleeFullPath)]),
+      ),
+      measure,
+    );
+
+    expect(routing.arrows.map((arrow) => [arrow.fromFieldName, arrow.toFieldName])).toEqual([
+      ['caller', 'callee'],
+    ]);
+  });
+
+  it('does NOT route a call edge when only the row-level toggles are off and specific is empty', () => {
+    const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
+      callRow('caller', {
+        y: 40,
+        arrowSourceX: 32,
+        targetType: 'Target',
+        targetName: 'callee',
+      }),
+    ]);
+    const target = typeBox('Target', { x: 120, y: 80, width: 40 }, [
+      callableTargetRow('callee', { x: 132, y: 80 }),
+    ]);
+    const routing = routeArrows(
+      geometry([source, target]),
+      obstacleMap([
+        obstacle('Source', { x: 0, y: 28, width: 40, height: 24 }),
+        obstacle('Target', { x: 120, y: 68, width: 80, height: 24 }),
+      ]),
+      routingInputs(new Set(), new Set(), new Set()),
+      measure,
+    );
+
+    expect(routing.arrows).toEqual([]);
+  });
+
   it('materializes incoming function-call arrows for active target functions only', () => {
     const source = typeBox('Source', { x: 0, y: 40, width: 40 }, [
       callRow('caller', {
@@ -905,11 +971,13 @@ function obstacleMap(items: readonly Obstacle[]): ObstacleMap {
 function routingInputs(
   callArrowsShown?: ReadonlySet<string>,
   incomingCallTargetsShown?: ReadonlySet<string>,
+  specificCallArrowsShown?: ReadonlySet<string>,
 ): LayoutInputs {
   return {
     drift: { typeClass: new Map(), lca: new Map() },
     ...(callArrowsShown !== undefined ? { callArrowsShown } : {}),
     ...(incomingCallTargetsShown !== undefined ? { incomingCallTargetsShown } : {}),
+    ...(specificCallArrowsShown !== undefined ? { specificCallArrowsShown } : {}),
   } as unknown as LayoutInputs;
 }
 

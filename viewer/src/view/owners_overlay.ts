@@ -14,6 +14,12 @@ export interface OwnerEntry {
   readonly modulePath: string;
   readonly typeLabel: string;
   readonly typeId: string;
+  /** Crate name to display BEFORE the module path. Set only when the
+   *  owner lives in a different crate from the hovered type — same-crate
+   *  owners pass `undefined` so the crate name stays out of the way.
+   *  main.ts owns the cross-crate decision so the rule matches the
+   *  call-target picker and arrow disambig. */
+  readonly crateName?: string;
 }
 
 export interface ShowArgs {
@@ -172,13 +178,31 @@ export function createOwnersOverlay(opts: {
     for (const o of args.owners) {
       const li = document.createElement('li');
       li.className = 'owners-row';
+      // The row is a flex column (path on top, type label on bottom),
+      // so the entire path lives in ONE `.module` span. Cross-crate
+      // owners insert a nested `.crate` span that the stylesheet paints
+      // in the accent color — same purple as the call-target picker
+      // and the arrow disambig. Same-crate owners read as a bare module
+      // path; the `(crate root)` placeholder appears only when there is
+      // also no crate prefix to anchor the line.
       const m = document.createElement('span');
       m.className = 'module';
-      m.textContent = o.modulePath || '(crate root)';
+      const hasCrate = o.crateName !== undefined && o.crateName !== '';
+      if (hasCrate) {
+        const c = document.createElement('span');
+        c.className = 'crate';
+        c.textContent = o.modulePath === '' ? (o.crateName as string) : `${o.crateName as string}::`;
+        m.appendChild(c);
+      }
+      if (o.modulePath !== '') {
+        m.appendChild(document.createTextNode(o.modulePath));
+      } else if (!hasCrate) {
+        m.appendChild(document.createTextNode('(crate root)'));
+      }
+      li.appendChild(m);
       const t = document.createElement('span');
       t.className = 'types';
       t.textContent = o.typeLabel;
-      li.appendChild(m);
       li.appendChild(t);
       li.addEventListener('click', () => {
         opts.onNavigate(o.typeId);

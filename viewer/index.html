@@ -538,6 +538,13 @@
         font-size: 10px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
+      /* Cross-crate accent — same violet hue as the call-target picker
+         and the arrow disambig, so all three popups read the same when
+         pointing across a crate boundary. */
+      .owners-panel li.owners-row .module .crate {
+        color: #7c3aed;
+        font-weight: 600;
+      }
       .owners-panel li.owners-row .types {
         color: #1e293b;
         font-size: 12px;
@@ -551,6 +558,52 @@
       /* Arrow-disambiguation popover. Reuses the owners-panel look-and-
          feel so the two screen-space popovers feel like the same family,
          but with a distinct class so styling can diverge later. */
+      /* Call-target picker: floating rounded white panel with a thin
+         border and subtle shadow. Rows are plain text — no chip per row,
+         no per-glyph halo. The panel background does the obscuring; each
+         row is just text+padding inside it. Bold means the row's call
+         edge is currently revealed; click toggles. */
+      .call-target-picker-panel {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.25;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 6px 8px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+      }
+      .call-target-picker-panel .call-target-row {
+        cursor: pointer;
+        padding: 2px 4px;
+        color: #2563eb;
+        font-weight: 500;
+        border-radius: 3px;
+      }
+      .call-target-picker-panel .call-target-row.active {
+        font-weight: 700;
+      }
+      .call-target-picker-panel .call-target-row:hover,
+      .call-target-picker-panel .call-target-row:focus {
+        background: rgba(37, 99, 235, 0.12);
+        outline: none;
+      }
+      .call-target-picker-panel .call-target-prefix {
+        font-size: 11px;
+        opacity: 0.7;
+      }
+      .call-target-picker-panel .call-target-main {
+        font-size: 13px;
+      }
+      /* Cross-crate boundary cue: the crate name segment renders in
+         violet-600 so it stands apart from the blue function name and
+         the dim module prefix. Same hue as the `mut` borrow flavor so
+         the "crosses something" cues stay coherent across the UI. */
+      .call-target-picker-panel .call-target-crate {
+        font-size: 11px;
+        color: #7c3aed;
+      }
+
       .arrow-disambig-panel {
         background: rgba(255, 255, 255, 0.92);
         backdrop-filter: blur(6px);
@@ -633,6 +686,14 @@
       .arrow-disambig-panel li.arrow-row .path-main {
         font-weight: 600;
         font-size: 12px;
+      }
+      /* Cross-crate accent — only present on endpoint rows whose crate
+         differs from the row's anchor crate. Violet-600 so it pops
+         against the slate prefix and dark-grey main label. */
+      .arrow-disambig-panel li.arrow-row .path-crate {
+        font-size: 11px;
+        font-weight: 600;
+        color: #7c3aed;
       }
       /* Hover-only diagnostics for callable rows. This exposes the exact call
          facts already attached to the row, so confusing header-routed arrows
