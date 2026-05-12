@@ -357,7 +357,7 @@ function endpointLineElement(
   if (kind === 'target') {
     const glyph = document.createElement('span');
     glyph.className = 'route-arrow';
-    glyph.textContent = '->';
+    glyph.textContent = '→';
     line.appendChild(glyph);
   }
   if (label.prefix !== '') {
