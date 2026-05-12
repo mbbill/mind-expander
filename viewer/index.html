@@ -145,14 +145,22 @@
         cursor: pointer;
       }
       /* Hover affordance: when the cursor is over an arrow's wide hit
-         overlay, the whole arrow group is hovered, so we can safely
-         bump the visible path's weight via CSS. Hover switches to a
-         fixed-size marker so the arrowhead grows more modestly than the line.
-         Opacity also nudges up so faint dotted call arrows announce
-         themselves under the cursor. */
+         overlay, the whole arrow group is hovered. We override the
+         stroke to a vivid purple (#a855f7, Tailwind purple-500) and
+         bump weight so the hovered arrow pops out of whatever color
+         it had before -- the previous "same color, slightly thicker"
+         treatment was too easy to miss in dense routes. The kind
+         dash pattern (call/reexport/cross-crate) still applies; only
+         color and width change. The arrowhead marker uses
+         context-stroke fill so it picks up the new color too. The
+         chosen purple is distinct from the violet-600 (#7c3aed) used
+         for the cross-crate accent on labels: same family, but
+         brighter so a hovered cross-crate arrow doesn't blend into
+         its own dash pattern. */
       #tree g.arrows g.arrow:hover path.visible {
         opacity: 1;
-        stroke-width: 1.75;
+        stroke: #a855f7;
+        stroke-width: 2;
         marker-end: url(#sf-arrow-hover);
       }
       #tree g.arrows g.arrow:hover path.visible.call {

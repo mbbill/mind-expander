@@ -841,6 +841,17 @@ function renderArrows(
     .remove();
 
   const enter = sel.enter().append('g').attr('class', 'arrow').style('opacity', 0);
+  // Raise the hovered arrow to the top of g.arrows so the bright
+  // purple hover stroke is never visually covered by a sibling arrow
+  // painted later. SVG paint order = DOM order; .raise() moves this
+  // <g> to the end of its parent, putting it on top. Attached on
+  // enter only -- d3's keyed data join preserves the handler across
+  // redraws, and each fresh layout rebuilds the natural arrow order
+  // (so without re-hovering, the canvas returns to its default
+  // stacking next draw).
+  enter.on('mouseenter', function () {
+    select(this).raise();
+  });
 
   enter
     .append('path')
