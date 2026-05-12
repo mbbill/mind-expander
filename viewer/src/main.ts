@@ -8,6 +8,7 @@ import {
   specificCallArrowKey,
 } from './analysis/layout_model.ts';
 import {
+  type ModuleNode,
   type TreeNode,
   WORKSPACE_ROOT_ID,
   buildWorkspaceTree,
@@ -25,13 +26,13 @@ import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
 import { ViewState } from './state/view_state.ts';
 import { anchorTranslation } from './view/anchor.ts';
 import { arrowDisambigViewportAction, createArrowDisambig } from './view/arrow_disambig.ts';
-import { type CallEdgeEntry, createCallTargetPicker } from './view/call_target_picker.ts';
+import { type CrateMenuItem, createCrateMenu } from './view/crate_menu.ts';
+import { type EdgeEntry, createEdgePicker } from './view/edge_picker.ts';
 import { cratePrefixOf, stripCratePrefix } from './view/display_path.ts';
 import { type ArrowEndpoint, arrowEndpointLayoutPoint } from './view/arrow_navigation.ts';
 import { lookupLayoutPoint, lookupMemberRowPoint } from './view/layout_lookup.ts';
 import { createTextMeasurer } from './view/measure.ts';
 import { type Minimap, createMinimap } from './view/minimap.ts';
-import { createOwnersOverlay } from './view/owners_overlay.ts';
 import {
   FONT_FAMILY,
   FONT_SIZE_FIELD,
@@ -94,6 +95,10 @@ interface RenderCtx {
   /** Navigate the viewport to a type by id: expand the type (and its
    *  ancestor modules), redraw, then center the viewport on its new y. */
   readonly navigateToType: (typeId: string) => void;
+  /** Navigate to a module by id: expand the module and every ancestor
+   *  module, redraw, then center the viewport on the module's row.
+   *  Used by the cascading crate menu when the user picks a row. */
+  readonly navigateToModule: (moduleId: string) => void;
   /** Navigate to one endpoint of `arrow`. `endpoint === 'source'` lands at
    *  the caller; `endpoint === 'target'` lands at the callee. Direct canvas
    *  clicks (and disambig picks) pass an anchor so the chosen endpoint pans
@@ -157,12 +162,81 @@ async function main(): Promise<void> {
 
   let minimap: Minimap | null = null;
   let previousViewportTransform = { x: 0, y: 0, k: 1 };
+  const stickyCrateEl = document.querySelector<HTMLElement>('#sticky-crate');
+  // Cascading hover menu anchored to the sticky. Built once at session
+  // startup; the host binds it to the current crate during
+  // updateStickyCrate. Items are looked up from a per-crate cache
+  // populated lazily by collectCrateMenuItems below.
+  const crateMenuItemCache = new Map<string, readonly CrateMenuItem[]>();
+  const collectCrateMenuItems = (
+    crateName: string,
+    root: ModuleNode | null,
+  ): readonly CrateMenuItem[] => {
+    if (root === null) return [];
+    const cached = crateMenuItemCache.get(crateName);
+    if (cached !== undefined) return cached;
+    // Workspace root's direct children are crate ModuleNodes; find by id.
+    const crateNode = (root.children as readonly TreeNode[]).find(
+      (c): c is ModuleNode => c.kind === 'module' && c.id === crateName,
+    );
+    const items = crateNode === undefined ? [] : buildCrateMenuItems(crateNode);
+    crateMenuItemCache.set(crateName, items);
+    return items;
+  };
+  let lastStaticRoot: ModuleNode | null = null;
+  const crateMenu = createCrateMenu({
+    anchorEl: stickyCrateEl ?? document.createElement('div'),
+    onPick: (moduleId) => {
+      currentCtx?.navigateToModule(moduleId);
+    },
+  });
+  let lastStickyCrate: string | null = null;
+  // Sticky crate indicator: tells the user which crate they're inside
+  // when the crate's own band has scrolled above the viewport top.
+  // Recomputed on every pan/zoom (from the zoom callback) and after
+  // every layout-changing draw (so expanding/collapsing rows doesn't
+  // leave a stale label).
+  const updateStickyCrate = (
+    layout: Layout | null,
+    t: { x: number; y: number; k: number },
+  ): void => {
+    if (!stickyCrateEl) return;
+    if (layout === null) {
+      stickyCrateEl.hidden = true;
+      return;
+    }
+    // Data-space y of where the SVG canvas top edge currently sits.
+    // The zoom transform applies as screen = k * data + ty, so
+    // screen=0 maps to data = -ty / k.
+    const dataYTop = -t.y / t.k;
+    // The "current" crate is the crate-tier band (modDepth 0) with the
+    // largest y still strictly above the viewport top. Strict less-than
+    // means while the band itself is still visible we don't show the
+    // sticky -- the band is doing the same job.
+    let currentCrate: (typeof layout.modules)[number] | null = null;
+    for (const m of layout.modules) {
+      if (m.modDepth !== 0) continue;
+      if (m.y < dataYTop) currentCrate = m;
+      else break;
+    }
+    if (currentCrate === null) {
+      stickyCrateEl.hidden = true;
+      if (lastStickyCrate !== null) {
+        lastStickyCrate = null;
+        crateMenu.setItems(null, []);
+      }
+      return;
+    }
+    stickyCrateEl.textContent = currentCrate.label;
+    stickyCrateEl.hidden = false;
+    if (currentCrate.id !== lastStickyCrate) {
+      lastStickyCrate = currentCrate.id;
+      crateMenu.setItems(currentCrate.id, collectCrateMenuItems(currentCrate.id, lastStaticRoot));
+    }
+  };
+
   const layers = attachZoom(svg, (t) => {
     updateScaleIndicator(t.k);
-    // The owner popover is anchored in screen space to the dot's current
-    // position. Notify it on every pan/zoom so it can either dismiss
-    // (default) or, when pinned, follow the dot to its new spot.
-    ownersOverlay.onCanvasMoved();
     const arrowPopupAction = arrowDisambigViewportAction(previousViewportTransform, t);
     previousViewportTransform = t;
     if (arrowPopupAction.kind === 'move') {
@@ -171,12 +245,13 @@ async function main(): Promise<void> {
       // contract: pan moves it along with the underlying row; zoom
       // dismisses (the screen→data math doesn't survive a scale
       // change cleanly).
-      callTargetPicker.moveBy(arrowPopupAction.dx, arrowPopupAction.dy);
+      edgePicker.moveBy(arrowPopupAction.dx, arrowPopupAction.dy);
     } else if (arrowPopupAction.kind === 'hide') {
       arrowDisambig.hide();
-      callTargetPicker.hide();
+      edgePicker.hide();
     }
     minimap?.update(currentCtx?.lastLayout ?? null);
+    updateStickyCrate(currentCtx?.lastLayout ?? null, t);
   });
   const inputController = installInputControls(svg, layers);
   if (minimapRoot) minimap = createMinimap(minimapRoot, svg, layers);
@@ -231,13 +306,6 @@ async function main(): Promise<void> {
     }
   };
 
-  // The owner popover is a single global instance reused across crates.
-  // Click-to-navigate routes through currentCtx so it picks up the right
-  // per-crate state.
-  const ownersOverlay = createOwnersOverlay({
-    onNavigate: (typeId) => currentCtx?.navigateToType(typeId),
-  });
-
   // Disambiguation popover. Both endpoints in each row are independently
   // clickable: source label navigates to the caller, target label navigates
   // to the callee. The popup itself supplies the click/keyboard anchor for
@@ -255,7 +323,7 @@ async function main(): Promise<void> {
   // visibility via specificCallArrowsShown — independent of the
   // row-level "show all" toggles. Shared across the setupWorkspace
   // lifetime since the picker has no per-instance state.
-  const callTargetPicker = createCallTargetPicker();
+  const edgePicker = createEdgePicker();
 
   // Toggle focus mode. Focus is a pure render-time filter: toggling it does
   // not mutate ViewState, so there's nothing to snapshot or restore.
@@ -427,6 +495,7 @@ async function main(): Promise<void> {
 
   const setupWorkspace = (): void => {
     const staticRoot = buildWorkspaceTree(facts);
+    lastStaticRoot = staticRoot;
     const ownership = buildOwnershipIndex(facts);
     const calls = buildFunctionCallIndex(facts, staticRoot);
     const allTypeIds = collectTypeIds(staticRoot);
@@ -610,41 +679,8 @@ async function main(): Promise<void> {
           state.toggle(signatureExpansionId(functionFullPath));
           draw();
         },
-        onShowOwners: (typePath, getDotScreenPos) => {
-          const ownerIds = ownership.ownedBy.get(typePath);
-          if (!ownerIds || ownerIds.length === 0) return;
-          // Anchor crate = the hovered type's crate. Owners in the same
-          // crate render without a crate prefix; cross-crate owners
-          // carry their crate name so the boundary is visible. Same
-          // rule as the call-target picker and arrow disambig.
-          const anchorCrate = cratePrefixOf(typePath);
-          const owners = ownerIds
-            .map((id) => {
-              const info = typeInfo.get(id);
-              if (!info) return null;
-              const ownerCrate = cratePrefixOf(id);
-              const entry: {
-                typeId: string;
-                typeLabel: string;
-                modulePath: string;
-                crateName?: string;
-              } = { typeId: id, typeLabel: info.label, modulePath: info.modulePath };
-              if (ownerCrate !== '' && ownerCrate !== anchorCrate) entry.crateName = ownerCrate;
-              return entry;
-            })
-            .filter((x): x is NonNullable<typeof x> => x !== null);
-          if (owners.length === 0) return;
-          const initiallyAllExpanded = ownerIds.every((id) => state.isExpanded(id));
-          ownersOverlay.show({
-            owners,
-            getDotScreenPos,
-            initiallyAllExpanded,
-            onToggleExpandAll: () => toggleExpandAllOwnersOf(typePath),
-          });
-        },
-        onHideOwners: () => ownersOverlay.hide(),
-        onExpandAllOwners: (typePath) => {
-          toggleExpandAllOwnersOf(typePath);
+        onPickOwner: (typePath, anchor) => {
+          openOwnerPicker(typePath, anchor);
         },
         onFollowGhost: (ghostId, target) => {
           // Toggle whether this ghost's violet arrow is shown. Default
@@ -707,6 +743,7 @@ async function main(): Promise<void> {
         },
       });
       minimap?.update(lastLayout);
+      updateStickyCrate(lastLayout, previousViewportTransform);
     };
 
     // Opens the floating call-edge picker triggered from a callable
@@ -726,7 +763,7 @@ async function main(): Promise<void> {
         return;
       }
       // Bold currently-active edges so the user can see state on open.
-      const entries: CallEdgeEntry[] = edges.map((edge) => ({
+      const entries: EdgeEntry[] = edges.map((edge) => ({
         otherFullPath: edge.otherFullPath,
         label: edge.label,
         ...(edge.prefix !== undefined ? { prefix: edge.prefix } : {}),
@@ -737,7 +774,7 @@ async function main(): Promise<void> {
             : specificCallArrowKey(edge.otherFullPath, anchorFullPath),
         ),
       }));
-      callTargetPicker.show({
+      edgePicker.show({
         entries,
         anchorX: anchor.x,
         anchorY: anchor.y,
@@ -745,7 +782,228 @@ async function main(): Promise<void> {
         onPick: (entry) => {
           toggleSpecificEdge(direction, anchorFullPath, entry.otherFullPath);
         },
+        // Bulk "show all": flip on every entry that isn't already
+        // revealed. Uses revealSpecificEdge (the non-drawing variant)
+        // so we redraw exactly ONCE at the end. withAnchorPin keeps
+        // the callable row whose marker opened the picker fixed on
+        // screen across the layout change.
+        onShowAll: () => {
+          withAnchorPin(anchorFullPath, () => {
+            for (const edge of edges) {
+              const key =
+                direction === 'outgoing'
+                  ? specificCallArrowKey(anchorFullPath, edge.otherFullPath)
+                  : specificCallArrowKey(edge.otherFullPath, anchorFullPath);
+              if (specificCallArrowsShown.has(key)) continue;
+              revealSpecificEdge(direction, anchorFullPath, edge.otherFullPath);
+            }
+          });
+        },
+        // Bulk "hide all": clear this picker's edges from the
+        // per-edge visibility set in one pass. Doesn't disturb edges
+        // for other rows -- only the ones currently in the picker.
+        // Anchor-pin so the row stays put when arrows disappear and
+        // any auto-expanded modules collapse back (in a future
+        // refinement; for now hide-all just clears keys, which still
+        // changes target-side rendering enough to warrant the pin).
+        onHideAll: () => {
+          withAnchorPin(anchorFullPath, () => {
+            for (const edge of edges) {
+              const key =
+                direction === 'outgoing'
+                  ? specificCallArrowKey(anchorFullPath, edge.otherFullPath)
+                  : specificCallArrowKey(edge.otherFullPath, anchorFullPath);
+              if (!specificCallArrowsShown.has(key)) continue;
+              specificCallArrowsShown.delete(key);
+            }
+          });
+        },
       });
+    };
+
+    // Run `mutate`, redraw, and pan the viewport so the callable row
+    // anchored by `anchorFullPath` stays at its pre-mutation screen
+    // position. Same anchor-translation pattern onSelectField uses for
+    // ownership arrows -- without it, expanding target modules to make
+    // newly-revealed call arrows land can shove the canvas dozens of
+    // rows and the user loses their place. Falls back to a plain draw
+    // when the anchor row isn't in the call index (synthetic / not yet
+    // registered).
+    const withAnchorPin = (anchorFullPath: string, mutate: () => void): void => {
+      const callerRow = calls.rowByFunction.get(anchorFullPath);
+      if (callerRow === undefined) {
+        mutate();
+        draw();
+        return;
+      }
+      const before = lookupMemberRowPoint(
+        lastLayout,
+        callerRow.typeId,
+        callerRow.rowName,
+        callerRow.rowKind,
+      );
+      mutate();
+      draw();
+      const after = lookupMemberRowPoint(
+        lastLayout,
+        callerRow.typeId,
+        callerRow.rowName,
+        callerRow.rowKind,
+      );
+      const delta = anchorTranslation(before, after);
+      if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
+    };
+
+    // Type-row variant of withAnchorPin: pins the type whose dot opened
+    // the owner picker. Mirrors the row-level pin but uses lookupPoint
+    // (the type header position) since the user clicked the dot, not
+    // a member row. Used by openOwnerPicker for single-owner toggle
+    // and the show-all / hide-all bulk handlers below.
+    const withTypePin = (typeId: string, mutate: () => void): void => {
+      const before = lookupPoint(lastLayout, typeId);
+      mutate();
+      draw();
+      const after = lookupPoint(lastLayout, typeId);
+      const delta = anchorTranslation(before, after);
+      if (delta !== null) layers.translateBy(delta.dx, delta.dy, true);
+    };
+
+    // Reveal every ownership-arrow from `ownerTypeId` to `ownedTypeId`.
+    // Each field on the owner whose type resolves to the owned type
+    // gets its (ownerType, fieldName, 'field') key added to
+    // `selectedFields`, which is what the layout reads to allow a
+    // drifted ownership arrow through the routing filter. The owner
+    // type and its ancestor modules are expanded so the field row
+    // actually renders. Same rule the old expand-all flow used; the
+    // picker now owns it.
+    const revealOwnerArrows = (ownerTypeId: string, ownedTypeId: string): void => {
+      for (const fieldName of ownerFieldsPointingTo(ownership, ownerTypeId, ownedTypeId)) {
+        selectedFields.add(fieldKey(ownerTypeId, fieldName, 'field'));
+      }
+      for (const m of ancestorModuleIds(ownerTypeId)) state.expand(m);
+      state.expand(ownerTypeId);
+    };
+
+    // Hide every ownership-arrow from `ownerTypeId` to `ownedTypeId`.
+    // Only clears the field keys; deliberately does NOT collapse the
+    // owner type itself (the user may have it expanded for other
+    // reasons), and doesn't touch keys for fields that don't point at
+    // this target.
+    const hideOwnerArrows = (ownerTypeId: string, ownedTypeId: string): void => {
+      for (const fieldName of ownerFieldsPointingTo(ownership, ownerTypeId, ownedTypeId)) {
+        selectedFields.delete(fieldKey(ownerTypeId, fieldName, 'field'));
+      }
+    };
+
+    // True when every field on the owner that points at the target is
+    // currently selected -- i.e., every potential arrow is visible.
+    // Used to set `active` on the picker entry so the user sees current
+    // state on open and to drive single-owner toggle.
+    const ownerArrowsActive = (ownerTypeId: string, ownedTypeId: string): boolean => {
+      const fields = ownerFieldsPointingTo(ownership, ownerTypeId, ownedTypeId);
+      if (fields.length === 0) return false;
+      return fields.every((fieldName) =>
+        selectedFields.has(fieldKey(ownerTypeId, fieldName, 'field')),
+      );
+    };
+
+    // Opens the owner picker for `typeId`. Mirrors the call-edge picker
+    // contract: 0 owners no-op, 1 owner toggle directly, 2+ owners show
+    // the floating picker so the user can pick which incoming owner's
+    // arrows to reveal. The type's dot row is anchor-pinned through
+    // the layout change so the click target stays put.
+    const openOwnerPicker = (
+      typeId: string,
+      anchor: { readonly x: number; readonly y: number },
+    ): void => {
+      const ownerIds = ownership.ownedBy.get(typeId) ?? [];
+      if (ownerIds.length === 0) return;
+      if (ownerIds.length === 1 && ownerIds[0] !== undefined) {
+        const onlyOwner = ownerIds[0];
+        withTypePin(typeId, () => {
+          if (ownerArrowsActive(onlyOwner, typeId)) {
+            hideOwnerArrows(onlyOwner, typeId);
+          } else {
+            revealOwnerArrows(onlyOwner, typeId);
+          }
+        });
+        return;
+      }
+      const anchorCrate = cratePrefixOf(typeId);
+      const entries: EdgeEntry[] = ownerIds
+        .map((ownerId): EdgeEntry | null => {
+          const info = typeInfo.get(ownerId);
+          if (info === undefined) return null;
+          const ownerCrate = cratePrefixOf(ownerId);
+          const isCrossCrate = ownerCrate !== '' && ownerCrate !== anchorCrate;
+          const entry: EdgeEntry = {
+            otherFullPath: ownerId,
+            label: info.label,
+            active: ownerArrowsActive(ownerId, typeId),
+            ...(info.modulePath !== '' ? { prefix: `${info.modulePath}::` } : {}),
+            ...(isCrossCrate ? { crateName: ownerCrate } : {}),
+          };
+          return entry;
+        })
+        .filter((entry): entry is EdgeEntry => entry !== null);
+      if (entries.length === 0) return;
+      edgePicker.show({
+        entries,
+        anchorX: anchor.x,
+        anchorY: anchor.y,
+        // Owners flow INTO the clicked type; fan the picker leftward so
+        // it visually mirrors the incoming arrows.
+        direction: 'incoming',
+        onPick: (entry) => {
+          withTypePin(typeId, () => {
+            if (ownerArrowsActive(entry.otherFullPath, typeId)) {
+              hideOwnerArrows(entry.otherFullPath, typeId);
+            } else {
+              revealOwnerArrows(entry.otherFullPath, typeId);
+            }
+          });
+        },
+        onShowAll: () => {
+          withTypePin(typeId, () => {
+            for (const ownerId of ownerIds) revealOwnerArrows(ownerId, typeId);
+          });
+        },
+        onHideAll: () => {
+          withTypePin(typeId, () => {
+            for (const ownerId of ownerIds) hideOwnerArrows(ownerId, typeId);
+          });
+        },
+      });
+    };
+
+
+    // Reveal an edge without redrawing. The bulk show-all path calls
+    // this in a loop and redraws once at the end; single-click goes
+    // through toggleSpecificEdge below which wraps reveal + draw.
+    const revealSpecificEdge = (
+      direction: 'outgoing' | 'incoming',
+      anchorFullPath: string,
+      otherFullPath: string,
+    ): void => {
+      const callerFullPath = direction === 'outgoing' ? anchorFullPath : otherFullPath;
+      const calleeFullPath = direction === 'outgoing' ? otherFullPath : anchorFullPath;
+      const key = specificCallArrowKey(callerFullPath, calleeFullPath);
+      if (specificCallArrowsShown.has(key)) return;
+      specificCallArrowsShown.add(key);
+      // Expand the other endpoint's containing type/bucket/modules so
+      // the arrow has somewhere to land. Mirrors what onSelectField
+      // does for the row-level toggle.
+      const targetCallableRow = calls.rowByFunction.get(otherFullPath);
+      if (targetCallableRow !== undefined) {
+        for (const m of ancestorModuleIds(targetCallableRow.typeId)) state.expand(m);
+        state.expand(targetCallableRow.typeId);
+        if (targetCallableRow.bucketId !== null) state.expand(targetCallableRow.bucketId);
+      } else {
+        // Unresolved or external callee: still try to expand ancestors
+        // of the path so any matching type renders if it exists
+        // somewhere in the workspace tree.
+        for (const m of ancestorModuleIds(otherFullPath)) state.expand(m);
+      }
     };
 
     const toggleSpecificEdge = (
@@ -756,26 +1014,13 @@ async function main(): Promise<void> {
       const callerFullPath = direction === 'outgoing' ? anchorFullPath : otherFullPath;
       const calleeFullPath = direction === 'outgoing' ? otherFullPath : anchorFullPath;
       const key = specificCallArrowKey(callerFullPath, calleeFullPath);
-      if (specificCallArrowsShown.has(key)) {
-        specificCallArrowsShown.delete(key);
-      } else {
-        specificCallArrowsShown.add(key);
-        // Expand the other endpoint's containing type/bucket/modules
-        // so the arrow has somewhere to land. Mirrors what
-        // onSelectField does for the row-level toggle.
-        const targetCallableRow = calls.rowByFunction.get(otherFullPath);
-        if (targetCallableRow !== undefined) {
-          for (const m of ancestorModuleIds(targetCallableRow.typeId)) state.expand(m);
-          state.expand(targetCallableRow.typeId);
-          if (targetCallableRow.bucketId !== null) state.expand(targetCallableRow.bucketId);
+      withAnchorPin(anchorFullPath, () => {
+        if (specificCallArrowsShown.has(key)) {
+          specificCallArrowsShown.delete(key);
         } else {
-          // Unresolved or external callee: still try to expand
-          // ancestors of the path so any matching type renders if it
-          // exists somewhere in the workspace tree.
-          for (const m of ancestorModuleIds(otherFullPath)) state.expand(m);
+          revealSpecificEdge(direction, anchorFullPath, otherFullPath);
         }
-      }
-      draw();
+      });
     };
 
     const navigateToType = (typeId: string): void => {
@@ -787,6 +1032,17 @@ async function main(): Promise<void> {
       draw();
       const y = lookupY(lastLayout, typeId);
       if (y !== null) layers.centerOnY(y, true);
+    };
+
+    const navigateToModule = (moduleId: string): void => {
+      // Expand every ancestor in the module chain (so the picked
+      // module's row is reachable in the layout), then the module
+      // itself (so its contents render), then center on its new y.
+      for (const ancId of moduleAncestorIds(moduleId)) state.expand(ancId);
+      state.expand(moduleId);
+      draw();
+      const point = lookupLayoutPoint(lastLayout, moduleId);
+      if (point !== null) layers.centerOnY(point.y, true);
     };
 
     // Single navigation path for both direct-click and popup-pick. The
@@ -812,53 +1068,6 @@ async function main(): Promise<void> {
       layers.panTo(point.x, point.y, anchor.x, anchor.y, true);
     };
 
-    // Shared logic for the "owners" expand/fold toggle. Used by both the
-    // dot click (onExpandAllOwners) and the popover's header button.
-    //
-    // If every owner type is already expanded, the action FOLDS them all
-    // (collapses each owner type — leaves their ancestor modules as the
-    // user left them, since those may have other content the user cares
-    // about). Otherwise it EXPANDS all owners and their ancestors.
-    //
-    // Anchors the *hovered type itself* at its current screen position
-    // through the layout transition (same trick as click-to-toggle), so
-    // the dot — and any popover anchored to that dot — stays put while
-    // surrounding content shifts. Returns true if owners are expanded
-    // after the toggle, false if folded.
-    const toggleExpandAllOwnersOf = (typePath: string): boolean => {
-      const ownerIds = ownership.ownedBy.get(typePath);
-      if (!ownerIds || ownerIds.length === 0) return false;
-      const before = lookupPoint(lastLayout, typePath);
-      const allExpanded = ownerIds.every((id) => state.isExpanded(id));
-      if (allExpanded) {
-        for (const ownerId of ownerIds) state.collapse(ownerId);
-        // Intentionally do NOT clear selectedFields here. Collapsing the
-        // owner hides the field row (and its arrow) automatically; keeping
-        // the selection sticky means a follow-up expand reveals the arrow
-        // immediately rather than requiring another click.
-      } else {
-        for (const ownerId of ownerIds) {
-          for (const m of ancestorModuleIds(ownerId)) state.expand(m);
-          state.expand(ownerId);
-          // Also select the owner's field(s) that actually point at this
-          // type, so a drifted (non-canonical) ownership arrow is allowed
-          // through the routing filter. Without this, expanding the owner
-          // makes the field row visible but routing still drops the
-          // arrow because drifted arrows are opt-in.
-          for (const fieldName of ownerFieldsPointingTo(ownership, ownerId, typePath)) {
-            selectedFields.add(fieldKey(ownerId, fieldName, 'field'));
-          }
-        }
-      }
-      draw();
-      const after = lookupPoint(lastLayout, typePath);
-      const delta = anchorTranslation(before, after);
-      if (delta !== null) {
-        layers.translateBy(delta.dx, delta.dy, true);
-      }
-      return !allExpanded;
-    };
-
     const resetAll = (): void => {
       selectedFields.clear();
       incomingCallTargetsShown.clear();
@@ -876,7 +1085,6 @@ async function main(): Promise<void> {
       updateFocusModeIndicator(false);
       updateMethodsIndicator(false);
       arrowDisambig.hide();
-      ownersOverlay.hideImmediately();
       draw();
       layers.resetTransform(true);
     };
@@ -893,6 +1101,7 @@ async function main(): Promise<void> {
       typeIdSet,
       typeInfo,
       navigateToType,
+      navigateToModule,
       navigateToArrowEndpoint,
       resetAll,
       focusMode: false,
@@ -1138,6 +1347,35 @@ function collectTypeInfo(root: TreeNode): Map<string, TypeInfo> {
     else for (const c of n.children) walk(c);
   };
   walk(root);
+  return out;
+}
+
+function buildCrateMenuItems(node: ModuleNode): CrateMenuItem[] {
+  // Walk a crate (or sub-module) ModuleNode and return its direct
+  // submodule children as menu items, recursing for cascading levels.
+  // Types are deliberately excluded -- the menu is purely a
+  // navigation/expansion affordance for the module hierarchy.
+  const out: CrateMenuItem[] = [];
+  for (const child of node.children) {
+    if (child.kind !== 'module') continue;
+    out.push({
+      id: child.id,
+      label: child.label,
+      children: buildCrateMenuItems(child),
+    });
+  }
+  out.sort((a, b) => a.label.localeCompare(b.label));
+  return out;
+}
+
+function moduleAncestorIds(moduleId: string): string[] {
+  // Return the chain of module ids leading down to `moduleId` (not
+  // including it). For `c::a::b::c` returns [`c`, `c::a`, `c::a::b`].
+  // Used by the crate menu's navigate flow to expand every ancestor
+  // so the picked module's row actually renders.
+  const parts = moduleId.split('::');
+  const out: string[] = [];
+  for (let i = 1; i < parts.length; i++) out.push(parts.slice(0, i).join('::'));
   return out;
 }
 

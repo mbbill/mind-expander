@@ -74,6 +74,11 @@ const FONT_SIZE_MODULE_CHEVRON = 14; // bumped above the base + bold so the
 // semantics (modules expand both vertically and horizontally).
 
 const COLOR_LABEL = '#1e293b';
+// Crate-tier label sits one shade lighter than COLOR_LABEL so bold +
+// near-black doesn't shout under the slate-200 crate band tint. Stops
+// short of slate-600 (which is the dimmed module-prefix grey) so crate
+// headers stay heavier than the modules they group.
+const COLOR_CRATE_LABEL = '#334155';
 const COLOR_MODULE_PREFIX = '#475569'; // slate-600, dark grey for the dimmed parent path
 
 // Pastel palette for the per-segment chip colours behind the dimmed prefix.
@@ -326,20 +331,15 @@ export interface TreeRenderOptions {
    *  what the analysis says about owners/owns, so the user can compare
    *  against the routed (rendered) counts and spot routing gaps. */
   readonly ownership: OwnershipIndex;
-  /** Hover on a type's dot → show the incoming-ownership popover. The
-   *  callback receives the type's full path and a `getDotScreenPos`
-   *  closure that returns the dot's current screen-space center. The
-   *  overlay calls it on each pan/zoom while pinned, so the panel stays
-   *  anchored to the moving dot. `onHideOwners` is fired when the cursor
-   *  leaves the dot — the overlay handles the post-leave grace period. */
-  readonly onShowOwners: (
+  /** Click on a type's dot → open the owner picker for that type. The
+   *  picker mirrors the call-edge picker: 0 owners no-ops, 1 owner is
+   *  toggled directly, 2+ owners show a fan with show-all / hide-all
+   *  controls. `anchor` is the click position in screen coords so the
+   *  picker can position itself next to the dot. */
+  readonly onPickOwner: (
     typePath: string,
-    getDotScreenPos: () => { x: number; y: number },
+    anchor: { readonly x: number; readonly y: number },
   ) => void;
-  readonly onHideOwners: () => void;
-  /** Click on a type's dot → expand every type that owns it (and the
-   *  modules containing those owners), so all incoming arrows render. */
-  readonly onExpandAllOwners: (typePath: string) => void;
   /** Click on a ghost re-export's dot or row → toggle whether that
    *  ghost's violet arrow is rendered. The viewer holds the toggle
    *  state per ghost id (`ghostId`); when first revealing an arrow it
@@ -1073,7 +1073,13 @@ function renderModules(
     .append('tspan')
     .attr('class', 'leaf')
     .attr('font-size', (d) => (d.modDepth === 0 ? FONT_SIZE_CRATE_LEAF : FONT_SIZE_MODULE_LEAF))
-    .attr('font-weight', (d) => (d.modDepth === 0 ? 700 : 400));
+    .attr('font-weight', (d) => (d.modDepth === 0 ? 700 : 400))
+    // Crate leaves lighten to slate-700 so bold+near-black doesn't
+    // overpower the slate-200 band tint behind them. Module leaves
+    // keep the inherited COLOR_LABEL (slate-800) because they sit on
+    // the lighter alternating-stripe background where higher contrast
+    // is appropriate.
+    .attr('fill', (d) => (d.modDepth === 0 ? COLOR_CRATE_LABEL : null));
 
   enter
     .append('rect')
@@ -1395,10 +1401,13 @@ function renderTypes(
     .on('mouseleave', headerDebugMouseleave);
 
   // Refresh dot handlers each draw. Click semantics:
-  //   - real type dot → expand every owner (and its module ancestors)
-  //     so all incoming arrows render.
+  //   - real type dot → open the owner picker so the user can reveal
+  //     incoming-ownership arrows one owner at a time (or via the
+  //     show-all / hide-all bulk controls).
   //   - ghost re-export dot → follow the re-export to its canonical
   //     target, expanding ancestors so the violet arrow becomes visible.
+  // Hover remains wired ONLY for the debug overlay; the owner popover
+  // is gone (replaced by the click-driven picker).
   merged
     .select<SVGCircleElement>('circle.type-dot')
     .on('click', (event: MouseEvent, d) => {
@@ -1406,24 +1415,56 @@ function renderTypes(
       if (d.isGhost && d.ghostTarget !== null) {
         opts.onFollowGhost(d.id, d.ghostTarget);
       } else {
-        opts.onExpandAllOwners(d.fullPath);
+        opts.onPickOwner(d.fullPath, { x: event.clientX, y: event.clientY });
       }
     })
     .on('mouseenter', function (_event: MouseEvent, d) {
       const node = this as SVGCircleElement;
-      opts.onShowOwners(d.fullPath, () => {
-        const r = node.getBoundingClientRect();
-        return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
-      });
-      // Debug overlay coexists with the owner popover on dot hover — the
-      // owner popover answers "who points at this?" while the debug
-      // panel exposes the layout-level facts the owner popover hides
-      // (kind, visibility, routed-arrow counts, ghost target, etc.).
       if (layoutDebugEnabled()) showTypeDebugPanel(layout, opts.ownership, d, node);
+      // Hover-revealed badge with the incoming-owner count. Mirrors the
+      // count badge on a callable row's `->` glyphs so the dot answers
+      // "how many arrows would clicking me show?" at a glance. Ghosts
+      // don't participate (their click follows the re-export, not the
+      // owner set).
+      if (d.isGhost) return;
+      const ownerCount = opts.ownership.ownedBy.get(d.fullPath)?.length ?? 0;
+      // Show (0) too -- the user gets the same readout regardless of
+      // whether clicking would do anything, which is the signal that
+      // clicking here will not open a picker.
+      const group = select(node.parentNode as Element);
+      let badge = group.select<SVGTextElement>('text.owner-count-badge');
+      if (badge.empty()) {
+        badge = group
+          .append('text')
+          .attr('class', 'owner-count-badge')
+          .attr('y', ROW_H / 2)
+          .attr('dy', '0.32em')
+          .attr('text-anchor', 'end')
+          .attr('font-size', 10)
+          .attr('font-weight', 600)
+          // White halo so the small text reads against any band tint
+          // it ends up over.
+          .attr('paint-order', 'stroke fill')
+          .attr('stroke', '#ffffff')
+          .attr('stroke-width', 3)
+          .style('pointer-events', 'none')
+          .style('opacity', 0);
+      }
+      badge
+        .text(`(${ownerCount})`)
+        .attr('x', TYPE_CIRCLE_X - TYPE_RADIUS - 4)
+        .attr('fill', colorForVisibility(d.visibility))
+        .transition('owner-badge-hover')
+        .duration(CALL_MARKER_HOVER_DURATION_MS)
+        .style('opacity', 1);
     })
-    .on('mouseleave', () => {
-      opts.onHideOwners();
+    .on('mouseleave', function () {
       if (layoutDebugEnabled()) hideCallableDebugPanel();
+      select((this as SVGCircleElement).parentNode as Element)
+        .select<SVGTextElement>('text.owner-count-badge')
+        .transition('owner-badge-hover')
+        .duration(CALL_MARKER_HOVER_DURATION_MS)
+        .style('opacity', 0);
     });
 
   // Debug overlay also fires on the type's label text — the dot is a

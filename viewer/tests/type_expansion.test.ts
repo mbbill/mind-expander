@@ -367,18 +367,19 @@ describe('type expansion target modules', () => {
 });
 
 describe('expand-all-owners wires field selections so drifted arrows render', () => {
-  // Source-snapshot guard: when expanding owners, main.ts must add each
-  // owner's matching-field key to selectedFields so the drifted ownership
-  // arrow gets through the routing filter. Without this, clicking a
-  // type's red dot expands the owners but the incoming red arrow stays
-  // hidden — the bug this commit fixes.
-  it('toggleExpandAllOwnersOf calls ownerFieldsPointingTo and selects via fieldKey', () => {
+  // Source-snapshot guard: when revealing an owner's arrows, main.ts
+  // must add each owner's matching-field key to selectedFields so the
+  // drifted ownership arrow gets through the routing filter. Without
+  // this, clicking a type's dot and choosing an owner reveals the
+  // owner type but the incoming red arrow stays hidden -- the bug the
+  // owner-picker rework preserves the fix for.
+  it('revealOwnerArrows calls ownerFieldsPointingTo and selects via fieldKey', () => {
     const source = readFileSync(
       new URL('../src/main.ts', import.meta.url),
       'utf8',
     );
     expect(source).toMatch(
-      /toggleExpandAllOwnersOf[\s\S]*?ownerFieldsPointingTo\(ownership, ownerId, typePath\)[\s\S]*?selectedFields\.add\(fieldKey\(ownerId, fieldName, 'field'\)\)/,
+      /revealOwnerArrows[\s\S]*?ownerFieldsPointingTo\(ownership, ownerTypeId, ownedTypeId\)[\s\S]*?selectedFields\.add\(fieldKey\(ownerTypeId, fieldName, 'field'\)\)/,
     );
   });
 });

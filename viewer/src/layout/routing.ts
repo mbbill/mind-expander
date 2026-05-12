@@ -268,55 +268,47 @@ function callLocality(
 }
 
 function routeAroundBlocks(request: RouteRequest, field: RoutingField): readonly ArrowWaypoint[] {
-  // Preferred shape: row port → forced source-side exit → A* middle →
-  // target-entry trunk → target's left edge. The forced exit encodes a
-  // semantic rule the geometry alone can't see: outgoing calls always
-  // exit on the right, ownership arrows exit toward the target. A pure
-  // shortest-path A* would happily route an outgoing call out the left
-  // edge if the callee sat there, which would slice back through the
-  // caller's text. The pre-positioned exit prevents that.
-  const targetEntry = {
+  // Single-shot routing. The canonical anchors -- sourceExit on the
+  // requested source side and targetEntry on the target's left --
+  // encode the direction constraint geometrically: A* between them is
+  // a pure orthogonal search with no notion of "exit right" / "enter
+  // left", and its result inherits those directions by construction.
+  //
+  // When an unrelated obstacle pins against the source's or target's
+  // edge, the canonical anchor lands inside that obstacle's clearance.
+  // findClearAnchor walks the anchor further along the canonical
+  // direction (rightward for a right-side source, leftward for the
+  // target) until it sits in free space. The walk uses grid edges, so
+  // the adjusted anchor remains compatible with the per-arrow Hanan
+  // grid. After this adjustment both endpoints are guaranteed clear,
+  // which is exactly the precondition the complete A* needs. No
+  // fallback path -- one search, always succeeds for clear anchors.
+  const initialSourceExit = sourceExitForTarget(request);
+  const initialTargetEntry = {
     x: request.targetBounds.left - TARGET_ENTRY_GAP,
     y: request.end.y,
   };
-  const exit = sourceExitForTarget(request);
-  const sourceStubClear = field.segmentIsClear(request.start, exit.point, {
-    ignoreTypeId: request.fromTypeId,
-  });
-  const targetStubClear = field.segmentIsClear(targetEntry, request.end, {
-    ignoreTypeId: request.toTypeId,
-  });
-
-  if (sourceStubClear && targetStubClear) {
-    const middle = field.routeMiddle(exit.point, targetEntry);
-    if (middle !== null) {
-      return compactDuplicateWaypoints([request.start, ...middle, request.end]);
-    }
+  const sourceExit = field.findClearAnchor(
+    initialSourceExit.point,
+    request.sourceSide === 'right' ? 1 : -1,
+  );
+  // Every arrow in this codebase approaches its target from the LEFT
+  // (incoming-call markers sit on row.left, ownership arrows enter at
+  // type.left). If a future "right-side incoming" arrow type ever
+  // exists, parameterize this direction off the request.
+  const targetEntry = field.findClearAnchor(initialTargetEntry, -1);
+  const middle = field.routeMiddle(sourceExit, targetEntry);
+  if (middle !== null) {
+    return compactDuplicateWaypoints([request.start, ...middle, request.end]);
   }
 
-  // Preferred shape unavailable — either a stub is blocked by some
-  // other obstacle, or A* can't connect exit to targetEntry through the
-  // clear field. Fall back to a full start-to-end A* with source/target
-  // ignores, so the search can leave the source / approach the target
-  // through their own clearance rings without those rings rejecting
-  // their own row's segment. The complete pathfinder always returns a
-  // route for two clear endpoints, so the arrow stays visible — hiding
-  // it would falsely tell the user there's no relationship.
-  const direct = field.routeMiddle(request.start, request.end, {
-    ignoreNearStart: request.fromTypeId,
-    ignoreNearGoal: request.toTypeId,
-  });
-  if (direct !== null) {
-    return compactDuplicateWaypoints(direct);
-  }
-
-  // Last-resort visible fallback. The perimeter buffer built into the
-  // routing field makes any two clear endpoints connected, so reaching
-  // here means start or goal sits inside an obstacle — a real layout
-  // bug worth logging. Emit a degenerate L-path so the arrow is at
-  // least visible while the cause gets diagnosed.
+  // Genuinely unreachable. A* between two clear endpoints with a
+  // finite obstacle set and a perimeter buffer MUST return a path; if
+  // it doesn't, the routing field has a soundness bug. Surface loudly
+  // and emit a visible degenerate L-path so the user still sees the
+  // arrow -- hiding it would falsely tell them there's no edge.
   console.error(
-    `routing: pathfinder returned no route for ${request.fromTypeId} → ${request.toTypeId}; emitting direct fallback`,
+    `routing: pathfinder returned no route for ${request.fromTypeId} → ${request.toTypeId}; emitting degenerate fallback`,
   );
   return compactDuplicateWaypoints([
     request.start,

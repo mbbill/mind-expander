@@ -31,27 +31,29 @@ import { LAYOUT_GRID_CELL_H, LAYOUT_GRID_CELL_W } from '../analysis/layout_metri
 import type { ArrowWaypoint } from '../analysis/layout_model.ts';
 import type { Obstacle } from './types.ts';
 
-export interface RouteMiddleOptions {
-  /** Type id of the source obstacle. Segments where at least one endpoint
-   *  sits inside the source's clearance rect ignore that rect (so the
-   *  route can exit the source through its own clearance ring without
-   *  being blocked by it). Other obstacles in the same area still apply. */
-  readonly ignoreNearStart?: string;
-  /** Symmetric for the target endpoint. */
-  readonly ignoreNearGoal?: string;
-}
-
 export interface RoutingField {
   readonly routeMiddle: (
     start: ArrowWaypoint,
     goal: ArrowWaypoint,
-    options?: RouteMiddleOptions,
   ) => readonly ArrowWaypoint[] | null;
   readonly segmentIsClear: (
     from: ArrowWaypoint,
     to: ArrowWaypoint,
     options?: { readonly ignoreTypeId?: string },
   ) => boolean;
+  /** Walk outward from `start` along the requested horizontal direction
+   *  (`+1` = right, `-1` = left) until the point sits outside every
+   *  obstacle's clearance rect. Used by routeAroundBlocks to push the
+   *  canonical-side source/target anchors past any other obstacle that
+   *  pins against the source's/target's edge, so the A* between them
+   *  always operates on two clear endpoints. Walks by grid edges --
+   *  each jump lands on a clearance-rect boundary -- so the adjusted
+   *  point stays grid-aligned with the routing field. Returns the
+   *  original point unchanged when it was already clear. */
+  readonly findClearAnchor: (
+    start: ArrowWaypoint,
+    direction: 1 | -1,
+  ) => ArrowWaypoint;
 }
 
 interface ClearanceRect {
@@ -101,17 +103,8 @@ export function buildRoutingField(obstacles: readonly Obstacle[]): RoutingField 
   const blockerCache = buildBlockerCache(clearanceRects, globalXs, globalYs);
 
   return {
-    routeMiddle: (start, goal, options) =>
-      routeMiddle(
-        start,
-        goal,
-        clearanceRects,
-        globalXs,
-        globalYs,
-        rightnessAnchorX,
-        blockerCache,
-        options,
-      ),
+    routeMiddle: (start, goal) =>
+      routeMiddle(start, goal, clearanceRects, globalXs, globalYs, rightnessAnchorX, blockerCache),
     segmentIsClear: (from, to, options) =>
       segmentIsClear(
         from,
@@ -120,7 +113,57 @@ export function buildRoutingField(obstacles: readonly Obstacle[]): RoutingField 
           ? clearanceRects
           : clearanceRects.filter((rect) => rect.typeId !== options.ignoreTypeId),
       ),
+    findClearAnchor: (start, direction) =>
+      findClearAnchor(start, direction, clearanceRects, blockerCache),
   };
+}
+
+function findClearAnchor(
+  start: ArrowWaypoint,
+  direction: 1 | -1,
+  obstacles: readonly ClearanceRect[],
+  blockerCache: BlockerCache,
+): ArrowWaypoint {
+  // Only rects whose y range strictly contains start.y can intersect
+  // a point at (x, start.y). Pulling the candidate set from the
+  // blocker cache trims the inner loop from N obstacles to k overlap
+  // rects -- typically 0-3 for realistic layouts.
+  const rects = blockersForHorizontal(start.y, obstacles, blockerCache);
+  if (rects.length === 0) return start;
+
+  let x = start.x;
+  // Each iteration: find the first rect strictly containing x; if
+  // none, x is clear -- return it. Otherwise jump x past that rect's
+  // edge on the requested direction. blocker.right (or .left) sits ON
+  // the edge, not strictly inside, so pointInsideRect (strict) reports
+  // it clear of the just-jumped rect; another rect that begins at the
+  // same edge is also boundary-clear by the same rule.
+  //
+  // Bounded by `2 * rects.length + 1`: a rect can block the walk at
+  // most once before we jump past its edge, so the count is the
+  // worst-case number of distinct rects in the y band, doubled for
+  // safety against weird overlap chains.
+  const maxIters = rects.length * 2 + 1;
+  for (let i = 0; i < maxIters; i++) {
+    let blocker: ClearanceRect | null = null;
+    for (const r of rects) {
+      if (r.left + EPS < x && x < r.right - EPS) {
+        blocker = r;
+        break;
+      }
+    }
+    if (blocker === null) return { x, y: start.y };
+    x = direction > 0 ? blocker.right : blocker.left;
+  }
+  // Pathological case: a chain of overlapping rects boxes the anchor
+  // in. The perimeter buffer baked into globalXs guarantees this
+  // shouldn't happen for real layouts, so surface loudly and return
+  // the original; routeAroundBlocks's "non-clear endpoint" branch
+  // will catch it and emit a visible degenerate L-path.
+  console.error(
+    `routing: findClearAnchor could not clear (${start.x}, ${start.y}) in direction ${direction}`,
+  );
+  return start;
 }
 
 interface BlockerCache {
@@ -237,7 +280,6 @@ function routeMiddle(
   globalYs: readonly number[],
   rightnessAnchorX: number,
   blockerCache: BlockerCache,
-  options: RouteMiddleOptions | undefined,
 ): readonly ArrowWaypoint[] | null {
   // Compose the per-arrow axis grids: shared global lines plus the four
   // endpoint coordinates. Adding endpoints to the grid lets A* terminate
@@ -251,69 +293,33 @@ function routeMiddle(
   const goalYi = indexOf(ys, goal.y);
   if (startXi < 0 || startYi < 0 || goalXi < 0 || goalYi < 0) return null;
 
-  // Per-segment clearance with start/goal-adjacency overrides. A segment
-  // ignores the source's clearance rect when at least one endpoint sits
-  // inside it (so the route can exit the source through its own
-  // clearance ring), and ignores the target's rect by the same rule.
-  // Outside of those adjacency windows, every obstacle applies — the
-  // route can't loop back through source or target body once it has
-  // left them. "Near" uses closed-interval inclusion (pointTouchesRect)
-  // so endpoints sitting exactly on their own clearance edge still
-  // count as adjacent.
-  //
-  // Inlined rather than calling segmentIsClear with a pre-filtered
-  // array: the search runs this once per A* expansion (four times per
-  // node), and allocating a filtered obstacle array each call shows up
-  // hot in benchmarks.
-  const ignoreNearStart =
-    options?.ignoreNearStart === undefined
-      ? null
-      : obstacles.find((r) => r.typeId === options.ignoreNearStart) ?? null;
-  const ignoreNearGoal =
-    options?.ignoreNearGoal === undefined
-      ? null
-      : obstacles.find((r) => r.typeId === options.ignoreNearGoal) ?? null;
+  // Per-segment clearance check. Uses the per-axis-line blocker cache
+  // to iterate only the few rects that can intersect a segment along
+  // this axis, instead of all N obstacles.
   const clearForSearch = (from: ArrowWaypoint, to: ArrowWaypoint): boolean => {
     if (from.x === to.x && from.y === to.y) return true;
     if (from.x !== to.x && from.y !== to.y) return false;
-    // Iterate only the rects whose clearance strictly contains the
-    // segment's axis coordinate -- the spatial prune that makes A*
-    // affordable on dense layouts. blockersForHorizontal/Vertical hit
-    // the per-axis-line cache for global grid coordinates and only
-    // compute on the fly for the two per-arrow extras (start/goal).
     const candidates =
       from.y === to.y
         ? blockersForHorizontal(from.y, obstacles, blockerCache)
         : blockersForVertical(from.x, obstacles, blockerCache);
     for (const rect of candidates) {
-      if (
-        rect === ignoreNearStart &&
-        (pointTouchesRect(from, rect) || pointTouchesRect(to, rect))
-      )
-        continue;
-      if (
-        rect === ignoreNearGoal &&
-        (pointTouchesRect(from, rect) || pointTouchesRect(to, rect))
-      )
-        continue;
       if (axisAlignedSegmentIntersectsRect(from, to, rect)) return false;
     }
     return true;
   };
   const pointClearForSearch = (p: ArrowWaypoint): boolean => {
     for (const rect of obstacles) {
-      if (rect === ignoreNearStart && pointTouchesRect(p, rect)) continue;
-      if (rect === ignoreNearGoal && pointTouchesRect(p, rect)) continue;
       if (pointInsideRect(p, rect)) return false;
     }
     return true;
   };
 
-  // Endpoint sanity: if start or goal sits strictly inside an obstacle's
-  // clearance rect *that we are NOT instructed to ignore*, no orthogonal
-  // route can reach it without crossing. That's a layout-bug situation;
-  // surface by returning null and let the caller decide (rather than
-  // hiding silently).
+  // Endpoint sanity. The new architecture only calls routeMiddle on
+  // anchors already pushed outside every obstacle's clearance (see
+  // findClearAnchor above), so a non-clear endpoint here is a
+  // routing-field invariant bug; return null and let the caller
+  // surface it loudly.
   if (!pointClearForSearch(start) || !pointClearForSearch(goal)) return null;
 
   // Trivial co-aligned case: direct segment if clear.
@@ -570,18 +576,6 @@ function pointInsideRect(point: ArrowWaypoint, rect: ClearanceRect): boolean {
   );
 }
 
-// Closed-interval variant for the search's "near source/target" rule.
-// Used so an endpoint sitting exactly on its own clearance boundary
-// still counts as "near," letting the search ignore that boundary when
-// the route enters/exits along it.
-function pointTouchesRect(point: ArrowWaypoint, rect: ClearanceRect): boolean {
-  return (
-    point.x >= rect.left - EPS &&
-    point.x <= rect.right + EPS &&
-    point.y >= rect.top - EPS &&
-    point.y <= rect.bottom + EPS
-  );
-}
 
 function segmentIsClear(
   from: ArrowWaypoint,

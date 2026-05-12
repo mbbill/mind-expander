@@ -35,6 +35,79 @@
       #tree.viewport-dragging:active {
         cursor: move;
       }
+      /* Sticky crate indicator -- appears in the top-left of the
+         canvas when the current crate's band has scrolled above the
+         viewport top. Wears the same white-halo treatment the in-band
+         crate label uses (8px stroke, paint-order: stroke fill) so it
+         reads as the same affordance, just unanchored. No chip
+         background -- the halo alone separates it from whatever is
+         scrolling behind. pointer-events: none so it never steals
+         clicks from the canvas. */
+      #sticky-crate {
+        position: absolute;
+        top: 6px;
+        /* MODULE_LABEL_X (18) in data-space lands at screen x=18 at
+           zoom 1 with no pan, which is where the in-band crate label
+           sits. The text-stroke halo extends a few px outward; the
+           text origin itself aligns with the in-band label. */
+        left: 18px;
+        /* Match in-band crate label: same sans-serif body font as the
+           SVG <text>, FONT_SIZE_CRATE_LEAF (15), bold, slate-700. */
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 15px;
+        font-weight: 700;
+        color: #334155;
+        -webkit-text-stroke: 8px #ffffff;
+        text-stroke: 8px #ffffff;
+        paint-order: stroke fill;
+        pointer-events: none;
+        z-index: 10;
+      }
+      /* Cascading hover menu anchored to #sticky-crate. Each level is
+         its own panel; hovering a row with children opens a deeper
+         panel to its right, OS-menubar style. The host (main.ts)
+         decides what each row contains and what clicking it does. */
+      .crate-menu-panel {
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 5px;
+        padding: 4px 0;
+        min-width: 160px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 13px;
+        color: #1e293b;
+      }
+      .crate-menu-panel .crate-menu-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 10px;
+        cursor: pointer;
+        gap: 16px;
+        user-select: none;
+      }
+      .crate-menu-panel .crate-menu-row.hover,
+      .crate-menu-panel .crate-menu-row:hover,
+      .crate-menu-panel .crate-menu-row:focus {
+        background: #f1f5f9;
+        outline: none;
+      }
+      .crate-menu-panel .crate-menu-row-label {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+      .crate-menu-panel .crate-menu-row-caret {
+        color: #94a3b8;
+        font-size: 10px;
+      }
+      /* Re-enable pointer events on the sticky so it can receive the
+         hover that opens the menu chain. Halo overlap on the visible
+         glyphs is intentional (matches in-band crate labels). */
+      #sticky-crate:not([hidden]) {
+        pointer-events: auto;
+        cursor: default;
+      }
       /* Arrows render subdued by default so dense diagrams stay readable.
          Selection brings them forward via opacity and, for canonical arrows,
          color only. Width is reserved for hover so clicking a member does not
@@ -426,144 +499,12 @@
       #type-tooltip .tt-meta + .tt-meta {
         margin-top: 0;
       }
-      /* Hover-popover for incoming ownership relationships. Frosted-glass
-         backdrop so the arrows and labels behind read faintly through it. */
-      .owners-panel {
-        background: rgba(255, 255, 255, 0.88);
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
-        border: 1px solid #e2e8f0;
-        border-radius: 6px;
-        padding: 0 14px 8px 14px;
-        font-size: 12px;
-        font-family:
-          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        color: #1e293b;
-        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
-        min-width: 200px;
-        max-width: 360px;
-        max-height: 420px;
-        overflow-y: auto;
-        /* Thin always-visible scrollbar so users see "more below" even
-           on macOS where overflow-y:auto otherwise auto-hides the bar. */
-        scrollbar-width: thin;
-        scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
-      }
-      .owners-panel::-webkit-scrollbar {
-        width: 8px;
-      }
-      .owners-panel::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      .owners-panel::-webkit-scrollbar-thumb {
-        background: rgba(100, 116, 139, 0.35);
-        border-radius: 4px;
-      }
-      .owners-panel::-webkit-scrollbar-thumb:hover {
-        background: rgba(100, 116, 139, 0.6);
-      }
-      .owners-panel .header {
-        position: sticky;
-        top: 0;
-        background: rgba(255, 255, 255, 0.92);
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        margin: 0 -14px 6px -14px;
-        padding: 8px 14px 4px 14px;
-        border-bottom: 1px solid #f1f5f9;
-      }
-      .owners-panel .title {
-        font-weight: 600;
-        color: #475569;
-        font-size: 11px;
-        letter-spacing: 0.02em;
-      }
-      .owners-panel .header-actions {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-      .owners-panel .pin-btn,
-      .owners-panel .expand-all-btn {
-        background: transparent;
-        border: none;
-        font-size: 14px;
-        cursor: pointer;
-        padding: 0 2px;
-        line-height: 1;
-        opacity: 0.45;
-        transition: opacity 80ms, color 80ms;
-        color: #64748b;
-      }
-      /* The "⇇" glyph is a text-style symbol, smaller than the pin emoji.
-         Bump it up so the two button hit-targets feel similar in weight. */
-      .owners-panel .expand-all-btn {
-        font-size: 18px;
-      }
-      .owners-panel .pin-btn:hover,
-      .owners-panel .expand-all-btn:hover {
-        opacity: 1;
-        color: #1e293b;
-      }
-      .owners-panel .pin-btn.active {
-        opacity: 1;
-        color: #ef4444;
-      }
-      .owners-panel .expand-all-btn.active {
-        opacity: 1;
-        color: #3b82f6;
-      }
-      .owners-panel ul.owners-list {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-      }
-      .owners-panel li.owners-row {
-        cursor: pointer;
-        padding: 4px 6px;
-        display: flex;
-        flex-direction: column;
-        border-radius: 3px;
-        transition: background-color 80ms;
-      }
-      .owners-panel li.owners-row:hover {
-        background: rgba(59, 130, 246, 0.08);
-      }
-      .owners-panel li.owners-row .module {
-        color: #64748b;
-        font-size: 10px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-      /* Cross-crate accent — same violet hue as the call-target picker
-         and the arrow disambig, so all three popups read the same when
-         pointing across a crate boundary. */
-      .owners-panel li.owners-row .module .crate {
-        color: #7c3aed;
-        font-weight: 600;
-      }
-      .owners-panel li.owners-row .types {
-        color: #1e293b;
-        font-size: 12px;
-      }
-      .owners-panel .more {
-        color: #94a3b8;
-        font-size: 10px;
-        margin-top: 6px;
-        text-align: center;
-      }
-      /* Arrow-disambiguation popover. Reuses the owners-panel look-and-
-         feel so the two screen-space popovers feel like the same family,
-         but with a distinct class so styling can diverge later. */
       /* Call-target picker: floating rounded white panel with a thin
          border and subtle shadow. Rows are plain text — no chip per row,
          no per-glyph halo. The panel background does the obscuring; each
          row is just text+padding inside it. Bold means the row's call
          edge is currently revealed; click toggles. */
-      .call-target-picker-panel {
+      .edge-picker-panel {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 13px;
         line-height: 1.25;
@@ -573,35 +514,66 @@
         padding: 6px 8px;
         box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
       }
-      .call-target-picker-panel .call-target-row {
+      .edge-picker-panel .edge-picker-row {
         cursor: pointer;
         padding: 2px 4px;
         color: #2563eb;
         font-weight: 500;
         border-radius: 3px;
       }
-      .call-target-picker-panel .call-target-row.active {
+      .edge-picker-panel .edge-picker-row.active {
         font-weight: 700;
       }
-      .call-target-picker-panel .call-target-row:hover,
-      .call-target-picker-panel .call-target-row:focus {
+      .edge-picker-panel .edge-picker-row:hover,
+      .edge-picker-panel .edge-picker-row:focus {
         background: rgba(37, 99, 235, 0.12);
         outline: none;
       }
-      .call-target-picker-panel .call-target-prefix {
+      .edge-picker-panel .edge-picker-prefix {
         font-size: 11px;
         opacity: 0.7;
       }
-      .call-target-picker-panel .call-target-main {
-        font-size: 13px;
+      .edge-picker-panel .edge-picker-main {
+        font-size: 12px;
       }
       /* Cross-crate boundary cue: the crate name segment renders in
          violet-600 so it stands apart from the blue function name and
          the dim module prefix. Same hue as the `mut` borrow flavor so
          the "crosses something" cues stay coherent across the UI. */
-      .call-target-picker-panel .call-target-crate {
+      .edge-picker-panel .edge-picker-crate {
         font-size: 11px;
         color: #7c3aed;
+      }
+      /* Top-row toolbar above the per-edge rows. Bulk show-all /
+         hide-all buttons sit here so the user can flip every arrow in
+         one click without going row-by-row. Visually separated from
+         the rows by a thin slate underline so the toolbar reads as a
+         distinct affordance, not another picker entry. */
+      .edge-picker-panel .edge-picker-toolbar {
+        display: flex;
+        gap: 6px;
+        padding-bottom: 6px;
+        margin-bottom: 4px;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .edge-picker-panel .edge-picker-btn {
+        flex: 1;
+        font: inherit;
+        font-size: 11px;
+        padding: 2px 8px;
+        border: 1px solid #cbd5e1;
+        border-radius: 3px;
+        background: #f8fafc;
+        color: #475569;
+        cursor: pointer;
+      }
+      .edge-picker-panel .edge-picker-btn:hover {
+        background: #e2e8f0;
+        color: #1e293b;
+      }
+      .edge-picker-panel .edge-picker-btn:focus {
+        outline: 2px solid #93c5fd;
+        outline-offset: 1px;
       }
 
       .arrow-disambig-panel {
@@ -792,6 +764,11 @@
   <body>
     <main>
       <svg id="tree" role="img" aria-label="module and type tree"></svg>
+      <!-- Sticky crate indicator. Pinned to the top-left of the SVG
+           container so the user always knows which crate they're
+           inside while scrolling. main.ts toggles `hidden` and the
+           text on every pan/zoom and after each draw. -->
+      <div id="sticky-crate" hidden></div>
       <div id="error" class="error" hidden></div>
     </main>
     <!-- Hidden SVG defs reachable from any inline SVG on the page —
