@@ -35,79 +35,6 @@
       #tree.viewport-dragging:active {
         cursor: move;
       }
-      /* Sticky crate indicator -- appears in the top-left of the
-         canvas when the current crate's band has scrolled above the
-         viewport top. Wears the same white-halo treatment the in-band
-         crate label uses (8px stroke, paint-order: stroke fill) so it
-         reads as the same affordance, just unanchored. No chip
-         background -- the halo alone separates it from whatever is
-         scrolling behind. pointer-events: none so it never steals
-         clicks from the canvas. */
-      #sticky-crate {
-        position: absolute;
-        top: 6px;
-        /* MODULE_LABEL_X (18) in data-space lands at screen x=18 at
-           zoom 1 with no pan, which is where the in-band crate label
-           sits. The text-stroke halo extends a few px outward; the
-           text origin itself aligns with the in-band label. */
-        left: 18px;
-        /* Match in-band crate label: same sans-serif body font as the
-           SVG <text>, FONT_SIZE_CRATE_LEAF (15), bold, slate-700. */
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 15px;
-        font-weight: 700;
-        color: #334155;
-        -webkit-text-stroke: 8px #ffffff;
-        text-stroke: 8px #ffffff;
-        paint-order: stroke fill;
-        pointer-events: none;
-        z-index: 10;
-      }
-      /* Cascading hover menu anchored to #sticky-crate. Each level is
-         its own panel; hovering a row with children opens a deeper
-         panel to its right, OS-menubar style. The host (main.ts)
-         decides what each row contains and what clicking it does. */
-      .crate-menu-panel {
-        background: #ffffff;
-        border: 1px solid #cbd5e1;
-        border-radius: 5px;
-        padding: 4px 0;
-        min-width: 160px;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 13px;
-        color: #1e293b;
-      }
-      .crate-menu-panel .crate-menu-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 4px 10px;
-        cursor: pointer;
-        gap: 16px;
-        user-select: none;
-      }
-      .crate-menu-panel .crate-menu-row.hover,
-      .crate-menu-panel .crate-menu-row:hover,
-      .crate-menu-panel .crate-menu-row:focus {
-        background: #f1f5f9;
-        outline: none;
-      }
-      .crate-menu-panel .crate-menu-row-label {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
-      }
-      .crate-menu-panel .crate-menu-row-caret {
-        color: #94a3b8;
-        font-size: 10px;
-      }
-      /* Re-enable pointer events on the sticky so it can receive the
-         hover that opens the menu chain. Halo overlap on the visible
-         glyphs is intentional (matches in-band crate labels). */
-      #sticky-crate:not([hidden]) {
-        pointer-events: auto;
-        cursor: default;
-      }
       /* Arrows render subdued by default so dense diagrams stay readable.
          Selection brings them forward via opacity and, for canonical arrows,
          color only. Width is reserved for hover so clicking a member does not
@@ -772,11 +699,6 @@
   <body>
     <main>
       <svg id="tree" role="img" aria-label="module and type tree"></svg>
-      <!-- Sticky crate indicator. Pinned to the top-left of the SVG
-           container so the user always knows which crate they're
-           inside while scrolling. main.ts toggles `hidden` and the
-           text on every pan/zoom and after each draw. -->
-      <div id="sticky-crate" hidden></div>
       <div id="error" class="error" hidden></div>
     </main>
     <!-- Hidden SVG defs reachable from any inline SVG on the page —

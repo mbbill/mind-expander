@@ -29,6 +29,11 @@ const FROZEN_LAYER_CLASS = 'frozen-layer';
 // setScaleExtent based on the layout's content size and the viewport.
 const SCALE_MIN = 0.01;
 const SCALE_MAX = 1.5;
+// Minimum visible content margin (px) on each side of the viewport.
+// Pan is constrained so at least this many pixels of content stay
+// on-screen along each axis — small enough to feel free, large enough
+// to keep the diagram findable.
+const PAN_MARGIN_PX = 60;
 
 /** Shared animation duration (ms) for layout tweens and zoom-pan tweens.
  *  Keeping it in one place ensures the renderer in tree.ts and the viewport
@@ -125,12 +130,22 @@ export function attachZoom(
   type BoundsHost = { __sfContentBounds?: ContentBounds | null };
   let contentBounds: ContentBounds | null = (svgEl as BoundsHost).__sfContentBounds ?? null;
 
-  // Pan constraint: screen centre (w/2, h/2) must always sit over content.
-  // Solving `contentLeft*k + tx <= w/2 <= contentRight*k + tx` gives
-  // `w/2 - contentRight*k <= tx <= w/2 - contentLeft*k`, and analogously
-  // for ty. Skip the constraint until bounds are set, or when the content
-  // is so small (e.g. zoomed-out tiny crate) that the lower bound exceeds
-  // the upper one — that's a degenerate case where any pan is fine.
+  // Pan constraint chosen per-axis to fit two situations:
+  //   1. Content smaller than viewport along this axis (e.g. the launch
+  //      view of a few crate rows): allow the user to place content
+  //      anywhere, only requiring PAN_MARGIN_PX to stay visible so it
+  //      can't be pushed entirely off-screen. This lets ty=0 (content
+  //      at top) sit naturally — no snap on first drag.
+  //   2. Content bigger than viewport (typical expanded diagram): keep
+  //      the screen centre over content. Without this, the user could
+  //      pan a large diagram such that only a thin strip of labels stays
+  //      visible — the rest of the diagram off-screen is hard to find.
+  // Each axis switches between (1) and (2) independently based on its
+  // current content size at the current zoom level.
+  //
+  // Derivation: a content edge sits at screen coord = data*k + t. For
+  // (1) we want PAN_MARGIN_PX of content visible at each edge of the
+  // viewport. For (2) we want viewport_centre in [data0*k+t, data1*k+t].
   const constrain = (
     transform: ZoomTransform,
     extent: [[number, number], [number, number]],
@@ -141,11 +156,29 @@ export function attachZoom(
     const k = transform.k;
     let tx = transform.x;
     let ty = transform.y;
-    const txMin = w / 2 - contentBounds.x1 * k;
-    const txMax = w / 2 - contentBounds.x0 * k;
+    const contentWPx = (contentBounds.x1 - contentBounds.x0) * k;
+    const contentHPx = (contentBounds.y1 - contentBounds.y0) * k;
+    let txMin: number;
+    let txMax: number;
+    if (contentWPx <= w) {
+      const marginX = Math.min(PAN_MARGIN_PX, contentWPx / 2);
+      txMin = marginX - contentBounds.x1 * k;
+      txMax = w - marginX - contentBounds.x0 * k;
+    } else {
+      txMin = w / 2 - contentBounds.x1 * k;
+      txMax = w / 2 - contentBounds.x0 * k;
+    }
     if (txMin <= txMax) tx = Math.max(txMin, Math.min(txMax, tx));
-    const tyMin = h / 2 - contentBounds.y1 * k;
-    const tyMax = h / 2 - contentBounds.y0 * k;
+    let tyMin: number;
+    let tyMax: number;
+    if (contentHPx <= h) {
+      const marginY = Math.min(PAN_MARGIN_PX, contentHPx / 2);
+      tyMin = marginY - contentBounds.y1 * k;
+      tyMax = h - marginY - contentBounds.y0 * k;
+    } else {
+      tyMin = h / 2 - contentBounds.y1 * k;
+      tyMax = h / 2 - contentBounds.y0 * k;
+    }
     if (tyMin <= tyMax) ty = Math.max(tyMin, Math.min(tyMax, ty));
     if (tx === transform.x && ty === transform.y) return transform;
     return transform.translate((tx - transform.x) / k, (ty - transform.y) / k);

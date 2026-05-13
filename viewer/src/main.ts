@@ -8,7 +8,6 @@ import {
   specificCallArrowKey,
 } from './analysis/layout_model.ts';
 import {
-  type ModuleNode,
   type TreeNode,
   WORKSPACE_ROOT_ID,
   buildWorkspaceTree,
@@ -26,7 +25,6 @@ import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
 import { ViewState } from './state/view_state.ts';
 import { anchorTranslation } from './view/anchor.ts';
 import { arrowDisambigViewportAction, createArrowDisambig } from './view/arrow_disambig.ts';
-import { type CrateMenuItem, createCrateMenu } from './view/crate_menu.ts';
 import { type EdgeEntry, createEdgePicker } from './view/edge_picker.ts';
 import { cratePrefixOf, stripCratePrefix } from './view/display_path.ts';
 import { type ArrowEndpoint, arrowEndpointLayoutPoint } from './view/arrow_navigation.ts';
@@ -95,10 +93,6 @@ interface RenderCtx {
   /** Navigate the viewport to a type by id: expand the type (and its
    *  ancestor modules), redraw, then center the viewport on its new y. */
   readonly navigateToType: (typeId: string) => void;
-  /** Navigate to a module by id: expand the module and every ancestor
-   *  module, redraw, then center the viewport on the module's row.
-   *  Used by the cascading crate menu when the user picks a row. */
-  readonly navigateToModule: (moduleId: string) => void;
   /** Navigate to one endpoint of `arrow`. `endpoint === 'source'` lands at
    *  the caller; `endpoint === 'target'` lands at the callee. Direct canvas
    *  clicks (and disambig picks) pass an anchor so the chosen endpoint pans
@@ -162,79 +156,6 @@ async function main(): Promise<void> {
 
   let minimap: Minimap | null = null;
   let previousViewportTransform = { x: 0, y: 0, k: 1 };
-  const stickyCrateEl = document.querySelector<HTMLElement>('#sticky-crate');
-  // Cascading hover menu anchored to the sticky. Built once at session
-  // startup; the host binds it to the current crate during
-  // updateStickyCrate. Items are looked up from a per-crate cache
-  // populated lazily by collectCrateMenuItems below.
-  const crateMenuItemCache = new Map<string, readonly CrateMenuItem[]>();
-  const collectCrateMenuItems = (
-    crateName: string,
-    root: ModuleNode | null,
-  ): readonly CrateMenuItem[] => {
-    if (root === null) return [];
-    const cached = crateMenuItemCache.get(crateName);
-    if (cached !== undefined) return cached;
-    // Workspace root's direct children are crate ModuleNodes; find by id.
-    const crateNode = (root.children as readonly TreeNode[]).find(
-      (c): c is ModuleNode => c.kind === 'module' && c.id === crateName,
-    );
-    const items = crateNode === undefined ? [] : buildCrateMenuItems(crateNode);
-    crateMenuItemCache.set(crateName, items);
-    return items;
-  };
-  let lastStaticRoot: ModuleNode | null = null;
-  const crateMenu = createCrateMenu({
-    anchorEl: stickyCrateEl ?? document.createElement('div'),
-    onPick: (moduleId) => {
-      currentCtx?.navigateToModule(moduleId);
-    },
-  });
-  let lastStickyCrate: string | null = null;
-  // Sticky crate indicator: tells the user which crate they're inside
-  // when the crate's own band has scrolled above the viewport top.
-  // Recomputed on every pan/zoom (from the zoom callback) and after
-  // every layout-changing draw (so expanding/collapsing rows doesn't
-  // leave a stale label).
-  const updateStickyCrate = (
-    layout: Layout | null,
-    t: { x: number; y: number; k: number },
-  ): void => {
-    if (!stickyCrateEl) return;
-    if (layout === null) {
-      stickyCrateEl.hidden = true;
-      return;
-    }
-    // Data-space y of where the SVG canvas top edge currently sits.
-    // The zoom transform applies as screen = k * data + ty, so
-    // screen=0 maps to data = -ty / k.
-    const dataYTop = -t.y / t.k;
-    // The "current" crate is the crate-tier band (modDepth 0) with the
-    // largest y still strictly above the viewport top. Strict less-than
-    // means while the band itself is still visible we don't show the
-    // sticky -- the band is doing the same job.
-    let currentCrate: (typeof layout.modules)[number] | null = null;
-    for (const m of layout.modules) {
-      if (m.modDepth !== 0) continue;
-      if (m.y < dataYTop) currentCrate = m;
-      else break;
-    }
-    if (currentCrate === null) {
-      stickyCrateEl.hidden = true;
-      if (lastStickyCrate !== null) {
-        lastStickyCrate = null;
-        crateMenu.setItems(null, []);
-      }
-      return;
-    }
-    stickyCrateEl.textContent = currentCrate.label;
-    stickyCrateEl.hidden = false;
-    if (currentCrate.id !== lastStickyCrate) {
-      lastStickyCrate = currentCrate.id;
-      crateMenu.setItems(currentCrate.id, collectCrateMenuItems(currentCrate.id, lastStaticRoot));
-    }
-  };
-
   const layers = attachZoom(svg, (t) => {
     updateScaleIndicator(t.k);
     const arrowPopupAction = arrowDisambigViewportAction(previousViewportTransform, t);
@@ -251,7 +172,6 @@ async function main(): Promise<void> {
       edgePicker.hide();
     }
     minimap?.update(currentCtx?.lastLayout ?? null);
-    updateStickyCrate(currentCtx?.lastLayout ?? null, t);
   });
   const inputController = installInputControls(svg, layers);
   if (minimapRoot) minimap = createMinimap(minimapRoot, svg, layers);
@@ -495,7 +415,6 @@ async function main(): Promise<void> {
 
   const setupWorkspace = (): void => {
     const staticRoot = buildWorkspaceTree(facts);
-    lastStaticRoot = staticRoot;
     const ownership = buildOwnershipIndex(facts);
     const calls = buildFunctionCallIndex(facts, staticRoot);
     const allTypeIds = collectTypeIds(staticRoot);
@@ -743,7 +662,6 @@ async function main(): Promise<void> {
         },
       });
       minimap?.update(lastLayout);
-      updateStickyCrate(lastLayout, previousViewportTransform);
     };
 
     // Opens the floating call-edge picker triggered from a callable
@@ -1034,17 +952,6 @@ async function main(): Promise<void> {
       if (y !== null) layers.centerOnY(y, true);
     };
 
-    const navigateToModule = (moduleId: string): void => {
-      // Expand every ancestor in the module chain (so the picked
-      // module's row is reachable in the layout), then the module
-      // itself (so its contents render), then center on its new y.
-      for (const ancId of moduleAncestorIds(moduleId)) state.expand(ancId);
-      state.expand(moduleId);
-      draw();
-      const point = lookupLayoutPoint(lastLayout, moduleId);
-      if (point !== null) layers.centerOnY(point.y, true);
-    };
-
     // Single navigation path for both direct-click and popup-pick. The
     // chosen endpoint's row is first expanded into view (otherwise the
     // freshly built layout still hides it), then we look up its data-space
@@ -1101,7 +1008,6 @@ async function main(): Promise<void> {
       typeIdSet,
       typeInfo,
       navigateToType,
-      navigateToModule,
       navigateToArrowEndpoint,
       resetAll,
       focusMode: false,
@@ -1347,35 +1253,6 @@ function collectTypeInfo(root: TreeNode): Map<string, TypeInfo> {
     else for (const c of n.children) walk(c);
   };
   walk(root);
-  return out;
-}
-
-function buildCrateMenuItems(node: ModuleNode): CrateMenuItem[] {
-  // Walk a crate (or sub-module) ModuleNode and return its direct
-  // submodule children as menu items, recursing for cascading levels.
-  // Types are deliberately excluded -- the menu is purely a
-  // navigation/expansion affordance for the module hierarchy.
-  const out: CrateMenuItem[] = [];
-  for (const child of node.children) {
-    if (child.kind !== 'module') continue;
-    out.push({
-      id: child.id,
-      label: child.label,
-      children: buildCrateMenuItems(child),
-    });
-  }
-  out.sort((a, b) => a.label.localeCompare(b.label));
-  return out;
-}
-
-function moduleAncestorIds(moduleId: string): string[] {
-  // Return the chain of module ids leading down to `moduleId` (not
-  // including it). For `c::a::b::c` returns [`c`, `c::a`, `c::a::b`].
-  // Used by the crate menu's navigate flow to expand every ancestor
-  // so the picked module's row actually renders.
-  const parts = moduleId.split('::');
-  const out: string[] = [];
-  for (let i = 1; i < parts.length; i++) out.push(parts.slice(0, i).join('::'));
   return out;
 }
 
