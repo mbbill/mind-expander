@@ -43,15 +43,24 @@ import { ANIM_MS, type ZoomLayers } from './zoom.ts';
 // doesn't need a separate threshold.
 const ARROW_HIT_PX = 8;
 
-const TYPE_RADIUS = 4;
 // Module rows still use a left chevron for expand/collapse.
 const CHEVRON_X = 6;
-// Type box layout: dot at x=6, a small italic kind marker (𝑠/𝑒/𝑢/𝑡/𝑎)
-// at x=14, then the label at x=24. The kind marker replaces the deleted
-// hover tooltip — kind is now inline. Tight spacing because the math
-// italic glyphs are narrow.
-const TYPE_CIRCLE_X = 6;
-const TYPE_KIND_MARKER_X = 14;
+// Type box layout: a bold uppercase kind letter (S/E/U/T/A/F) sits at
+// KIND_MARKER_X, then the label at TYPE_LABEL_X. The letter encodes
+// kind (via the glyph), visibility (via fill color), and re-export
+// status (italic for ghosts) — one marker, three channels.
+// text-anchor=middle so the letter centers on KIND_MARKER_X regardless
+// of which glyph is rendered.
+const KIND_MARKER_X = 14;
+// 13px sits between the field font (12) and the type label (14) — bold
+// enough to read as an icon without competing with the type name.
+const KIND_MARKER_FONT_SIZE = 13;
+// Header-click hit rect starts past the marker so the marker owns its
+// own pointer events without depending on DOM paint order.
+const HEADER_HIT_X = 20;
+// Hover-revealed owner-count badge floats just outside the row's left
+// edge — anchored end, so its right edge sits at this x.
+const OWNER_COUNT_BADGE_X = -2;
 
 // Exported so other modules (e.g. the canvas-backed text measurer) can
 // match the rendered font exactly. Keep these in sync with the SVG.
@@ -252,37 +261,29 @@ function arrowColor(a: Layout['arrows'][number]): string {
   return COLOR_ARROW_HARD;
 }
 
-/** One-character kind marker rendered between the visibility dot and the
- *  type label. Replaces the deleted hover tooltip — kind is now inline.
+/** One-character kind marker rendered to the left of the type label.
+ *  Doubles as the visibility indicator: the letter itself is colored by
+ *  visibility (so it replaces what the dot used to convey) and re-exports
+ *  render the letter in italic (replacing the hollow-ring distinction).
+ *  Bold uppercase reads as an icon rather than an abbreviation.
  *
- *  We use the Unicode "Mathematical Italic Small" block so the glyph
- *  renders as a serif italic across every platform without needing a
- *  font-style override or a serif font in the family stack. Reads like
- *  the variable letters in a math formula — small, italic, secondary —
- *  which is exactly the visual register we want for an annotation
- *  alongside the more prominent label.
- *
- *  Function-groups self-identify via their "pub fn (N)" / "local fn (N)" label,
- *  so they get no marker. Ghosts inherit the canonical's TypeKind via
- *  the extractor's `re.target_kind` field, so they get the same marker
- *  as the type they alias — italic label + hollow ring still
- *  distinguish ghost from real. */
-function kindMarker(d: Layout['types'][number]): string | null {
+ *  Function-groups get 'F' — their label ("pub fn (N)" / "local fn (N)")
+ *  is already self-describing, but a uniform marker keeps the column
+ *  visually aligned and lets one code path handle every row's marker. */
+function kindMarker(d: Layout['types'][number]): string {
   switch (d.typeKind) {
     case 'struct':
-      return '𝑠';
+      return 'S';
     case 'enum':
-      return '𝑒';
+      return 'E';
     case 'union':
-      return '𝑢';
+      return 'U';
     case 'trait':
-      return '𝑡';
+      return 'T';
     case 'type_alias':
-      return '𝑎';
+      return 'A';
     case 'function_group':
-      return null;
-    default:
-      return null;
+      return 'F';
   }
 }
 
@@ -1092,10 +1093,14 @@ function renderModules(
     // is appropriate.
     .attr('fill', (d) => (d.modDepth === 0 ? COLOR_CRATE_LABEL : null));
 
+  // Expand-hit rect starts past the marker (HEADER_HIT_X) so the marker
+  // owns its own pointer events without depending on DOM paint order.
+  // Width still spans HIT_MIN_W so the label area is the header-click
+  // target.
   enter
     .append('rect')
     .attr('class', 'expand-hit')
-    .attr('x', 0)
+    .attr('x', HEADER_HIT_X)
     .attr('y', 0)
     .attr('width', HIT_MIN_W)
     .attr('height', ROW_H)
@@ -1268,22 +1273,6 @@ function renderTypes(
     .attr('transform', (d) => `translate(${d.x},${d.y - ROW_H / 2})`)
     .style('opacity', 0);
 
-  // Kind marker — small italic letter (𝑠 / 𝑒 / 𝑢 / 𝑡 / 𝑎) between dot
-  // and label. Skipped for nodes where kindMarker returns null (ghosts,
-  // function groups). The text element is always created so we don't
-  // have to reconcile two enter selections; null markers render empty.
-  // A touch smaller than the label so it reads as an annotation, not a
-  // peer of the type name.
-  enter
-    .append('text')
-    .attr('class', 'kind-marker')
-    .attr('x', TYPE_KIND_MARKER_X)
-    .attr('y', ROW_H / 2)
-    .attr('dy', '0.32em')
-    .attr('font-size', FONT_SIZE_FIELD)
-    .attr('fill', COLOR_CHEVRON)
-    .text((d) => kindMarker(d) ?? '');
-
   enter
     .append('text')
     .attr('class', 'header-label name')
@@ -1321,31 +1310,24 @@ function renderTypes(
     .attr('height', ROW_H)
     .attr('fill', 'transparent');
 
-  // Dot is appended LAST so it sits on top of the expand-hit rect for
-  // pointer events — that lets hover on the dot fire owner-popover
-  // handlers separately from row-level expand clicks. Click on the dot
-  // still toggles expansion (delegated below) so it stays consistent
-  // with the rest of the row.
-  // Real types render as a filled dot; ghost re-exports render as a hollow
-  // ring (stroke-only, no fill) so the eye instantly distinguishes "this is
-  // the real definition" from "this is a re-export pointing elsewhere". The
-  // visibility colour drives stroke for ghosts, fill for real types.
-  //
-  // pointer-events="all" makes the whole circle area clickable regardless
-  // of fill — without this, ghost dots (fill="none") only fire events on
-  // the thin 1.5px stroke ring, so the cursor barely registers as
-  // pointer and clicks miss the dot interior.
+  // Kind letter — the single marker for every type row. Acts as the
+  // visibility indicator (fill = visibility color) and the re-export
+  // indicator (italic for ghosts). Positioned just left of the label so
+  // marker+name read as a unit. Pointer events are handled directly on
+  // this element; the expand-hit rect is offset to start past the marker
+  // so they don't fight over events.
   enter
-    .append('circle')
-    .attr('class', 'type-dot')
-    .attr('cx', TYPE_CIRCLE_X)
-    .attr('cy', ROW_H / 2)
-    .attr('r', TYPE_RADIUS)
+    .append('text')
+    .attr('class', 'kind-marker')
+    .attr('x', KIND_MARKER_X)
+    .attr('y', ROW_H / 2)
+    .attr('dy', '0.32em')
+    .attr('text-anchor', 'middle')
+    .attr('font-size', KIND_MARKER_FONT_SIZE)
+    .attr('font-weight', 700)
     .style('cursor', 'pointer')
     .attr('pointer-events', 'all')
-    .attr('fill', (d) => (d.isGhost ? 'none' : colorForVisibility(d.visibility)))
-    .attr('stroke', (d) => (d.isGhost ? colorForVisibility(d.visibility) : 'none'))
-    .attr('stroke-width', (d) => (d.isGhost ? 1.5 : 0));
+    .text((d) => kindMarker(d));
 
   enter.transition('enter').duration(ANIM_MS).style('opacity', 1);
 
@@ -1411,16 +1393,19 @@ function renderTypes(
     .on('mouseenter', headerDebugMouseenter)
     .on('mouseleave', headerDebugMouseleave);
 
-  // Refresh dot handlers each draw. Click semantics:
-  //   - real type dot → open the owner picker so the user can reveal
-  //     incoming-ownership arrows one owner at a time (or via the
-  //     show-all / hide-all bulk controls).
-  //   - ghost re-export dot → follow the re-export to its canonical
-  //     target, expanding ancestors so the violet arrow becomes visible.
-  // Hover remains wired ONLY for the debug overlay; the owner popover
-  // is gone (replaced by the click-driven picker).
+  // Marker click + hover wiring. One DOM element (text.kind-marker) per
+  // row carries both responsibilities:
+  //   - ghost re-export → follow the canonical target, expanding
+  //     ancestors so the violet arrow becomes visible.
+  //   - real row → open the owner picker so the user can reveal incoming
+  //     ownership arrows individually (or via show-all / hide-all).
+  // Hover wires the debug overlay AND a count badge showing how many
+  // owner arrows clicking would surface; ghosts skip the badge because
+  // their click follows the re-export, not the owner set.
   merged
-    .select<SVGCircleElement>('circle.type-dot')
+    .select<SVGTextElement>('text.kind-marker')
+    .attr('fill', (d) => colorForVisibility(d.visibility))
+    .attr('font-style', (d) => (d.isGhost ? 'italic' : 'normal'))
     .on('click', (event: MouseEvent, d) => {
       event.stopPropagation();
       if (d.isGhost && d.ghostTarget !== null) {
@@ -1430,18 +1415,10 @@ function renderTypes(
       }
     })
     .on('mouseenter', function (_event: MouseEvent, d) {
-      const node = this as SVGCircleElement;
+      const node = this as SVGTextElement;
       if (layoutDebugEnabled()) showTypeDebugPanel(layout, opts.ownership, d, node);
-      // Hover-revealed badge with the incoming-owner count. Mirrors the
-      // count badge on a callable row's `->` glyphs so the dot answers
-      // "how many arrows would clicking me show?" at a glance. Ghosts
-      // don't participate (their click follows the re-export, not the
-      // owner set).
       if (d.isGhost) return;
       const ownerCount = opts.ownership.ownedBy.get(d.fullPath)?.length ?? 0;
-      // Show (0) too -- the user gets the same readout regardless of
-      // whether clicking would do anything, which is the signal that
-      // clicking here will not open a picker.
       const group = select(node.parentNode as Element);
       let badge = group.select<SVGTextElement>('text.owner-count-badge');
       if (badge.empty()) {
@@ -1453,8 +1430,6 @@ function renderTypes(
           .attr('text-anchor', 'end')
           .attr('font-size', 10)
           .attr('font-weight', 600)
-          // White halo so the small text reads against any band tint
-          // it ends up over.
           .attr('paint-order', 'stroke fill')
           .attr('stroke', '#ffffff')
           .attr('stroke-width', 3)
@@ -1463,7 +1438,7 @@ function renderTypes(
       }
       badge
         .text(`(${ownerCount})`)
-        .attr('x', TYPE_CIRCLE_X - TYPE_RADIUS - 4)
+        .attr('x', OWNER_COUNT_BADGE_X)
         .attr('fill', colorForVisibility(d.visibility))
         .transition('owner-badge-hover')
         .duration(CALL_MARKER_HOVER_DURATION_MS)
@@ -1471,7 +1446,7 @@ function renderTypes(
     })
     .on('mouseleave', function () {
       if (layoutDebugEnabled()) hideCallableDebugPanel();
-      select((this as SVGCircleElement).parentNode as Element)
+      select((this as SVGTextElement).parentNode as Element)
         .select<SVGTextElement>('text.owner-count-badge')
         .transition('owner-badge-hover')
         .duration(CALL_MARKER_HOVER_DURATION_MS)

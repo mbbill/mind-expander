@@ -92,12 +92,12 @@ describe('selected arrow styling', () => {
   });
 
   it('renders a debug overlay for hovered type headers when debug mode is on', () => {
-    // The debug panel fires from FOUR header surfaces, so hovering
-    // anywhere in the type header opens it: the dot, the label text,
-    // and the two transparent hit rects (expand-hit + expand-arrow-hit).
-    // Rect.expand-hit paints on top of the label under SVG's
-    // visiblePainted rule, so without hover on the rects the label
-    // handler never fires for areas not covered by glyphs.
+    // The debug panel fires from four header surfaces, so hovering
+    // anywhere in the type header opens it: the kind-marker letter,
+    // the label text, and the two transparent hit rects (expand-hit +
+    // expand-arrow-hit). Rect.expand-hit paints on top of the label
+    // under SVG's visiblePainted rule, so without hover on the rects
+    // the label handler never fires for areas not covered by glyphs.
     const source = treeSource();
     expect(source).toContain('showTypeDebugPanel');
     expect(source).toContain('type facts');
@@ -111,7 +111,7 @@ describe('selected arrow styling', () => {
     expect(source).toMatch(/rect\.expand-hit[\s\S]{0,800}?headerDebugMouseenter/);
     expect(source).toMatch(/rect\.expand-arrow-hit[\s\S]{0,500}?headerDebugMouseenter/);
     expect(source).toMatch(/text\.header-label[\s\S]{0,300}?showTypeDebugPanel/);
-    expect(source).toMatch(/circle\.type-dot[\s\S]{0,1500}?showTypeDebugPanel/);
+    expect(source).toMatch(/text\.kind-marker[\s\S]{0,1500}?showTypeDebugPanel/);
   });
 
   it('renders cross-crate arrows with a distinct dash pattern', () => {
