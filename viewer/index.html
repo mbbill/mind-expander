@@ -145,17 +145,18 @@
         border: none;
         padding: 0;
       }
-      /* Strong white halo around module text — matches the old SVG
-         renderer's `paint-order: stroke fill` look. Multiple stacked
-         blurred shadows make the halo solid and opaque so text reads
-         cleanly even over busy band tints / arrows / type cards. */
-      #html-modules .module-chip {
+      /* Sub-module chips have colored backgrounds and a border, so they
+         read cleanly without a text halo. A halo would bleed past the
+         chip border onto the row above when sticky rows stack flush
+         and would look like an overlap. */
+      /* Crate-tier text has NO chip background — it floats over the
+         band tint — so it does need a halo for readability. */
+      #html-modules .module-header.crate-tier .module-chip {
         text-shadow:
-          0 0 5px #ffffff,
-          0 0 5px #ffffff,
-          0 0 5px #ffffff,
-          0 0 5px #ffffff,
-          0 0 5px #ffffff;
+          0 0 4px #ffffff,
+          0 0 4px #ffffff,
+          0 0 4px #ffffff,
+          0 0 4px #ffffff;
       }
       #tree.viewport-dragging,
       #tree.viewport-dragging:active {

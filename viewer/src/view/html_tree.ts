@@ -15,6 +15,13 @@
 import { INDENT_PX, ROW_H, moduleLeafLabel } from '../analysis/layout_metrics.ts';
 import type { Layout } from '../analysis/layout_model.ts';
 
+// Sticky rows stack flush — same vertical spacing as natural-flow
+// rows. A previous version added a gap here to keep the text halo
+// from bleeding onto the parent row above, but the gap made the
+// sticky stack visibly wider-spaced than the rest of the tree. The
+// halo is sized small enough (see index.html) to stay inside its row.
+const STICKY_STEP = ROW_H;
+
 // Pastel palette duplicated from tree.ts so we can colour chips
 // identically. Each ancestor name hashes into one slot; the SVG
 // renderer uses the same function so colours match across the two.
@@ -134,19 +141,43 @@ function installScrollVisibility(
     // Read phase: collect bounding rects up front. Interleaving reads
     // and writes triggers a layout per header (each style mutation
     // invalidates layout for the next getBoundingClientRect).
-    const wantHidden = new Array<boolean>(headers.length);
+    const opacities = new Array<number>(headers.length);
     for (let i = 0; i < headers.length; i++) {
       const entry = headers[i]!;
-      const parentStickyTop = (entry.depth - 1) * ROW_H * k;
+      // Fade range: from the row's own sticky-top (fully visible) down
+      // to its parent's sticky-top (fully covered, opacity 0). When
+      // the row's container ends and CSS sticky pulls the row upward,
+      // opacity ramps down linearly so the row dissolves smoothly into
+      // the sticky stack instead of vanishing in one frame.
+      const ownStickyTop = entry.depth * STICKY_STEP * k;
+      const parentStickyTop = (entry.depth - 1) * STICKY_STEP * k;
       const viewportY = entry.el.getBoundingClientRect().top - containerTop;
-      wantHidden[i] = viewportY <= parentStickyTop + 0.5;
+      let opacity: number;
+      if (viewportY >= ownStickyTop - 0.5) {
+        opacity = 1;
+      } else if (viewportY <= parentStickyTop + 0.5) {
+        opacity = 0;
+      } else {
+        opacity = (viewportY - parentStickyTop) / (ownStickyTop - parentStickyTop);
+      }
+      opacities[i] = opacity;
     }
     // Write phase: only mutate when state actually changes, so a
     // mostly-stable scroll doesn't churn style attributes.
     for (let i = 0; i < headers.length; i++) {
       const entry = headers[i]!;
-      const next = wantHidden[i] ? 'hidden' : 'visible';
-      if (entry.el.style.visibility !== next) entry.el.style.visibility = next;
+      const next = opacities[i]!;
+      const cur = entry.el.style.opacity === '' ? 1 : Number(entry.el.style.opacity);
+      if (Math.abs(cur - next) > 0.01) {
+        entry.el.style.opacity = next >= 0.999 ? '' : String(next);
+      }
+      // Disable pointer events on fully faded rows so the click handler
+      // doesn't fire on something the user can't see.
+      const wantEvents = next > 0.05;
+      const curEvents = entry.el.style.pointerEvents !== 'none';
+      if (wantEvents !== curEvents) {
+        entry.el.style.pointerEvents = wantEvents ? '' : 'none';
+      }
     }
   };
 
@@ -183,7 +214,7 @@ function renderHeader(
   // ROW_H, and adjacent rows visually overlap (image #65). The text
   // becomes smaller when zoomed out — the user can zoom in to read —
   // but the layout never breaks.
-  header.style.top = `${m.modDepth * ROW_H * k}px`;
+  header.style.top = `${m.modDepth * STICKY_STEP * k}px`;
   header.style.height = `${ROW_H * k}px`;
   header.style.width = `${m.hitWidth * k}px`;
   // Shallower depth = higher z-index so a parent's sticky header paints
