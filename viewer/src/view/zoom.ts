@@ -183,36 +183,28 @@ export function attachZoom(
     let ty = transform.y;
     const contentWPx = (contentBounds.x1 - contentBounds.x0) * k;
     const contentHPx = (contentBounds.y1 - contentBounds.y0) * k;
-    let txMin: number;
-    let txMax: number;
-    if (contentWPx <= w) {
-      const marginX = Math.min(PAN_MARGIN_PX, contentWPx / 2);
-      txMin = marginX - contentBounds.x1 * k;
-      txMax = w - marginX - contentBounds.x0 * k;
-    } else {
-      txMin = w / 2 - contentBounds.x1 * k;
-      txMax = w / 2 - contentBounds.x0 * k;
-    }
+    // Horizontal: SVG transform tx is the motion mechanism (no native
+    // horizontal scroll — there is no horizontal sticky to support).
+    // Symmetric over-scroll: tx ∈ [-contentWPx, w]. tx > 0 = content
+    // shifted right with empty space on the left; tx < -contentWPx
+    // would put the content fully off the right of viewport.
+    const txMin = -contentWPx + contentBounds.x0 * k;
+    const txMax = w - contentBounds.x0 * k;
     if (txMin <= txMax) tx = Math.max(txMin, Math.min(txMax, tx));
-    // Vertical: hybrid native-scroll + SVG-transform model.
-    //   • Negative ty maps to scrollTop = -ty (native scroll, native
-    //     sticky engages).
-    //   • Positive ty maps to an SVG transform translate-y, pushing
-    //     content DOWN past its natural rendering. This handles the
-    //     "click an arrow whose target is near the top of the content
-    //     at a click anchor lower in the viewport" case — native scroll
-    //     can't go negative, so without the positive-ty branch panTo
-    //     would clamp and miss.
+    // Vertical: native scroll is the single motion mechanism.
+    // canvas-content has clientHeight of padding above AND below the
+    // content (set in main.ts), so scrollTop in [0, scrollMax] covers
+    // the full over-scroll + scroll range. d3.zoom's ty maps to
+    // scrollTop = TOP_PADDING - ty (TOP_PADDING = clientHeight = h).
     //
-    // Valid ty: [h - contentH, h]. The positive limit (h) is the
-    // viewport height — enough to place data y=0 at the bottom of the
-    // viewport. The negative limit matches the native scroll range so
-    // the user can scroll the content bottom to the viewport top.
-    // Degenerate ranges (content fits) collapse symmetrically: tyMin
-    // equals tyMax = 0 when content is shorter than viewport, pinning
-    // the diagram at the top.
-    const tyMin = Math.min(0, h - contentBounds.y1 * k);
-    const tyMax = Math.max(0, h - contentBounds.y0 * k);
+    // Valid ty: [h - scrollMax, h] = [-contentH, h].
+    //   ty = h  → scrollTop = 0 (max over-scroll top, h px of empty).
+    //   ty = 0  → scrollTop = h (default, content top at viewport top).
+    //   ty < 0  → scrollTop > h (scrolled into content).
+    //   ty = -contentH → scrollTop = scrollMax (max over-scroll bottom).
+    const contentH = contentBounds.y1 * k - contentBounds.y0 * k;
+    const tyMin = -contentH;
+    const tyMax = h;
     if (tyMin <= tyMax) ty = Math.max(tyMin, Math.min(tyMax, ty));
     if (tx === transform.x && ty === transform.y) return transform;
     return transform.translate((tx - transform.x) / k, (ty - transform.y) / k);
@@ -244,24 +236,22 @@ export function attachZoom(
       .constrain(constrain)
       .on('zoom', (event) => {
         const t = event.transform;
-        // Split d3.zoom's ty across two visual mechanisms:
-        //   • ty < 0 (content needs to scroll UP, i.e. viewport
-        //     reveals lower content): handled by scrollTop. Native
-        //     `position: sticky` engages, the user sees the breadcrumb.
-        //   • ty > 0 (content needs to be pushed DOWN, i.e. a target
-        //     above scroll-zero needs to land at a viewport y greater
-        //     than its natural rendering): handled by an SVG-transform
-        //     translate-y. Native scroll can't go negative, so without
-        //     this branch `panTo` would clamp and the target would
-        //     land at the wrong place (the original cross-module
-        //     arrow-click bug).
-        // Both together let `panTo` put any data point at any click
-        // anchor, while keeping native sticky behaviour for the
-        // typical "scrolling down through content" case.
-        const svgY = t.y > 0 ? t.y : 0;
-        zoomLayer.attr('transform', `translate(${t.x},${svgY}) scale(${t.k})`);
+        // d3.zoom's ty is purely a "pan offset from default". The
+        // visual is delivered ENTIRELY by native scrollTop —
+        // canvas-content is padded by clientHeight above AND below
+        // the actual diagram (see main.ts), so the user can
+        // over-scroll past either edge symmetrically and
+        // `position: sticky` engages naturally throughout.
+        //
+        //   scrollTop = TOP_PADDING - t.y
+        //
+        //   ty = 0  → default (content top at viewport top).
+        //   ty > 0  → over-scroll top (empty above content).
+        //   ty < 0  → scrolled into content (sticky engages).
+        const TOP = scrollEl.clientHeight;
+        zoomLayer.attr('transform', `translate(${t.x},0) scale(${t.k})`);
         frozen.attr('transform', `scale(${t.k})`);
-        scrollEl.scrollTop = t.y < 0 ? -t.y : 0;
+        scrollEl.scrollTop = Math.max(0, TOP - t.y);
         onZoom?.({ x: t.x, y: t.y, k: t.k });
       });
     // Bind d3.zoom to the scroll container, not the SVG. Two reasons:

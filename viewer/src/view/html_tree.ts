@@ -261,8 +261,14 @@ function renderHeader(
 
   header.addEventListener('click', (event) => {
     event.stopPropagation();
-    const naturalTopPx = m.y * k;
-    if (naturalTopPx < scrollEl.scrollTop) {
+    // Module's natural top in canvas-content coords is offset by
+    // scrollEl.clientHeight (the TOP_PADDING). If scrollTop is past
+    // that point, the module has scrolled into the sticky stack
+    // (its row is no longer at its natural position) and a click
+    // means "scroll back to it"; otherwise the click toggles
+    // expansion as usual.
+    const naturalTopInContent = scrollEl.clientHeight + m.y * k;
+    if (naturalTopInContent < scrollEl.scrollTop) {
       opts.onScrollToModule(m.id);
     } else {
       opts.onToggle(m.id);

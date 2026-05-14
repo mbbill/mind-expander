@@ -134,6 +134,7 @@ async function main(): Promise<void> {
   const canvasContent = document.querySelector<HTMLElement>('#canvas-content');
   const htmlModules = document.querySelector<HTMLElement>('#html-modules');
   const minimapRoot = document.querySelector<HTMLElement>('#minimap');
+  const recenterBtn = document.querySelector<HTMLButtonElement>('#recenter-btn');
   if (!svg || !canvasScroll || !canvasContent || !htmlModules) {
     showError('missing required DOM element (#tree / #canvas-scroll / #canvas-content / #html-modules)');
     return;
@@ -161,6 +162,38 @@ async function main(): Promise<void> {
   let minimap: Minimap | null = null;
   let previousViewportTransform = { x: 0, y: 0, k: 1 };
   let lastDrawnK = 1;
+  // First-draw flag: on the very first draw we anchor scrollTop to
+  // TOP_PADDING so the user lands with the content at the viewport
+  // top rather than at the empty padding above it.
+  let firstDraw = true;
+  // "Back to content" indicator visibility check. Returns true when at
+  // least one pixel of the diagram is inside the viewport. The button
+  // is hidden when visible, shown when the user has scrolled / panned
+  // so far that none of the content is on screen — a one-click recovery
+  // without forcing the user to hunt via the minimap.
+  const isContentVisible = (): boolean => {
+    const layout = currentCtx?.lastLayout;
+    if (!layout || layout.totalWidth <= 0 || layout.totalHeight <= 0) return true;
+    const t = layers.getTransform();
+    const w = canvasScroll.clientWidth;
+    const h = canvasScroll.clientHeight;
+    const TOP = h; // matches the TOP_PADDING used in canvas-content sizing
+    // Vertical: content occupies viewport y in [TOP - scrollTop,
+    // TOP - scrollTop + totalHeight*k]. Visible iff that intersects [0, h].
+    const cTop = TOP - canvasScroll.scrollTop;
+    const cBot = cTop + layout.totalHeight * t.k;
+    const vVisible = cTop < h && cBot > 0;
+    // Horizontal: content occupies viewport x in [t.x, t.x + totalWidth*k].
+    const cLeft = t.x;
+    const cRight = t.x + layout.totalWidth * t.k;
+    const hVisible = cLeft < w && cRight > 0;
+    return vVisible && hVisible;
+  };
+  const updateRecenterVisibility = (): void => {
+    if (!recenterBtn) return;
+    const shouldHide = isContentVisible();
+    if (recenterBtn.hidden !== shouldHide) recenterBtn.hidden = shouldHide;
+  };
   // Latest HTML-tree options, updated on every draw. The zoom callback
   // reads these to refresh the HTML overlay when k changes without
   // having to plumb the closure-captured opts into a separate channel.
@@ -181,6 +214,7 @@ async function main(): Promise<void> {
       edgePicker.hide();
     }
     minimap?.update(currentCtx?.lastLayout ?? null);
+    updateRecenterVisibility();
     // When zoom changes, the canvas-content dimensions and the HTML
     // module tree's per-row heights/positions need to rescale. Pan-only
     // events leave them untouched — native scrolling handles the visual
@@ -189,11 +223,29 @@ async function main(): Promise<void> {
       lastDrawnK = t.k;
       const layout = currentCtx?.lastLayout;
       if (layout) {
-        canvasContent.style.height = `${layout.totalHeight * t.k}px`;
+        // canvas-content has clientHeight of padding above AND below
+        // the actual diagram (totalHeight*k), so the user can over-
+        // scroll past either edge by a viewport-height's worth of
+        // empty space. SVG + html-modules sit at top:TOP_PADDING so
+        // their data y=0 aligns with the start of the content area.
+        const TOP = canvasScroll.clientHeight;
+        canvasContent.style.height = `${TOP + layout.totalHeight * t.k + TOP}px`;
+        svg.style.top = `${TOP}px`;
+        svg.style.height = `${layout.totalHeight * t.k}px`;
+        htmlModules.style.top = `${TOP}px`;
         if (htmlTreeOpts) renderHtmlModuleTree(htmlModules, layout, t.k, canvasScroll, htmlTreeOpts);
       }
     }
   });
+  if (recenterBtn) {
+    // Reset translations to default; preserve the user's zoom level k.
+    // The zoom-event mirror in zoom.ts puts scrollTop back to TOP_PADDING
+    // automatically when ty = 0.
+    recenterBtn.addEventListener('click', () => {
+      const t = layers.getTransform();
+      layers.setTransform(t.k, 0, 0, true);
+    });
+  }
   const inputController = installInputControls(svg, canvasScroll, layers);
   if (minimapRoot) minimap = createMinimap(minimapRoot, canvasScroll, layers);
   updateScaleIndicator(1);
@@ -429,6 +481,7 @@ async function main(): Promise<void> {
     if (resizeTimer !== null) clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => {
       resizeTimer = null;
+      updateRecenterVisibility();
       const layout = currentCtx?.lastLayout;
       if (layout) {
         applyFitScaleExtent(svg, layers, layout);
@@ -701,13 +754,29 @@ async function main(): Promise<void> {
       // the HTML headers never engages.
       const k = previousViewportTransform.k;
       lastDrawnK = k;
-      canvasContent.style.height = `${lastLayout.totalHeight * k}px`;
+      // canvas-content padded by clientHeight above + below the content
+      // so scroll covers both over-scroll regions symmetrically; the
+      // SVG and html-modules sit inside that pad zone at top:TOP.
+      const TOP = canvasScroll.clientHeight;
+      canvasContent.style.height = `${TOP + lastLayout.totalHeight * k + TOP}px`;
+      svg.style.top = `${TOP}px`;
+      svg.style.height = `${lastLayout.totalHeight * k}px`;
+      htmlModules.style.top = `${TOP}px`;
+      // First-time layout has scrollTop = 0 (browser default). Re-anchor
+      // to the natural-default position (TOP) so the user sees the
+      // content at the viewport top, not the empty padding above it.
+      // Subsequent draws preserve the user's scroll position.
+      if (firstDraw) {
+        firstDraw = false;
+        canvasScroll.scrollTop = TOP;
+      }
       htmlTreeOpts = {
         onToggle: treeOpts.onToggle,
         onScrollToModule: treeOpts.onScrollToModule,
       };
       renderHtmlModuleTree(htmlModules, lastLayout, k, canvasScroll, htmlTreeOpts);
       minimap?.update(lastLayout);
+      updateRecenterVisibility();
     };
 
     // Opens the floating call-edge picker triggered from a callable

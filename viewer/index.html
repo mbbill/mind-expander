@@ -39,6 +39,45 @@
         overflow-y: auto;
         scrollbar-width: none;
       }
+      /* "Back to content" indicator — appears when the user has
+         over-scrolled (or panned via SVG-tx) far enough that no part of
+         the diagram is in the viewport. One click resets translations
+         (preserving zoom level). Hidden by default; main.ts toggles the
+         `hidden` attribute based on the visibility check. */
+      #recenter-btn {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 100;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        color: #1e293b;
+        cursor: pointer;
+      }
+      #recenter-btn:hover {
+        background: #f8fafc;
+        border-color: #94a3b8;
+      }
+      #recenter-btn:active {
+        background: #f1f5f9;
+      }
+      #recenter-btn[hidden] {
+        display: none;
+      }
+      .recenter-icon {
+        font-size: 15px;
+        line-height: 1;
+      }
       #canvas-scroll::-webkit-scrollbar {
         display: none;
       }
@@ -832,6 +871,10 @@
         </div>
       </div>
       <div id="error" class="error" hidden></div>
+      <button id="recenter-btn" hidden type="button" aria-label="Back to content">
+        <span class="recenter-icon" aria-hidden="true">⟲</span>
+        <span>Back to content</span>
+      </button>
     </main>
     <!-- Hidden SVG defs reachable from any inline SVG on the page —
          shared marker for the legend arrows. Same shape as the graph's
