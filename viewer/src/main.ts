@@ -36,6 +36,7 @@ import {
   FONT_FAMILY,
   FONT_SIZE_FIELD,
   LAYOUT_DEBUG_STORAGE_KEY,
+  type FieldKeyKind,
   directArrowsFromMany,
   fieldKey,
   layoutDebugEnabled,
@@ -99,7 +100,10 @@ interface RenderCtx {
   readonly typeInfo: ReadonlyMap<string, TypeInfo>;
   /** Navigate the viewport to a type by id: expand the type (and its
    *  ancestor modules), redraw, then center the viewport on its new y. */
-  readonly navigateToType: (typeId: string) => void;
+  readonly navigateToType: (
+    typeId: string,
+    member?: { name: string; kind: FieldKeyKind },
+  ) => void;
   /** Navigate to one endpoint of `arrow`. `endpoint === 'source'` lands at
    *  the caller; `endpoint === 'target'` lands at the callee. Direct canvas
    *  clicks (and disambig picks) pass an anchor so the chosen endpoint pans
@@ -164,20 +168,75 @@ async function main(): Promise<void> {
   // doesn't emit per-item spans, the forward index falls back to the
   // module file (line 1) so Cmd+click still opens the right file.
   const spanIndex = buildSpanIndex(facts);
+  // Diagram-side mirror of the code panel's selection. While the panel
+  // is open the diagram paints a purple glow around `selectedTypeId`
+  // and, when a member is selected, a blue band on the matching row.
+  // Both are nulled when the panel closes so the diagram returns to
+  // its default appearance.
+  let selectedTypeId: string | null = null;
+  let selectedMemberName: string | null = null;
+  const setDiagramSelection = (elementId: string | null): void => {
+    if (elementId === null) {
+      selectedTypeId = null;
+      selectedMemberName = null;
+    } else {
+      const typeId = parentTypeId(elementId, spanIndex);
+      selectedTypeId = typeId;
+      selectedMemberName = typeId === elementId ? null : elementId.slice(typeId.length + 2);
+      // Make sure the selected row will actually render: expand the
+      // owning type, and when the selection is a method, also expand
+      // every callable bucket on that type. Buckets stay collapsed by
+      // default to keep dense types readable, so a selected method
+      // inside a `pub fn (N)` bucket is invisible until we open it.
+      // Fields don't need that step — they render as soon as the
+      // type itself is expanded.
+      if (currentCtx !== null) {
+        currentCtx.state.expand(typeId);
+        if (selectedMemberName !== null && spanIndex.callables.has(elementId)) {
+          for (const bucketId of callableBucketIdsForType(typeId, currentCtx.calls)) {
+            currentCtx.state.expand(bucketId);
+          }
+        }
+      }
+    }
+    currentCtx?.draw();
+  };
   const codePanel = createCodePanel({
     onLineNavigate: (file, line) => {
       const elementId = findElementAtLine(spanIndex, file, line);
       if (elementId === null) return;
+      // Repaint the panel's highlight to the clicked element's full
+      // span so the user sees what got selected by clicking on code.
+      const span = spanIndex.forward.get(elementId);
+      if (span !== undefined) {
+        codePanel.setHighlight(span.start_line, span.end_line);
+      }
       // Member ids look like `crate::mod::Type::name`; for navigation
       // we want the parent type. If the id resolves directly to a type
       // (no `::` after the type position), use it as-is.
       const typeId = parentTypeId(elementId, spanIndex);
-      currentCtx?.navigateToType(typeId);
+      setDiagramSelection(elementId);
+      // Center on the member row when one was clicked, not on the
+      // type's header — clicking a method's body in the code panel
+      // should scroll the diagram to that method, not just to the
+      // owning struct.
+      const member =
+        typeId === elementId
+          ? undefined
+          : {
+              name: elementId.slice(typeId.length + 2),
+              kind: (spanIndex.callables.has(elementId)
+                ? 'method'
+                : 'field') as FieldKeyKind,
+            };
+      currentCtx?.navigateToType(typeId, member);
     },
+    onClose: () => setDiagramSelection(null),
   });
   const openCodeFor = (id: string): void => {
     const span = spanIndex.forward.get(id);
     if (span === undefined) return;
+    setDiagramSelection(id);
     codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
   };
 
@@ -618,6 +677,15 @@ async function main(): Promise<void> {
         selectedArrows,
         expandedBucketIds,
         ownership,
+        selectedTypeId,
+        selectedMemberName,
+        selectedMemberIsCallable: selectedMemberName !== null
+          && spanIndex.callables.has(
+            // Rebuild the full element id: `${typeId}::${memberName}`.
+            // (We don't keep the original elementId around since the
+            // member name can carry `::` for variant payload fields.)
+            `${selectedTypeId}::${selectedMemberName}`,
+          ),
         onToggle: (id) => {
           // Anchor the clicked item in both axes: expansion can change a
           // type's physical group, so preserving only y lets the target drift
@@ -1087,14 +1155,26 @@ async function main(): Promise<void> {
       });
     };
 
-    const navigateToType = (typeId: string): void => {
+    const navigateToType = (
+      typeId: string,
+      member?: { name: string; kind: FieldKeyKind },
+    ): void => {
       // Make the target visible: expand it (so its module is in focus
       // relevance and its row renders), expand its containing modules,
-      // redraw, then center the viewport on its new y.
+      // redraw, then center the viewport on its new y. When a member
+      // (field/method) is named, center on that row instead of the
+      // type's header — otherwise clicking a deep method line in the
+      // code panel jumps to the type header and the user has to scroll
+      // down to find the row that just got highlighted.
       for (const m of ancestorModuleIds(typeId)) state.expand(m);
       state.expand(typeId);
       draw();
-      const y = lookupY(lastLayout, typeId);
+      let y: number | null = null;
+      if (member !== undefined) {
+        const point = lookupMemberRowPoint(lastLayout, typeId, member.name, member.kind);
+        if (point !== null) y = point.y;
+      }
+      if (y === null) y = lookupY(lastLayout, typeId);
       if (y !== null) layers.centerOnY(y, true);
     };
 
@@ -1173,10 +1253,19 @@ async function main(): Promise<void> {
  *  IS a type). Otherwise return the id unchanged — it's likely already
  *  a type or a free function. */
 function parentTypeId(id: string, index: ReturnType<typeof buildSpanIndex>): string {
-  const lastSep = id.lastIndexOf('::');
-  if (lastSep < 0) return id;
-  const prefix = id.slice(0, lastSep);
-  return index.forward.has(prefix) ? prefix : id;
+  // Walk up `::` segments until we hit a known type. Enum variant
+  // payload fields encode the variant in the field name itself
+  // (`Variant::field`), so a single-level strip lands on a non-type
+  // intermediate and would fall through. Stop at the deepest prefix
+  // recorded as a type; fall back to the original id when none matches
+  // (e.g. free functions, where the parent is a module, not a type).
+  let s = id;
+  while (true) {
+    const lastSep = s.lastIndexOf('::');
+    if (lastSep < 0) return id;
+    s = s.slice(0, lastSep);
+    if (index.types.has(s)) return s;
+  }
 }
 
 async function tryLoadFacts(): Promise<Facts | null> {

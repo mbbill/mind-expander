@@ -14,7 +14,7 @@ import type {
   TypeBox,
 } from '../analysis/layout_model.ts';
 import { type Geometry, computeGeometry } from './geometry.ts';
-import { computeObstacles } from './obstacles.ts';
+import { type ObstacleMap, computeObstacles } from './obstacles.ts';
 import { type PlacementLayoutPlan, buildPlacementLayoutPlan } from './placement_plan.ts';
 import { type RoutingResult, routeArrows } from './routing.ts';
 import type { PositionedType } from './types.ts';
@@ -28,25 +28,26 @@ export function buildLayout(inputs: LayoutBuildInputs): Layout {
   const placementPlan =
     inputs.placementPlan ??
     buildPlacementLayoutPlan(inputs.staticRoot, inputs.depth, inputs.ownership);
-  return toLayout(...runLayoutPass(inputs, measure, placementPlan));
+  const [geometry, obstacles, routing] = runLayoutPass(inputs, measure, placementPlan);
+  return toLayout(geometry, obstacles, routing);
 }
 
 function runLayoutPass(
   inputs: LayoutBuildInputs,
   measure: (s: string) => number,
   placementPlan: PlacementLayoutPlan,
-): readonly [Geometry, RoutingResult] {
+): readonly [Geometry, ObstacleMap, RoutingResult] {
   const geometry = computeGeometry(inputs, { placementPlan });
   const obstacles = computeObstacles(geometry, measure);
   const routing = routeArrows(geometry, obstacles, inputs, measure);
 
-  return [geometry, routing];
+  return [geometry, obstacles, routing];
 }
 
-function toLayout(geometry: Geometry, routing: RoutingResult): Layout {
+function toLayout(geometry: Geometry, obstacles: ObstacleMap, routing: RoutingResult): Layout {
   return {
     modules: toModuleRows(geometry),
-    types: toTypeBoxes(geometry),
+    types: toTypeBoxes(geometry, obstacles),
     arrowLayers: routing.arrowLayers,
     arrows: routing.arrows,
     totalHeight: geometry.totalHeight,
@@ -73,22 +74,32 @@ function toModuleRows(geometry: Geometry): ModuleRow[] {
   );
 }
 
-function toTypeBoxes(geometry: Geometry): TypeBox[] {
-  return geometry.types.map(
-    (t): TypeBox => ({
+function toTypeBoxes(geometry: Geometry, obstacles: ObstacleMap): TypeBox[] {
+  return geometry.types.map((t): TypeBox => {
+    // Source of truth for the visual extent is the obstacle block
+    // computed by obstacles.ts — the same rect the debug overlay draws.
+    // Fall back to the header rect if no block exists (defensive — every
+    // visible type should have one).
+    const block = obstacles.blockByType.get(t.node.id);
+    const boxX = block?.x ?? t.x;
+    const boxY = block?.y ?? t.y - 12;
+    const boxWidth = block?.width ?? t.width;
+    const boxHeight = block?.height ?? t.height;
+    return {
       id: t.node.id,
       label: t.node.label,
       typeKind: t.node.typeKind,
       visibility: t.node.visibility,
       fullPath: t.node.fullPath,
       modulePath: t.node.modulePath,
-      // `col` is metadata for the renderer; layout reports ownership rank here
-      // (function-groups use the prelude marker). The renderer
-      // doesn't drive layout from this, only encoding.
       col: t.depth,
       x: t.x,
       y: t.y,
       width: t.width,
+      boxX,
+      boxY,
+      boxWidth,
+      boxHeight,
       headerArrowX: t.headerArrowX,
       headerHitWidth: t.headerHitWidth,
       height: t.height,
@@ -99,8 +110,8 @@ function toTypeBoxes(geometry: Geometry): TypeBox[] {
       totalFieldCount: t.node.fields.length + t.node.functions.length,
       isGhost: t.node.isGhost ?? false,
       ghostTarget: t.node.ghostTarget ?? null,
-    }),
-  );
+    };
+  });
 }
 
 function buildFieldRows(t: PositionedType): FieldRow[] {

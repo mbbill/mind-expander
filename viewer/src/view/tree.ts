@@ -21,6 +21,8 @@ import {
   DRIFT_DOT_RADIUS,
   HIT_MIN_W,
   INCOMING_CALL_MARKER_OFFSET,
+  KIND_MARKER_FONT_SIZE,
+  KIND_MARKER_X,
   LAYOUT_GRID_CELL_W,
   MODULE_LABEL_X,
   TYPE_EXPAND_ARROW_CLOSED,
@@ -45,16 +47,11 @@ const ARROW_HIT_PX = 8;
 
 // Module rows still use a left chevron for expand/collapse.
 const CHEVRON_X = 6;
-// Type box layout: a bold uppercase kind letter (S/E/U/T/A/F) sits at
-// KIND_MARKER_X, then the label at TYPE_LABEL_X. The letter encodes
-// kind (via the glyph), visibility (via fill color), and re-export
-// status (italic for ghosts) — one marker, three channels.
-// text-anchor=middle so the letter centers on KIND_MARKER_X regardless
-// of which glyph is rendered.
-const KIND_MARKER_X = 14;
-// 13px sits between the field font (12) and the type label (14) — bold
-// enough to read as an icon without competing with the type name.
-const KIND_MARKER_FONT_SIZE = 13;
+// KIND_MARKER_X / KIND_MARKER_FONT_SIZE describe the bold uppercase
+// kind letter (S/E/U/T/A/F) at the type-box header. They live in
+// analysis/layout_metrics so layout can derive a type's content inset
+// (visible-ink left edge) from the same numbers the renderer paints
+// with — a single source of truth across producer and consumer.
 // Header-click hit rect starts past the marker so the marker owns its
 // own pointer events without depending on DOM paint order.
 const HEADER_HIT_X = 20;
@@ -364,6 +361,18 @@ export interface TreeRenderOptions {
    *  along with the screen-space anchor for any disambiguation popover.
    *  No hits → handler not called at all. */
   readonly onArrowNavigate: (hits: readonly ArrowHit[], anchor: { x: number; y: number }) => void;
+  /** When the code panel is open, the host pushes the currently-shown
+   *  element here so the diagram can paint a matching selection.
+   *  `selectedTypeId` is the owning type's fullPath (always set when
+   *  anything is selected). `selectedMemberName` is the member's row
+   *  name when a field/method is selected, or null when only the type
+   *  itself is. Both null = nothing selected. */
+  readonly selectedTypeId: string | null;
+  readonly selectedMemberName: string | null;
+  /** True when the selected member is a method/function (so only
+   *  callable rows match); false for fields. Ignored when
+   *  `selectedMemberName` is null. */
+  readonly selectedMemberIsCallable: boolean;
 }
 
 // Separator for fieldKey. We can't use `::` because both parts may
@@ -1392,6 +1401,21 @@ function renderTypes(
     .attr('transform', (d) => `translate(${d.x},${d.y - ROW_H / 2})`)
     .style('opacity', 0);
 
+  // Selection ring: a transparent rect appended first so it renders
+  // BEHIND every other type-box child. CSS gives it a glowing purple
+  // outline when the parent `.type-box` carries `.selected`. Sized
+  // on the merged pass each render, since `d.height` changes when
+  // the type expands or collapses.
+  enter
+    .append('rect')
+    .attr('class', 'selection-ring')
+    .attr('x', 0)
+    .attr('y', 0)
+    .attr('rx', 6)
+    .attr('ry', 6)
+    .attr('fill', 'none')
+    .attr('pointer-events', 'none');
+
   enter
     .append('text')
     .attr('class', 'header-label name')
@@ -1451,6 +1475,22 @@ function renderTypes(
   enter.transition('enter').duration(ANIM_MS).style('opacity', 1);
 
   const merged = enter.merge(sel);
+
+  // Selection state: dashed purple ring around the matching type.
+  // Uses the same obstacle-block rect the debug overlay draws, so the
+  // ring and the debug box agree by construction — single source of
+  // truth for "this is the visual extent of one type". Box is in
+  // world coords; the type-box group is translated to (d.x, headerY),
+  // so we subtract that translation to land in local coords.
+  const SELECTION_PAD = 4;
+  const headerTopFor = (d: Layout['types'][number]) => d.y - ROW_H / 2;
+  merged.classed('selected', (d) => d.fullPath === opts.selectedTypeId);
+  merged
+    .select<SVGRectElement>('rect.selection-ring')
+    .attr('x', (d) => d.boxX - d.x - SELECTION_PAD)
+    .attr('y', (d) => d.boxY - headerTopFor(d) - SELECTION_PAD)
+    .attr('width', (d) => Math.max(0, d.boxWidth + SELECTION_PAD * 2))
+    .attr('height', (d) => Math.max(0, d.boxHeight + SELECTION_PAD * 2));
 
   // Tween group position (carries fields along inside).
   merged
@@ -1640,6 +1680,16 @@ function renderFieldsForType(
 
   const enter = sel.enter().append('g').attr('class', 'field-row-g').style('opacity', 0);
 
+  // Member-selection background. Sits as the first child so all other
+  // row art paints on top of it. CSS fills it when the parent
+  // `.field-row-g` is `.selected-member`. Sized on the merged pass
+  // below alongside row positioning.
+  enter
+    .append('rect')
+    .attr('class', 'member-bg')
+    .attr('fill', 'transparent')
+    .style('pointer-events', 'none');
+
   // Append the field name + the (hidden by default) type-text hint once on
   // enter. Crucially, x/y are also set HERE synchronously (in addition
   // to the merged-pass transition below) so that any synchronous
@@ -1690,6 +1740,35 @@ function renderFieldsForType(
   enter.transition('enter').duration(ANIM_MS).style('opacity', 1);
 
   const merged = enter.merge(sel);
+
+  // Member-selection: highlight the field row that matches the code
+  // panel's currently-shown element. Match key is (parent type fullPath,
+  // member name); see `selectedTypeId` / `selectedMemberName` on
+  // TreeRenderOptions. We skip method_bucket rows and signature_arg
+  // rows since they aren't real selectable members — a struct field
+  // and a method with the same name would otherwise both light up.
+  const memberIsSelected =
+    opts.selectedTypeId === d.fullPath && opts.selectedMemberName !== null;
+  const targetIsCallable = opts.selectedMemberIsCallable;
+  merged.classed('selected-member', (f) => {
+    if (!memberIsSelected || f.name !== opts.selectedMemberName) return false;
+    const isCallableRow = f.kind === 'method' || f.kind === 'function';
+    return targetIsCallable ? isCallableRow : f.kind === 'field';
+  });
+  // Position the background rect to span this type's box width minus
+  // the header indent, centered vertically on the row baseline. Width
+  // intentionally tracks the type-box width so the band reads as a
+  // full-row fill regardless of the individual row's text length.
+  // The member band must span the same horizontal extent as the
+  // type's obstacle block (which is what the selection ring uses too)
+  // — otherwise rows like `from_module_with_registry` extend past
+  // `d.width` (header-only) and the blue band cuts off mid-name.
+  merged
+    .select<SVGRectElement>('rect.member-bg')
+    .attr('x', d.boxX - d.x)
+    .attr('y', (f) => f.y - groupTopY - ROW_H / 2)
+    .attr('width', d.boxWidth)
+    .attr('height', ROW_H);
 
   merged.each(function (f) {
     const fg = select(this);

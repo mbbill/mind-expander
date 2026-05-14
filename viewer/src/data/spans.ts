@@ -23,11 +23,23 @@ export interface IndexedSpan {
 export interface SpanIndex {
   readonly forward: ReadonlyMap<string, Span>;
   readonly byFile: ReadonlyMap<string, readonly IndexedSpan[]>;
+  /** Set of fullPaths that are types (struct/enum/union/trait/alias).
+   *  Used to walk an element id back to its owning type, which is
+   *  necessary when a field name itself contains `::` (e.g. an enum
+   *  variant payload field encoded as `Variant::field`). */
+  readonly types: ReadonlySet<string>;
+  /** Set of element ids that are callables (methods on a type, or
+   *  free functions). Used to decide whether selecting a member
+   *  should auto-expand its parent type's callable buckets — fields
+   *  are already visible whenever the type itself is expanded. */
+  readonly callables: ReadonlySet<string>;
 }
 
 export function buildSpanIndex(facts: Facts): SpanIndex {
   const forward = new Map<string, Span>();
   const byFile = new Map<string, IndexedSpan[]>();
+  const types = new Set<string>();
+  const callables = new Set<string>();
   const appendToFile = (entry: IndexedSpan): void => {
     let list = byFile.get(entry.file);
     if (list === undefined) {
@@ -42,6 +54,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
       const fallback: Span = { file: mod.file, start_line: 1, end_line: 1 };
       for (const t of mod.types) {
         const tSpan = t.span ?? fallback;
+        types.add(t.full_path);
         forward.set(t.full_path, tSpan);
         if (t.span !== undefined) {
           appendToFile({
@@ -66,6 +79,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
         if (t.methods !== undefined) {
           for (const m of t.methods) {
             const id = `${t.full_path}::${m.name}`;
+            callables.add(id);
             forward.set(id, m.span ?? tSpan);
             if (m.span !== undefined) {
               appendToFile({
@@ -81,6 +95,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
       for (const fn of mod.functions) {
         const modPath = mod.path === '' ? '' : `::${mod.path}`;
         const id = `${crate.name}${modPath}::${fn.name}`;
+        callables.add(id);
         forward.set(id, fn.span ?? fallback);
         if (fn.span !== undefined) {
           appendToFile({
@@ -102,7 +117,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
     });
   }
 
-  return { forward, byFile };
+  return { forward, byFile, types, callables };
 }
 
 /** Find the DEEPEST (smallest-range) element whose span contains

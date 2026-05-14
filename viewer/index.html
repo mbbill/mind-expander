@@ -156,10 +156,10 @@
         background: #f1f5f9;
       }
       .code-panel-line.highlight {
-        background: #fef9c3; /* soft yellow */
+        background: #e3edfd; /* shallow blue */
       }
       .code-panel-line.highlight:hover {
-        background: #fef08a;
+        background: #d1e0fb;
       }
       .code-panel-gutter {
         flex: 0 0 auto;
@@ -184,16 +184,52 @@
         font-size: 11px;
         white-space: pre-wrap;
       }
-      /* Bottom-right resize handle: a subtle diagonal grip area. */
+      /* Resize handles. Left/right/bottom edges plus the two bottom
+         corners. Edges sit underneath the corner handles so the
+         corners "win" the cursor at the intersection. Edges start
+         below the header so they don't fight with header drag. */
       .code-panel-resize {
         position: absolute;
+        background: transparent;
+      }
+      .code-panel-resize-l {
+        left: 0;
+        top: 32px;
+        bottom: 14px;
+        width: 6px;
+        cursor: ew-resize;
+      }
+      .code-panel-resize-r {
         right: 0;
+        top: 32px;
+        bottom: 14px;
+        width: 6px;
+        cursor: ew-resize;
+      }
+      .code-panel-resize-b {
+        left: 14px;
+        right: 14px;
+        bottom: 0;
+        height: 6px;
+        cursor: ns-resize;
+      }
+      .code-panel-resize-br,
+      .code-panel-resize-bl {
         bottom: 0;
         width: 14px;
         height: 14px;
+      }
+      .code-panel-resize-br {
+        right: 0;
         cursor: nwse-resize;
         background:
           linear-gradient(135deg, transparent 50%, #cbd5e1 50%, #cbd5e1 60%, transparent 60%, transparent 75%, #cbd5e1 75%, #cbd5e1 85%, transparent 85%);
+      }
+      .code-panel-resize-bl {
+        left: 0;
+        cursor: nesw-resize;
+        background:
+          linear-gradient(45deg, transparent 50%, #cbd5e1 50%, #cbd5e1 60%, transparent 60%, transparent 75%, #cbd5e1 75%, #cbd5e1 85%, transparent 85%);
       }
       #canvas-scroll::-webkit-scrollbar {
         display: none;
@@ -977,6 +1013,31 @@
         color: #64748b;
         font-size: 10px;
       }
+      /* Diagram selection: glowing purple ring around the selected
+         type. The ring rect is invisible by default so unselected
+         types pay no visual cost. */
+      .type-box .selection-ring {
+        stroke: transparent;
+        stroke-width: 0;
+        fill: none;
+        transition: stroke 120ms ease, filter 120ms ease;
+      }
+      .type-box.selected .selection-ring {
+        stroke: #9333ea;
+        stroke-width: 1.75;
+        stroke-dasharray: 3 2;
+      }
+      /* Member selection: soft purple band on the selected row. CSS
+         blur softens the rect edges so the highlight reads as a glow
+         around the row rather than a hard rectangle. */
+      .field-row-g .member-bg {
+        fill: transparent;
+      }
+      .field-row-g.selected-member .member-bg {
+        fill: #ddd6fe; /* purple-200 */
+        filter: blur(2.5px);
+        opacity: 0.7;
+      }
     </style>
   </head>
   <body>
@@ -1001,7 +1062,11 @@
           <button class="code-panel-close" type="button" aria-label="Close code panel">×</button>
         </div>
         <pre class="code-panel-body"></pre>
-        <div class="code-panel-resize" aria-hidden="true"></div>
+        <div class="code-panel-resize code-panel-resize-l" aria-hidden="true"></div>
+        <div class="code-panel-resize code-panel-resize-r" aria-hidden="true"></div>
+        <div class="code-panel-resize code-panel-resize-b" aria-hidden="true"></div>
+        <div class="code-panel-resize code-panel-resize-bl" aria-hidden="true"></div>
+        <div class="code-panel-resize code-panel-resize-br" aria-hidden="true"></div>
       </div>
     </main>
     <!-- Hidden SVG defs reachable from any inline SVG on the page —

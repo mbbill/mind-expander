@@ -1,3 +1,10 @@
+// Syntax highlighting via Prism. We highlight the full file once and
+// then split on \n so multi-line constructs (block comments, raw
+// strings) stay coherent across the per-line DOM.
+import Prism from 'prismjs';
+import 'prismjs/components/prism-rust';
+import 'prism-themes/themes/prism-one-light.css';
+
 // Floating, draggable code panel.
 //
 // Shows the source for a clicked diagram element — Cmd/Ctrl+click on a
@@ -22,6 +29,13 @@ interface PersistedState {
 
 const DEFAULT_STATE: PersistedState = { x: 80, y: 100, w: 520, h: 480 };
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export interface CodePanelShowArgs {
   readonly file: string;
   readonly startLine: number;
@@ -33,12 +47,20 @@ export interface CodePanelOptions {
    *  resolves which element defines that line and navigates the
    *  diagram. Skipped if the user is just selecting text. */
   readonly onLineNavigate: (file: string, line: number) => void;
+  /** Fired when the user closes the panel (X button or hide() call
+   *  from outside). The host uses this to clear the diagram's
+   *  selection so the two views stay in sync. */
+  readonly onClose?: () => void;
 }
 
 export interface CodePanel {
   show: (args: CodePanelShowArgs) => void;
   hide: () => void;
   isOpen: () => boolean;
+  /** Replace the highlighted line range without re-fetching the file.
+   *  Used by the host when a click inside the panel resolves to a new
+   *  element so the visual selection follows the cursor. */
+  setHighlight: (startLine: number, endLine: number) => void;
 }
 
 export function createCodePanel(opts: CodePanelOptions): CodePanel {
@@ -48,8 +70,22 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   const closeBtn = root.querySelector<HTMLButtonElement>('.code-panel-close');
   const bodyEl = root.querySelector<HTMLElement>('.code-panel-body');
   const headerEl = root.querySelector<HTMLElement>('.code-panel-header');
-  const resizerEl = root.querySelector<HTMLElement>('.code-panel-resize');
-  if (!titleEl || !closeBtn || !bodyEl || !headerEl || !resizerEl) {
+  const resizerBrEl = root.querySelector<HTMLElement>('.code-panel-resize-br');
+  const resizerBlEl = root.querySelector<HTMLElement>('.code-panel-resize-bl');
+  const resizerLEl = root.querySelector<HTMLElement>('.code-panel-resize-l');
+  const resizerREl = root.querySelector<HTMLElement>('.code-panel-resize-r');
+  const resizerBEl = root.querySelector<HTMLElement>('.code-panel-resize-b');
+  if (
+    !titleEl ||
+    !closeBtn ||
+    !bodyEl ||
+    !headerEl ||
+    !resizerBrEl ||
+    !resizerBlEl ||
+    !resizerLEl ||
+    !resizerREl ||
+    !resizerBEl
+  ) {
     throw new Error('code-panel missing required child elements');
   }
 
@@ -121,37 +157,83 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   headerEl.addEventListener('pointerup', endDrag);
   headerEl.addEventListener('pointercancel', endDrag);
 
-  // Resize from bottom-right corner.
-  let resize: { readonly id: number; startW: number; startH: number; startX: number; startY: number } | null = null;
-  resizerEl.addEventListener('pointerdown', (e) => {
-    resize = {
-      id: e.pointerId,
-      startW: state.w,
-      startH: state.h,
-      startX: e.clientX,
-      startY: e.clientY,
-    };
-    resizerEl.setPointerCapture(e.pointerId);
-    e.preventDefault();
-    e.stopPropagation();
-  });
-  resizerEl.addEventListener('pointermove', (e) => {
-    if (resize === null || e.pointerId !== resize.id) return;
-    state = {
-      ...state,
-      w: resize.startW + (e.clientX - resize.startX),
-      h: resize.startH + (e.clientY - resize.startY),
-    };
-    applyState();
-  });
-  const endResize = (e: PointerEvent): void => {
-    if (resize === null || e.pointerId !== resize.id) return;
-    if (resizerEl.hasPointerCapture(e.pointerId)) resizerEl.releasePointerCapture(e.pointerId);
-    resize = null;
-    saveState(state);
+  // Resize from any edge or bottom corner. Right/bottom edges keep
+  // their adjacent edge anchored; the left edge keeps the right edge
+  // anchored and moves `x` left as the panel widens (same as how the
+  // bottom-left corner already worked). Combined edge motions live
+  // in the two corner handles, which override edge cursors at the
+  // intersections.
+  type ResizeMode = 'br' | 'bl' | 'l' | 'r' | 'b';
+  type ResizeState = {
+    readonly id: number;
+    readonly mode: ResizeMode;
+    readonly startW: number;
+    readonly startH: number;
+    readonly startX: number;
+    readonly startY: number;
+    readonly startStateX: number;
   };
-  resizerEl.addEventListener('pointerup', endResize);
-  resizerEl.addEventListener('pointercancel', endResize);
+  let resize: ResizeState | null = null;
+
+  const startResize = (handle: HTMLElement, mode: ResizeMode): void => {
+    handle.addEventListener('pointerdown', (e) => {
+      resize = {
+        id: e.pointerId,
+        mode,
+        startW: state.w,
+        startH: state.h,
+        startX: e.clientX,
+        startY: e.clientY,
+        startStateX: state.x,
+      };
+      handle.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (resize === null || e.pointerId !== resize.id) return;
+      const dx = e.clientX - resize.startX;
+      const dy = e.clientY - resize.startY;
+      const minW = 280;
+      switch (resize.mode) {
+        case 'r':
+          state = { ...state, w: resize.startW + dx };
+          break;
+        case 'b':
+          state = { ...state, h: resize.startH + dy };
+          break;
+        case 'br':
+          state = { ...state, w: resize.startW + dx, h: resize.startH + dy };
+          break;
+        case 'l':
+        case 'bl': {
+          // Anchor the right edge (startStateX + startW) and let `x`
+          // travel left as `w` grows. Same math for both because the
+          // corner just adds vertical motion on top.
+          const rightEdge = resize.startStateX + resize.startW;
+          const newW = Math.max(minW, resize.startW - dx);
+          const newX = rightEdge - newW;
+          const newH = resize.mode === 'bl' ? resize.startH + dy : state.h;
+          state = { ...state, x: newX, w: newW, h: newH };
+          break;
+        }
+      }
+      applyState();
+    });
+    const endResize = (e: PointerEvent): void => {
+      if (resize === null || e.pointerId !== resize.id) return;
+      if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+      resize = null;
+      saveState(state);
+    };
+    handle.addEventListener('pointerup', endResize);
+    handle.addEventListener('pointercancel', endResize);
+  };
+  startResize(resizerBrEl, 'br');
+  startResize(resizerBlEl, 'bl');
+  startResize(resizerLEl, 'l');
+  startResize(resizerREl, 'r');
+  startResize(resizerBEl, 'b');
 
   closeBtn.addEventListener('click', () => {
     hide();
@@ -171,13 +253,22 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   });
 
   const render = (text: string, startLine: number, endLine: number): void => {
-    // Plain-text rendering with line numbers. Each line is a <div>
-    // tagged with data-line so click handling can recover the line.
-    // Highlighted span (startLine..endLine inclusive) gets a class
-    // for the CSS to paint a background.
-    const lines = text.split('\n');
+    // Highlight the whole file once with Prism (Rust grammar), then
+    // split the resulting HTML on \n. Splitting after highlighting is
+    // what keeps multi-line block comments and raw strings rendering
+    // correctly across the per-line gutter layout.
+    // Prism's grammar table is typed as possibly-undefined per language.
+    // The Rust grammar is imported above, so it's present at runtime;
+    // the fallback to plain-text keeps the panel functional if some
+    // build configuration ever drops the import.
+    const grammar = Prism.languages.rust;
+    const highlighted =
+      grammar !== undefined
+        ? Prism.highlight(text, grammar, 'rust')
+        : escapeHtml(text);
+    const lineHtml = highlighted.split('\n');
     const frag = document.createDocumentFragment();
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = 0; i < lineHtml.length; i++) {
       const lineNum = i + 1;
       const lineEl = document.createElement('div');
       lineEl.className = 'code-panel-line';
@@ -190,7 +281,10 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       gutter.textContent = String(lineNum);
       const code = document.createElement('span');
       code.className = 'code-panel-text';
-      code.textContent = lines[i] ?? '';
+      // Highlighted HTML is escaped by Prism for non-token text, so
+      // setting innerHTML is safe here. Empty string when the line
+      // is blank — fine as innerHTML.
+      code.innerHTML = lineHtml[i] ?? '';
       lineEl.appendChild(gutter);
       lineEl.appendChild(code);
       frag.appendChild(lineEl);
@@ -253,14 +347,32 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   };
 
   const hide = (): void => {
+    const wasOpen = !root.hidden;
     inflight?.abort();
     inflight = null;
     root.hidden = true;
+    if (wasOpen) opts.onClose?.();
+  };
+
+  const setHighlight = (startLine: number, endLine: number): void => {
+    // Repaint just the highlight class — much cheaper than re-rendering
+    // every line and (more importantly) preserves scroll position so
+    // the user keeps looking at the same code after clicking.
+    const lines = bodyEl.querySelectorAll<HTMLElement>('.code-panel-line');
+    lines.forEach((el) => {
+      const n = Number(el.dataset.line);
+      if (Number.isFinite(n) && n >= startLine && n <= endLine) {
+        el.classList.add('highlight');
+      } else {
+        el.classList.remove('highlight');
+      }
+    });
   };
 
   return {
     show,
     hide,
     isOpen: () => !root.hidden,
+    setHighlight,
   };
 }

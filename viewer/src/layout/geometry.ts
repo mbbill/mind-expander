@@ -754,7 +754,12 @@ function buildRowSpecs(
       tyText: '',
       ownership: 'primitive',
       labelInset: FIELD_LABEL_INSET,
-      textWidth: measure(headerName),
+      // Bucket headers render at font-weight 600 (see tree.ts). The
+      // bold glyph metrics are wider than the regular ones, so use the
+      // bold measurer here — otherwise the type-box width undercounts
+      // the row and the rendered "pub fn (N)" label spills past the
+      // computed right edge.
+      textWidth: measureBold(headerName),
       targets: [],
       callTargets: [],
       callRefs: [],

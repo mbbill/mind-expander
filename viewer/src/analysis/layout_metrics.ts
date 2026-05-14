@@ -36,6 +36,11 @@ export const MODULE_GLYPH_W = 0;
 export const MODULE_LABEL_X = 18;
 export const TYPE_GLYPH_W = gridCols(4);
 export const TYPE_LABEL_X = gridCols(3);
+// Kind marker (one bold letter at KIND_MARKER_FONT_SIZE, text-anchor=middle).
+// Defined here so both the renderer (paints it) and the layout (could
+// consult it for header geometry) agree on a single source of truth.
+export const KIND_MARKER_X = 14;
+export const KIND_MARKER_FONT_SIZE = 13;
 export const FIELD_LABEL_INSET = gridCols(5);
 export const FUNCTION_GROUP_LABEL_INSET = gridCols(3);
 export const METHOD_INDENT = gridCols(2);

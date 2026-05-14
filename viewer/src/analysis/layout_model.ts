@@ -105,6 +105,16 @@ export interface TypeBox {
   readonly x: number;
   readonly y: number;
   readonly width: number;
+  /** World-space rect of the type's primary obstacle block — the same
+   *  rectangle the layout debug overlay draws as a dashed orange box.
+   *  Covers header + all visible rows (including the widest method
+   *  row, bold-measured bucket header, etc.). Consumers that need to
+   *  surround the type visually (selection ring, member band, drift
+   *  halos) use this rather than the header-only `width`/`height`. */
+  readonly boxX: number;
+  readonly boxY: number;
+  readonly boxWidth: number;
+  readonly boxHeight: number;
   readonly headerArrowX: number | null;
   readonly headerHitWidth: number;
   readonly height: number;
