@@ -403,24 +403,24 @@ describe('computeGeometry — basic placement', () => {
   });
 
   it('computes globalXStart from visible modules only, not from collapsed deep paths', () => {
-    // When a deeply-nested module is collapsed, its long full-path label
-    // is NOT rendered in the module column — so its width must not
-    // pre-reserve space in globalXStart. Walking the whole tree (the
-    // previous behavior) produced a giant default gap whenever any
-    // long-path module existed anywhere, even if hidden.
+    // When a deeply-nested module is collapsed its row is NOT in the
+    // module column — neither its leaf chip nor its indented position
+    // should pre-reserve space in globalXStart. Walking the whole tree
+    // (the previous behaviour) produced a giant default gap whenever
+    // any long-leaf module existed anywhere, even if hidden. The long
+    // leaf sits at the BOTTOM of the path so it only becomes visible
+    // once the intermediate modules are expanded.
+    const longLeaf = 'reallyLongModule'.repeat(4);
     const c = crateFacts('c', [
       mod('', [ty('c', '', 'A')]),
-      mod(
-        `${'reallyLongModule'.repeat(4)}::deeper::path`,
-        [ty('c', `${'reallyLongModule'.repeat(4)}::deeper::path`, 'Hidden')],
-      ),
+      mod(`a::b::${longLeaf}`, [ty('c', `a::b::${longLeaf}`, 'Hidden')]),
     ]);
-    // Expand only the crate root and one shallow module — the long-path
-    // module stays collapsed.
+    // Expand only the crate root — 'a' (depth 1) is visible but its
+    // descendants stay hidden, so the long leaf does not contribute.
     const collapsed = computeGeometry(buildInputs(c, [], ['c']));
-    // Now expand the long-path module to force its label visible.
+    // Expand the chain so the long leaf becomes visible at depth 3.
     const expanded = computeGeometry(
-      buildInputs(c, [], ['c', `c::${'reallyLongModule'.repeat(4)}`, `c::${'reallyLongModule'.repeat(4)}::deeper`]),
+      buildInputs(c, [], ['c', 'c::a', 'c::a::b']),
     );
 
     expect(collapsed.globalXStart).toBeLessThan(expanded.globalXStart);

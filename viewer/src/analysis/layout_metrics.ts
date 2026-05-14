@@ -22,10 +22,11 @@ export const FIELD_ROW_H = gridRows(2);
 // The module overlay is transparent and the chevron renders at CHEVRON_X=6
 // inside each row group, so the row's transform-x needs no outer slot for it.
 // LEFT_PAD = 0 lets the depth-0 chevron sit ~6px from the viewport edge.
-// INDENT_PX = 0 because every label carries its full module path, so depth
-// is already conveyed in the text — a per-depth indent would just be visual
-// noise and make the column ragged.
-export const INDENT_PX = 0;
+// Module rows render as a VS Code-style indented tree: each row shows
+// only its leaf name and nests INDENT_PX deeper than its parent. A
+// fixed per-depth step makes the hierarchy scannable; siblings stay
+// flush, parents are visibly less indented than children.
+export const INDENT_PX = 16;
 export const LEFT_PAD = 0;
 export const TOP_PAD = gridRows(1);
 
@@ -108,21 +109,14 @@ export interface PrefixSegment {
   readonly width: number;
 }
 
+// Indented-tree layout: rows show only the leaf, so there are no
+// prefix segments to paint. The empty array preserves the field on
+// ModuleBand without breaking consumers that index into it.
 export function computePrefixSegments(
-  id: string,
-  measureText: (text: string) => number,
+  _id: string,
+  _measureText: (text: string) => number,
 ): readonly PrefixSegment[] {
-  const segs = id.split('::');
-  if (segs.length <= 2) return [];
-  const ancestors = segs.slice(1, -1);
-  const out: PrefixSegment[] = [];
-  let x = MODULE_LABEL_X;
-  for (const name of ancestors) {
-    const width = measureText(`${name}::`) * MODULE_LABEL_PREFIX_FONT_SCALE;
-    out.push({ name, xStart: x, width });
-    x += width;
-  }
-  return out;
+  return [];
 }
 
 /** Background segment under the leaf, sized for the bold/leaf font.
@@ -152,26 +146,23 @@ export function computeLeafSegment(
   return { name: leaf, xStart, width, isParent };
 }
 
-export function splitModuleDisplayLabel(id: string): { prefix: string; leaf: string } {
+// Module label is just the leaf — depth is conveyed by indentation, not
+// by a dimmed parent-path prefix.
+export function moduleLeafLabel(id: string): string {
   const segs = id.split('::');
-  const leaf = segs[segs.length - 1] ?? id;
-  if (segs.length <= 2) return { prefix: '', leaf };
-  return { prefix: `${segs.slice(1, -1).join('::')}::`, leaf };
+  return segs[segs.length - 1] ?? id;
 }
 
 export function measureModuleHitWidth(
   id: string,
-  measureText: (text: string) => number,
-  measureBoldText: (text: string) => number = measureText,
+  _measureText: (text: string) => number,
+  measureBoldText: (text: string) => number,
 ): number {
-  const { prefix, leaf } = splitModuleDisplayLabel(id);
-  // The leaf is rendered bold for the crate-root row and may render slightly
-  // wider than its non-bold metrics suggest. Always measure the leaf with the
-  // bold font so the chip background and click hit-rect never under-fit the
-  // rendered text. Prefix stays non-bold (matches the renderer).
-  // MODULE_HIT_PAD_RIGHT keeps the chip from ending flush against the glyphs.
-  const labelWidth =
-    measureText(prefix) * MODULE_LABEL_PREFIX_FONT_SCALE +
-    measureBoldText(leaf) * MODULE_LABEL_LEAF_FONT_SCALE;
+  // Leaf is always measured with the bold font so the chip background
+  // and click hit-rect never under-fit the rendered text (crate rows
+  // render bold; submodules render in the normal weight, but their
+  // bold-measured width is a safe upper bound).
+  const leaf = moduleLeafLabel(id);
+  const labelWidth = measureBoldText(leaf) * MODULE_LABEL_LEAF_FONT_SCALE;
   return MODULE_LABEL_X + labelWidth + MODULE_HIT_PAD_RIGHT;
 }

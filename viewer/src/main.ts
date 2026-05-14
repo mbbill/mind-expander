@@ -1,4 +1,3 @@
-import { zoomTransform } from 'd3';
 import { type FunctionCallIndex, buildFunctionCallIndex } from './analysis/calls.ts';
 import { computeDrift } from './analysis/drift.ts';
 import {
@@ -39,8 +38,10 @@ import {
   fieldKey,
   layoutDebugEnabled,
   parseFieldKey,
+  type TreeRenderOptions,
   renderTree,
 } from './view/tree.ts';
+import { renderHtmlModuleTree } from './view/html_tree.ts';
 import {
   ancestorModuleIds,
   callableBucketIdsForType,
@@ -129,9 +130,12 @@ async function main(): Promise<void> {
   if (!facts) return;
 
   const svg = document.querySelector<SVGSVGElement>('#tree');
+  const canvasScroll = document.querySelector<HTMLElement>('#canvas-scroll');
+  const canvasContent = document.querySelector<HTMLElement>('#canvas-content');
+  const htmlModules = document.querySelector<HTMLElement>('#html-modules');
   const minimapRoot = document.querySelector<HTMLElement>('#minimap');
-  if (!svg) {
-    showError('missing required DOM element (#tree)');
+  if (!svg || !canvasScroll || !canvasContent || !htmlModules) {
+    showError('missing required DOM element (#tree / #canvas-scroll / #canvas-content / #html-modules)');
     return;
   }
   // The crate dropdown is gone — multi-crate mode renders all workspace
@@ -156,7 +160,12 @@ async function main(): Promise<void> {
 
   let minimap: Minimap | null = null;
   let previousViewportTransform = { x: 0, y: 0, k: 1 };
-  const layers = attachZoom(svg, (t) => {
+  let lastDrawnK = 1;
+  // Latest HTML-tree options, updated on every draw. The zoom callback
+  // reads these to refresh the HTML overlay when k changes without
+  // having to plumb the closure-captured opts into a separate channel.
+  let htmlTreeOpts: { onToggle: (id: string) => void; onScrollToModule: (id: string) => void } | null = null;
+  const layers = attachZoom(svg, canvasScroll, (t) => {
     updateScaleIndicator(t.k);
     const arrowPopupAction = arrowDisambigViewportAction(previousViewportTransform, t);
     previousViewportTransform = t;
@@ -172,9 +181,21 @@ async function main(): Promise<void> {
       edgePicker.hide();
     }
     minimap?.update(currentCtx?.lastLayout ?? null);
+    // When zoom changes, the canvas-content dimensions and the HTML
+    // module tree's per-row heights/positions need to rescale. Pan-only
+    // events leave them untouched — native scrolling handles the visual
+    // update without rebuilding the DOM.
+    if (t.k !== lastDrawnK) {
+      lastDrawnK = t.k;
+      const layout = currentCtx?.lastLayout;
+      if (layout) {
+        canvasContent.style.height = `${layout.totalHeight * t.k}px`;
+        if (htmlTreeOpts) renderHtmlModuleTree(htmlModules, layout, t.k, canvasScroll, htmlTreeOpts);
+      }
+    }
   });
-  const inputController = installInputControls(svg, layers);
-  if (minimapRoot) minimap = createMinimap(minimapRoot, svg, layers);
+  const inputController = installInputControls(svg, canvasScroll, layers);
+  if (minimapRoot) minimap = createMinimap(minimapRoot, canvasScroll, layers);
   updateScaleIndicator(1);
 
   // Cursor tracking + overview-toggle state. Space presses cycle between
@@ -184,26 +205,29 @@ async function main(): Promise<void> {
   // re-enters overview rather than acting on stale state.
   const cursor = { x: 0, y: 0, inside: false };
   let overviewActive = false;
-  svg.addEventListener('pointermove', (e) => {
-    const rect = svg.getBoundingClientRect();
+  canvasScroll.addEventListener('pointermove', (e) => {
+    const rect = canvasScroll.getBoundingClientRect();
     cursor.x = e.clientX - rect.left;
     cursor.y = e.clientY - rect.top;
     cursor.inside = true;
   });
-  svg.addEventListener('pointerleave', () => {
+  canvasScroll.addEventListener('pointerleave', () => {
     cursor.inside = false;
   });
   const resetOverview = (): void => {
     overviewActive = false;
   };
-  svg.addEventListener('pointerdown', resetOverview);
-  svg.addEventListener('wheel', resetOverview, { passive: true });
+  canvasScroll.addEventListener('pointerdown', resetOverview);
+  canvasScroll.addEventListener('wheel', resetOverview, { passive: true });
 
   const handleSpace = (): void => {
     const layout = currentCtx?.lastLayout;
     if (!layout) return;
-    const w = svg.clientWidth;
-    const h = svg.clientHeight;
+    // The SVG is now sized to the full content extent (totalHeight*k),
+    // so its clientHeight is no longer the visible viewport height.
+    // Use the scroll container — its dimensions ARE the viewport.
+    const w = canvasScroll.clientWidth;
+    const h = canvasScroll.clientHeight;
     if (w <= 0 || h <= 0 || layout.totalWidth <= 0 || layout.totalHeight <= 0) return;
     if (!overviewActive) {
       // Enter overview: scale-to-fit centred on the content.
@@ -218,7 +242,7 @@ async function main(): Promise<void> {
       // outside the SVG).
       const sx = cursor.inside ? cursor.x : w / 2;
       const sy = cursor.inside ? cursor.y : h / 2;
-      const t = zoomTransform(svg);
+      const t = layers.getTransform();
       const dataX = (sx - t.x) / t.k;
       const dataY = (sy - t.y) / t.k;
       layers.setTransform(1, sx - dataX, sy - dataY, true);
@@ -505,7 +529,7 @@ async function main(): Promise<void> {
         if (id.includes('::__methods_')) expandedBucketIds.add(id);
       }
 
-      renderTree(layers, lastLayout, {
+      const treeOpts: TreeRenderOptions = {
         selectedFields,
         incomingCallTargetsShown,
         selectedArrows,
@@ -660,7 +684,29 @@ async function main(): Promise<void> {
             qualifiedTypePath: (fullPath) => qualifiedTypePath(fullPath, typeInfo),
           });
         },
-      });
+        onScrollToModule: (moduleId: string) => {
+          const m = lastLayout?.modules.find((x) => x.id === moduleId);
+          if (!m || !lastLayout) return;
+          // Place the clicked module's row at the top of the viewport,
+          // just below whatever sticky rows still apply above it. Animated
+          // so the user sees the canvas scrolling back rather than
+          // teleporting.
+          layers.panYToTop(m.y, 0, true);
+        },
+      };
+      renderTree(layers, lastLayout, treeOpts);
+      // Size the scrollable canvas-content area to match the diagram's
+      // data extent at the current zoom. Without this the scroll
+      // container has nothing to scroll past and `position: sticky` on
+      // the HTML headers never engages.
+      const k = previousViewportTransform.k;
+      lastDrawnK = k;
+      canvasContent.style.height = `${lastLayout.totalHeight * k}px`;
+      htmlTreeOpts = {
+        onToggle: treeOpts.onToggle,
+        onScrollToModule: treeOpts.onScrollToModule,
+      };
+      renderHtmlModuleTree(htmlModules, lastLayout, k, canvasScroll, htmlTreeOpts);
       minimap?.update(lastLayout);
     };
 
@@ -1308,6 +1354,7 @@ function updateScaleIndicator(k: number): void {
 
 function installInputControls(
   svg: SVGSVGElement,
+  scrollEl: HTMLElement,
   layers: ReturnType<typeof attachZoom>,
 ): InputController {
   const POINTER_PAN_GAIN = 2.25;
@@ -1348,7 +1395,7 @@ function installInputControls(
     },
   };
 
-  svg.addEventListener('pointerdown', (e) => {
+  scrollEl.addEventListener('pointerdown', (e) => {
     if (e.button !== 2) return;
     drag = {
       pointerId: e.pointerId,
@@ -1358,11 +1405,11 @@ function installInputControls(
       y: e.clientY,
       moved: false,
     };
-    svg.setPointerCapture(e.pointerId);
+    scrollEl.setPointerCapture(e.pointerId);
     svg.classList.add('viewport-dragging');
     e.preventDefault();
   });
-  svg.addEventListener('pointermove', (e) => {
+  scrollEl.addEventListener('pointermove', (e) => {
     if (!drag || drag.pointerId !== e.pointerId) return;
     const totalDx = e.clientX - drag.startX;
     const totalDy = e.clientY - drag.startY;
@@ -1381,11 +1428,11 @@ function installInputControls(
     suppressNextClick = drag.moved;
     drag = null;
     svg.classList.remove('viewport-dragging');
-    if (svg.hasPointerCapture(e.pointerId)) svg.releasePointerCapture(e.pointerId);
+    if (scrollEl.hasPointerCapture(e.pointerId)) scrollEl.releasePointerCapture(e.pointerId);
   };
-  svg.addEventListener('pointerup', stopDrag);
-  svg.addEventListener('pointercancel', stopDrag);
-  svg.addEventListener(
+  scrollEl.addEventListener('pointerup', stopDrag);
+  scrollEl.addEventListener('pointercancel', stopDrag);
+  scrollEl.addEventListener(
     'click',
     (e) => {
       if (!suppressNextClick) return;
@@ -1395,11 +1442,11 @@ function installInputControls(
     },
     { capture: true },
   );
-  svg.addEventListener('contextmenu', (e) => {
+  scrollEl.addEventListener('contextmenu', (e) => {
     e.preventDefault();
   });
 
-  svg.addEventListener(
+  scrollEl.addEventListener(
     'wheel',
     (e) => {
       if (mode !== 'trackpad' || e.shiftKey || e.ctrlKey) return;

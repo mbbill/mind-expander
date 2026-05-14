@@ -1,18 +1,22 @@
 // Pan + zoom on the SVG canvas. d3.zoom drives one shared transform; we
-// project it onto two layers:
+// project it onto three layers:
 //
 //   • zoomLayer   — full transform (translate(x,y) scale(k)). Holds types,
 //                   field rows, and arrows. Pans/zooms freely.
 //   • frozenLayer — only vertical translate + scale (translate(0,y) scale(k)).
 //                   Holds the module-label overlay. Stays glued to the left
 //                   edge horizontally so module ↔ type-band mapping survives
-//                   any horizontal pan. Transparent — no backdrop. The labels
-//                   float over the diagram and rely on a white text halo for
-//                   legibility where they cross type content.
+//                   any horizontal pan.
+//   • stickyLayer — no transform (viewport-space). Pinned to the top-left
+//                   corner of the SVG. Holds the breadcrumb of ancestor
+//                   module rows for whichever band the user is currently
+//                   scrolled inside, so the "where am I" chain never
+//                   disappears off-screen. Anchored to the viewport (not
+//                   the canvas) so it does not move with horizontal pan
+//                   and does not grow/shrink with zoom — a fixed-size HUD.
 //
-// The frozen layer is appended LAST so its labels draw on top of any types
-// that pan underneath them and so label clicks beat type-box clicks where
-// the two overlap.
+// stickyLayer is appended LAST so its rows draw on top of everything that
+// scrolls under them.
 
 import {
   type ZoomBehavior,
@@ -25,6 +29,7 @@ import {
 
 const ZOOM_LAYER_CLASS = 'zoom-layer';
 const FROZEN_LAYER_CLASS = 'frozen-layer';
+const STICKY_LAYER_CLASS = 'sticky-layer';
 // Permissive bounds at attach time; the real range is set per-draw via
 // setScaleExtent based on the layout's content size and the viewport.
 const SCALE_MIN = 0.01;
@@ -46,6 +51,10 @@ export interface ZoomLayers {
   readonly zoomLayer: SVGGElement;
   /** Holds the module-label overlay. Locked horizontally; mirrors only y/scale. */
   readonly frozenLayer: SVGGElement;
+  /** Pinned to the top of the viewport. Mirrors only horizontal pan + scale,
+   *  so the rows it holds match the in-canvas rows' x and size but never
+   *  scroll vertically. */
+  readonly stickyLayer: SVGGElement;
   /**
    * Shift the zoom transform by (dx, dy) in data-space units. Used to
    * compensate for layout-induced y movement so the clicked element stays
@@ -63,6 +72,11 @@ export interface ZoomLayers {
   /** Pan vertically so that data-space y `y` lands at the screen vertical
    *  center. Horizontal pan and zoom scale are preserved. */
   readonly centerOnY: (y: number, animated?: boolean) => void;
+  /** Pan vertically so that data-space y `y` lands at screen y = topPx (in
+   *  viewport pixels). Used by the sticky-breadcrumb click to put the
+   *  clicked module's row at the top of the viewport, just below the
+   *  remaining sticky rows above it. */
+  readonly panYToTop: (y: number, topPx: number, animated?: boolean) => void;
   /** Pan both axes so that data-space (x, y) lands at the screen center.
    *  Used by arrow-click navigation to bring source/target dots into
    *  view. Zoom scale is preserved. */
@@ -98,6 +112,11 @@ export interface ZoomLayers {
    *  Main input-mode handling uses this to make trackpad-mode plain
    *  two-finger scroll pan, while Shift+scroll still zooms. */
   readonly setWheelZoomFilter: (filter: (event: WheelEvent) => boolean) => void;
+  /** Current d3.zoom transform (k, x, y). External callers that used
+   *  to call `zoomTransform(svgEl)` should call this — d3.zoom is now
+   *  bound to the scroll container, so reading the transform off the
+   *  SVG would always return identity. */
+  readonly getTransform: () => { x: number; y: number; k: number };
   /** Update the content bounds used by the pan constraint. The constraint
    *  forbids panning the canvas so far that the screen centre falls outside
    *  these bounds — that keeps at least half the viewport over content and
@@ -115,13 +134,19 @@ export interface ContentBounds {
 
 export function attachZoom(
   svgEl: SVGSVGElement,
+  scrollEl: HTMLElement,
   onZoom?: (transform: { x: number; y: number; k: number }) => void,
 ): ZoomLayers {
   const svg = select(svgEl);
+  // d3.zoom is bound to the scroll container (see comment near
+  // `target.call(z)` below). All d3.zoom programmatic APIs and
+  // zoomTransform reads must use this element, not svgEl.
+  const target = select<Element, unknown>(scrollEl);
 
   let zoomLayer = svg.select<SVGGElement>(`g.${ZOOM_LAYER_CLASS}`);
   let frozen = svg.select<SVGGElement>(`g.${FROZEN_LAYER_CLASS}`);
-  let z: ZoomBehavior<SVGSVGElement, unknown>;
+  let sticky = svg.select<SVGGElement>(`g.${STICKY_LAYER_CLASS}`);
+  let z: ZoomBehavior<Element, unknown>;
   let wheelZoomFilter =
     (svgEl as { __sfWheelZoomFilter?: (event: WheelEvent) => boolean }).__sfWheelZoomFilter ??
     (() => true);
@@ -169,24 +194,30 @@ export function attachZoom(
       txMax = w / 2 - contentBounds.x0 * k;
     }
     if (txMin <= txMax) tx = Math.max(txMin, Math.min(txMax, tx));
-    let tyMin: number;
-    let tyMax: number;
-    if (contentHPx <= h) {
-      const marginY = Math.min(PAN_MARGIN_PX, contentHPx / 2);
-      tyMin = marginY - contentBounds.y1 * k;
-      tyMax = h - marginY - contentBounds.y0 * k;
-    } else {
-      tyMin = h / 2 - contentBounds.y1 * k;
-      tyMax = h / 2 - contentBounds.y0 * k;
-    }
+    // Vertical: native browser scroll model. The zoom callback mirrors
+    // `-t.y` to `scrollEl.scrollTop`, which the browser clamps to
+    // `[0, scrollHeight - clientHeight]`. We must use the SAME range
+    // here so d3.zoom's ty matches the actual scroll position; the old
+    // "screen centre over content" rule used `h/2 - y1*k` as tyMin,
+    // which sits half a viewport BELOW the real scroll limit. Small
+    // wheel deltas near the bottom edge were being absorbed by that
+    // phantom margin (d3.zoom moved ty inside [old range], but
+    // scrollTop was already clamped, so no visible pan happened).
+    //
+    // Valid ty: [h - contentH, 0]. When content fits (h >= contentH),
+    // tyMin == 0 too, so ty is pinned at 0 — the native scrollTop is
+    // 0 in that case.
+    const tyMin = Math.min(0, h - contentBounds.y1 * k);
+    const tyMax = -contentBounds.y0 * k;
     if (tyMin <= tyMax) ty = Math.max(tyMin, Math.min(tyMax, ty));
     if (tx === transform.x && ty === transform.y) return transform;
     return transform.translate((tx - transform.x) / k, (ty - transform.y) / k);
   };
 
-  if (zoomLayer.empty() || frozen.empty()) {
+  if (zoomLayer.empty() || frozen.empty() || sticky.empty()) {
     zoomLayer = svg.append('g').attr('class', ZOOM_LAYER_CLASS);
     frozen = svg.append('g').attr('class', FROZEN_LAYER_CLASS);
+    sticky = svg.append('g').attr('class', STICKY_LAYER_CLASS);
 
     const shouldWheelZoom = (event: WheelEvent): boolean =>
       (
@@ -200,7 +231,7 @@ export function attachZoom(
       return true;
     };
 
-    z = zoom<SVGSVGElement, unknown>()
+    z = zoom<Element, unknown>()
       .scaleExtent([SCALE_MIN, SCALE_MAX])
       // Let d3 keep the normal left-button "grab the canvas" drag and
       // programmatic transforms. main.ts owns right-button viewport panning
@@ -209,97 +240,135 @@ export function attachZoom(
       .constrain(constrain)
       .on('zoom', (event) => {
         const t = event.transform;
-        zoomLayer.attr('transform', t.toString());
-        frozen.attr('transform', `translate(0,${t.y}) scale(${t.k})`);
+        // Drop the vertical translate from the SVG transform — that
+        // motion is delivered by `scrollEl.scrollTop` below. Keeping ty
+        // in the transform AND scrolling the container would translate
+        // content twice over.
+        zoomLayer.attr('transform', `translate(${t.x},0) scale(${t.k})`);
+        frozen.attr('transform', `scale(${t.k})`);
+        // Mirror d3.zoom's vertical pan into the native scroll
+        // container so `position: sticky` on the HTML module overlay
+        // engages without any JS sticky simulation. ONLY vertical:
+        // horizontal pan stays in the SVG transform (tx) because
+        // sticky doesn't need horizontal scroll, and mirroring scrollLeft
+        // here would double-translate against the SVG's tx.
+        scrollEl.scrollTop = Math.max(0, -t.y);
         onZoom?.({ x: t.x, y: t.y, k: t.k });
       });
-    svg.call(z);
+    // Bind d3.zoom to the scroll container, not the SVG. Two reasons:
+    //   1. Wheel events from anywhere inside canvas-scroll (including
+    //      the HTML module overlay) reach d3.zoom uniformly. If we
+    //      bound to the SVG, wheels over HTML siblings would trigger
+    //      native scroll on canvas-scroll and desync from d3.zoom's
+    //      transform.
+    //   2. d3.zoom's wheel zoom-around-cursor math uses
+    //      `event.clientX/Y - rect.top` where rect is the bound
+    //      element. canvas-scroll has a stable bounding rect; the SVG
+    //      one shifts as we mirror t.y into scrollTop, which would
+    //      break cursor-anchored zoom.
+    target.call(z);
     // Disable d3.zoom's built-in double-click-to-zoom-in. Double-clicks
     // mid-diagram were tripping users up — the canvas should respond to
     // wheel/pinch and explicit reset only.
-    svg.on('dblclick.zoom', null);
+    target.on('dblclick.zoom', null);
   } else {
     // Existing layers — recover the behavior from where we stashed it.
-    const stashed = (svgEl as { __sfZoom?: ZoomBehavior<SVGSVGElement, unknown> }).__sfZoom;
+    const stashed = (svgEl as { __sfZoom?: ZoomBehavior<Element, unknown> }).__sfZoom;
     if (!stashed) throw new Error('zoom behavior missing on existing layers');
     z = stashed;
   }
-  (svgEl as { __sfZoom?: ZoomBehavior<SVGSVGElement, unknown> }).__sfZoom = z;
+  (svgEl as { __sfZoom?: ZoomBehavior<Element, unknown> }).__sfZoom = z;
   (svgEl as { __sfWheelZoomFilter?: (event: WheelEvent) => boolean }).__sfWheelZoomFilter =
     wheelZoomFilter;
 
   const zoomNode = zoomLayer.node();
   const frozenNode = frozen.node();
-  if (!zoomNode || !frozenNode) {
+  const stickyNode = sticky.node();
+  if (!zoomNode || !frozenNode || !stickyNode) {
     throw new Error('zoom layers not initialized');
   }
   return {
     zoomLayer: zoomNode,
     frozenLayer: frozenNode,
+    stickyLayer: stickyNode,
     translateBy: (dx, dy, animated = false) => {
       if (animated) {
-        svg.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
+        target.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
       } else {
-        z.translateBy(svg, dx, dy);
+        z.translateBy(target, dx, dy);
       }
     },
     translateByScreen: (dxPx, dyPx, animated = false) => {
-      const t = zoomTransform(svgEl);
+      const t = zoomTransform(scrollEl);
       const dx = dxPx / t.k;
       const dy = dyPx / t.k;
       if (animated) {
-        svg.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
+        target.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
       } else {
-        z.translateBy(svg, dx, dy);
+        z.translateBy(target, dx, dy);
       }
     },
     visibleYRange: () => {
-      const t = zoomTransform(svgEl);
-      const h = svgEl.clientHeight;
+      const t = zoomTransform(scrollEl);
+      const h = scrollEl.clientHeight;
       return { min: -t.y / t.k, max: (h - t.y) / t.k };
     },
     centerOnY: (y, animated = false) => {
-      const t = zoomTransform(svgEl);
-      const h = svgEl.clientHeight;
+      const t = zoomTransform(scrollEl);
+      const h = scrollEl.clientHeight;
       // We want screen_y_of(y) == h/2; screen_y = y*k + t.y; so we need
       //   t.y' = h/2 - y*k
       // d3.translateBy(0, dy) updates t.y to t.y + dy*k, so:
       //   dy = (t.y' - t.y)/k = (h/2 - t.y)/k - y
       const dy = (h / 2 - t.y) / t.k - y;
       if (animated) {
-        svg.transition('zoom').duration(ANIM_MS).call(z.translateBy, 0, dy);
+        target.transition('zoom').duration(ANIM_MS).call(z.translateBy, 0, dy);
       } else {
-        z.translateBy(svg, 0, dy);
+        z.translateBy(target, 0, dy);
+      }
+    },
+    panYToTop: (y, topPx, animated = false) => {
+      // Same algebra as centerOnY but the target screen-y is `topPx`
+      // instead of h/2 — places `y` at the requested viewport pixel.
+      const t = zoomTransform(scrollEl);
+      const dy = (topPx - t.y) / t.k - y;
+      if (animated) {
+        target.transition('zoom').duration(ANIM_MS).call(z.translateBy, 0, dy);
+      } else {
+        z.translateBy(target, 0, dy);
       }
     },
     centerOn: (x, y, animated = false) => {
       // Same algebra as centerOnY, applied to both axes.
-      const t = zoomTransform(svgEl);
-      const w = svgEl.clientWidth;
-      const h = svgEl.clientHeight;
+      const t = zoomTransform(scrollEl);
+      const w = scrollEl.clientWidth;
+      const h = scrollEl.clientHeight;
       const dx = (w / 2 - t.x) / t.k - x;
       const dy = (h / 2 - t.y) / t.k - y;
       if (animated) {
-        svg.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
+        target.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
       } else {
-        z.translateBy(svg, dx, dy);
+        z.translateBy(target, dx, dy);
       }
     },
     panTo: (dataX, dataY, screenX, screenY, animated = false) => {
-      // Convert SVG-relative click coords (we receive event.clientX/Y, so
-      // subtract the SVG's bounding rect to get screen-local coords).
-      // Then solve: screen = data * k + t, so t' = screen - data * k.
-      // d3.translateBy(dx, dy) updates t to t + dx*k → dx = (screen-t)/k - data.
-      const rect = svgEl.getBoundingClientRect();
+      // Convert click coords (event.clientX/Y) to the scroll container's
+      // local coordinate system. d3.zoom is bound to canvas-scroll, so
+      // its transform math expects local-y in [0, scrollEl.clientHeight].
+      // The SVG's bounding rect now shifts with scrollTop (the SVG is
+      // sized to the full content extent), so using it would
+      // double-count the scroll offset and land the click in the wrong
+      // place. The scroll container's rect is stable.
+      const rect = scrollEl.getBoundingClientRect();
       const localX = screenX - rect.left;
       const localY = screenY - rect.top;
-      const t = zoomTransform(svgEl);
+      const t = zoomTransform(scrollEl);
       const dx = (localX - t.x) / t.k - dataX;
       const dy = (localY - t.y) / t.k - dataY;
       if (animated) {
-        svg.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
+        target.transition('zoom').duration(ANIM_MS).call(z.translateBy, dx, dy);
       } else {
-        z.translateBy(svg, dx, dy);
+        z.translateBy(target, dx, dy);
       }
     },
     setScaleExtent: (min, max) => {
@@ -307,34 +376,38 @@ export function attachZoom(
       const lo = Math.min(min, max);
       const hi = Math.max(min, max);
       z.scaleExtent([lo, hi]);
-      const k = zoomTransform(svgEl).k;
-      if (k < lo) z.scaleTo(svg, lo);
-      else if (k > hi) z.scaleTo(svg, hi);
+      const k = zoomTransform(scrollEl).k;
+      if (k < lo) z.scaleTo(target, lo);
+      else if (k > hi) z.scaleTo(target, hi);
     },
     resetScale: (animated = false) => {
       if (animated) {
-        svg.transition('zoom').duration(ANIM_MS).call(z.scaleTo, 1);
+        target.transition('zoom').duration(ANIM_MS).call(z.scaleTo, 1);
       } else {
-        z.scaleTo(svg, 1);
+        z.scaleTo(target, 1);
       }
     },
     resetTransform: (animated = false) => {
       if (animated) {
-        svg.transition('zoom').duration(ANIM_MS).call(z.transform, zoomIdentity);
+        target.transition('zoom').duration(ANIM_MS).call(z.transform, zoomIdentity);
       } else {
-        z.transform(svg, zoomIdentity);
+        z.transform(target, zoomIdentity);
       }
     },
     setTransform: (k, tx, ty, animated = false) => {
       // ZoomTransform.translate(dx, dy) sets x = x + k*dx, so to land at
       // (k, tx, ty) starting from identity we apply scale(k) then
       // translate(tx/k, ty/k).
-      const target = zoomIdentity.scale(k).translate(tx / k, ty / k);
+      const t = zoomIdentity.scale(k).translate(tx / k, ty / k);
       if (animated) {
-        svg.transition('zoom').duration(ANIM_MS).call(z.transform, target);
+        target.transition('zoom').duration(ANIM_MS).call(z.transform, t);
       } else {
-        z.transform(svg, target);
+        z.transform(target, t);
       }
+    },
+    getTransform: () => {
+      const t = zoomTransform(scrollEl);
+      return { x: t.x, y: t.y, k: t.k };
     },
     setWheelZoomFilter: (filter) => {
       wheelZoomFilter = filter;
@@ -347,8 +420,8 @@ export function attachZoom(
       // Re-apply current transform so the constraint kicks in immediately
       // — without this the diagram could already be panned off-screen and
       // wouldn't snap back until the next user gesture.
-      const t = zoomTransform(svgEl);
-      z.transform(svg, t);
+      const t = zoomTransform(scrollEl);
+      z.transform(target, t);
     },
   };
 }

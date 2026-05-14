@@ -21,15 +21,141 @@
         inset: 0;
         overflow: hidden;
       }
+      /* Scroll viewport. Native browser scrollTop is the source of truth
+         for vertical position — `position: sticky` on the HTML module
+         headers responds to it without any JS sticky simulation. d3.zoom
+         still owns pan + zoom semantics; a one-line mirror in the zoom
+         callback writes t.y/t.x to scrollTop/scrollLeft so the scroll
+         container stays in sync. Scrollbars hidden so the user can't
+         drag them and desync — all pan input flows through d3.zoom. */
+      #canvas-scroll {
+        position: absolute;
+        inset: 0;
+        /* Only vertical scroll is native — that's what `position:
+           sticky` needs to engage. Horizontal pan is owned entirely by
+           d3.zoom's tx (applied to the SVG transform); a horizontal
+           scrollbar would race with that. */
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-width: none;
+      }
+      #canvas-scroll::-webkit-scrollbar {
+        display: none;
+      }
+      /* Sized per-draw to (totalWidth*k, totalHeight*k) so the scroll
+         range matches the diagram's data extent at the current zoom. */
+      #canvas-content {
+        position: relative;
+        /* JS overrides height to `totalHeight * k` per draw so native
+           scroll has a real range. Width stays at 100% — horizontal pan
+           lives in d3.zoom's tx, so canvas-content never needs to be
+           wider than the viewport. */
+        width: 100%;
+        height: 100%;
+      }
       /* Scoped to the main tree SVG only — without this, the legend's
          inline SVGs (and the hidden defs-only SVG) would inherit
          width:100%/height:100% and balloon to fill their containers. */
       #tree {
         display: block;
+        position: absolute;
+        top: 0;
+        left: 0;
         width: 100%;
         height: 100%;
         cursor: default;
         user-select: none;
+      }
+      /* HTML overlay holding the module tree. Sits ABOVE the SVG so its
+         rows catch clicks and so native `position: sticky` works against
+         the canvas-scroll viewport. The container itself does not catch
+         pointer events — only the rows inside — so SVG content under
+         the empty space (left margin) remains clickable. */
+      #html-modules {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        pointer-events: none;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      #html-modules .module-group {
+        position: absolute;
+        left: 0;
+      }
+      #html-modules .module-header {
+        position: sticky;
+        /* Background lives on .module-header-bg (a wider child) so the
+           opaque coverage spans the full module-column width, not just
+           the row's chip extent. */
+        display: flex;
+        align-items: center;
+        pointer-events: auto;
+        cursor: pointer;
+        z-index: 1;
+        box-sizing: border-box;
+        /* Let the chip overflow rightward if the measured width is a
+           hair short — important for crate-tier rows whose chip renders
+           at font-size 15 while the canvas measurer uses 14. */
+        overflow: visible;
+        white-space: nowrap;
+      }
+      #html-modules .module-header.crate-tier {
+        /* Softer than full bold so the crate row reads as a section
+           heading without shouting over the rest of the diagram. */
+        font-weight: 600;
+        color: #0f172a; /* slate-900 — dark but not pure black */
+        letter-spacing: 0.01em;
+      }
+
+      #html-modules .module-chevron {
+        display: inline-block;
+        text-align: center;
+        font-weight: 600;
+        flex: 0 0 auto;
+      }
+      /* Neutral chevron — slate-400 so it reads as an affordance not an
+         alert. Saturation belongs in the type/visibility chips, not in
+         the tree navigation glyphs. */
+      #html-modules .module-chevron.expand,
+      #html-modules .module-chevron.collapse {
+        color: #94a3b8;
+      }
+      #html-modules .module-chevron.empty {
+        color: transparent;
+      }
+      #html-modules .module-chip {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        padding: 0 6px;
+        box-sizing: border-box;
+        color: #1e293b;
+        /* Never wrap or shrink the chip text. The header has a fixed
+           width (from the layout's `hitWidth`), and if flex chose to
+           shrink the chip the long crate names like "sf-nano-bare-smoke"
+           would break onto two lines and overflow the row height. */
+        white-space: nowrap;
+        flex: 0 0 auto;
+      }
+      #html-modules .module-header.crate-tier .module-chip {
+        background: transparent !important;
+        border: none;
+        padding: 0;
+      }
+      /* Strong white halo around module text — matches the old SVG
+         renderer's `paint-order: stroke fill` look. Multiple stacked
+         blurred shadows make the halo solid and opaque so text reads
+         cleanly even over busy band tints / arrows / type cards. */
+      #html-modules .module-chip {
+        text-shadow:
+          0 0 5px #ffffff,
+          0 0 5px #ffffff,
+          0 0 5px #ffffff,
+          0 0 5px #ffffff,
+          0 0 5px #ffffff;
       }
       #tree.viewport-dragging,
       #tree.viewport-dragging:active {
@@ -698,7 +824,12 @@
   </head>
   <body>
     <main>
-      <svg id="tree" role="img" aria-label="module and type tree"></svg>
+      <div id="canvas-scroll">
+        <div id="canvas-content">
+          <svg id="tree" role="img" aria-label="module and type tree"></svg>
+          <div id="html-modules"></div>
+        </div>
+      </div>
       <div id="error" class="error" hidden></div>
     </main>
     <!-- Hidden SVG defs reachable from any inline SVG on the page —

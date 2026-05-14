@@ -1,4 +1,4 @@
-import { select, zoomTransform } from 'd3';
+import { select } from 'd3';
 import type { Layout } from '../analysis/layout_model.ts';
 import { colorForVisibility } from './encoding.ts';
 import type { ZoomLayers } from './zoom.ts';
@@ -15,7 +15,7 @@ export interface Minimap {
 
 export function createMinimap(
   root: HTMLElement,
-  mainSvg: SVGSVGElement,
+  scrollEl: HTMLElement,
   layers: ZoomLayers,
 ): Minimap {
   const svg = select(root)
@@ -75,11 +75,19 @@ export function createMinimap(
   };
 
   const renderViewport = (layout: Layout): void => {
-    const t = zoomTransform(mainSvg);
+    // Visible-data-range math. With native vertical scroll the d3.zoom
+    // transform's `t.y` already mirrors `-scrollTop`, so the vertical
+    // visible band is `[-t.y/k, (-t.y + scrollViewportH)/k]`. The
+    // viewport SIZE (what the user sees on screen) is the scroll
+    // container's clientHeight, not the SVG's — the SVG is now sized
+    // to the full content extent so its clientHeight ≈ totalHeight * k.
+    const t = layers.getTransform();
+    const viewW = scrollEl.clientWidth;
+    const viewH = scrollEl.clientHeight;
     const vx0 = clamp(-t.x / t.k, 0, layout.totalWidth);
     const vy0 = clamp(-t.y / t.k, 0, layout.totalHeight);
-    const vx1 = clamp((mainSvg.clientWidth - t.x) / t.k, 0, layout.totalWidth);
-    const vy1 = clamp((mainSvg.clientHeight - t.y) / t.k, 0, layout.totalHeight);
+    const vx1 = clamp((viewW - t.x) / t.k, 0, layout.totalWidth);
+    const vy1 = clamp((viewH - t.y) / t.k, 0, layout.totalHeight);
     viewport
       .attr('x', ox + Math.min(vx0, vx1) * scale)
       .attr('y', oy + Math.min(vy0, vy1) * scale)

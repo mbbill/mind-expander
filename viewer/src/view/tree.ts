@@ -11,7 +11,7 @@
 // what powers the smooth focus-mode toggle animation. Elements that appear
 // fade in; elements that disappear fade out before removal.
 
-import { type Selection, pointer, select, zoomTransform } from 'd3';
+import { type Selection, pointer, select } from 'd3';
 import { type ArrowHit, pickArrowsAtPoint } from '../analysis/arrow_hit.ts';
 import { type BorrowFlavor, borrowFlavor } from '../analysis/borrow_flavor.ts';
 import type { DriftClass } from '../analysis/drift.ts';
@@ -28,7 +28,7 @@ import {
   TYPE_EXPAND_ARROW_OPEN,
   TYPE_LABEL_FONT_SIZE,
   TYPE_LABEL_X,
-  splitModuleDisplayLabel,
+  moduleLeafLabel,
 } from '../analysis/layout_metrics.ts';
 import { type Layout, ROW_H } from '../analysis/layout_model.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
@@ -291,6 +291,10 @@ export interface TreeRenderOptions {
   /** Single-row click on a module or type → toggle expansion. Expansion is
    *  the only "focus" concept — there is no separate selected-types set. */
   readonly onToggle: (id: string) => void;
+  /** Click on a sticky-breadcrumb row → pan vertically so that module's
+   *  in-canvas row lands at the top of the viewport, just below any
+   *  remaining sticky rows. */
+  readonly onScrollToModule: (moduleId: string) => void;
   /** Click on a type header chevron → toggle expansion. Opening selects
    *  field rows by default and expands callable buckets without selecting
    *  function rows; closing deselects hidden member rows. */
@@ -431,14 +435,14 @@ export function renderTree(layers: ZoomLayers, layout: Layout, opts: TreeRenderO
   const arrowG = ensureGroup(zoomLayer, 'arrows');
   arrowG.attr('fill', 'none').attr('stroke-width', 1);
   const typeG = ensureGroup(zoomLayer, 'types');
-  const moduleG = ensureGroup(frozenLayer, 'modules');
 
   renderBandBackgrounds(bandG, layout);
   renderLayoutDebug(debugG, layout);
   if (!layoutDebugEnabled()) hideCallableDebugPanelNow();
   renderArrows(arrowG, layout, opts.selectedArrows);
   renderTypes(typeG, zoomLayer, layout, opts);
-  renderModules(moduleG, layout, opts);
+  // Module column is rendered as HTML in html_tree.ts; nothing to do
+  // here for the SVG module overlay anymore.
   installArrowClickHandler(layers, layout, opts);
 }
 
@@ -655,14 +659,13 @@ function installArrowClickHandler(
   opts: TreeRenderOptions,
 ): void {
   const zoomLayer = select(layers.zoomLayer);
-  const svgEl = layers.zoomLayer.ownerSVGElement;
-  if (!svgEl) return;
+  // (svgEl access not needed — k is read via layers.getTransform())
   zoomLayer.on('click.arrow-nav', (event: MouseEvent) => {
     // pointer(event, container) returns the click in `container`'s local
     // coords — for the zoom layer that IS data-space, since the layer
     // itself carries the zoom transform.
     const [x, y] = pointer(event, layers.zoomLayer);
-    const k = zoomTransform(svgEl).k || 1;
+    const k = layers.getTransform().k || 1;
     const hits = pickArrowsAtPoint({ x, y }, hitTestableArrows(layout), {
       hitTolerance: ARROW_HIT_PX / k,
     });
@@ -681,18 +684,15 @@ function ensureGroup(
   return g;
 }
 
-// Band backgrounds carry a tier signal:
-//   - Crate-tier bands (modDepth 0) get a deeper, always-on tint so the
-//     crate boundary reads as a section break.
-//   - Module-tier bands keep the subtle alternating stripe pattern so a
-//     user can trace any type back horizontally to its module label.
-const COLOR_BAND_BG_MODULE = '#f1f5f9'; // slate-100 — light stripe for modules
-const COLOR_BAND_BG_CRATE = '#e2e8f0'; // slate-200 — slightly darker than module stripe
-// Thin horizontal divider painted only between adjacent crate-tier bands.
-// Module bands already separate visually via alternating slate/white
-// stripes, so a divider there would be visual noise. Crates share the
-// same slate-200 tint and would blend without an explicit line.
-const COLOR_BAND_DIVIDER = '#cbd5e1'; // slate-300
+// Band backgrounds — a modern white theme. Crate-tier rows render on
+// near-white with a subtle off-white module stripe; the section break
+// reads via the hairline divider drawn between adjacent crate rows
+// rather than a darker tint. Sub-modules use the lighter stripe to
+// trace types back to their module without competing with the crate
+// boundary visually.
+const COLOR_BAND_BG_MODULE = '#fafbfc'; // near-white wash for sub-module stripes
+const COLOR_BAND_BG_CRATE = '#ffffff'; // pure white for crate-tier rows
+const COLOR_BAND_DIVIDER = '#e5e7eb'; // slate-200 — hairline rule between crates
 const BAND_DIVIDER_HEIGHT = 1;
 
 function renderBandBackgrounds(
@@ -1042,11 +1042,6 @@ function renderModules(
     .attr('transform', (d) => `translate(${d.labelX},${d.y})`)
     .style('opacity', 0);
 
-  // Per-ancestor colour rects covering the dimmed prefix portion. Painted
-  // on top of `rect.bg` and below the prefix tspan so the prefix text reads
-  // as a coloured chip per parent module.
-  enter.append('g').attr('class', 'prefix-bgs').attr('pointer-events', 'none');
-
   enter
     .filter((d) => d.hasChildren)
     .append('text')
@@ -1059,39 +1054,24 @@ function renderModules(
     .attr('font-weight', 600)
     .attr('fill', COLOR_CHEVRON);
 
-  // Module label is split into a dimmed/smaller "prefix" tspan (the
-  // parent module path, e.g. "vm::wasm::") and a normal "leaf" tspan
-  // (the module's own name). The prefix on every row makes it visually
-  // unambiguous that this pane is a Rust module hierarchy — no file/dir
-  // pretense — while staying scannable by leaf.
-  const moduleText = enter
+  // Leaf-only label — depth is conveyed by the row's labelX, so the
+  // text is just this module's own name. Crate rows (modDepth 0 under
+  // the hidden workspace root) get a bigger, bold leaf so they read as
+  // section headers. Submodule rows use the default size and weight;
+  // the chip background (rendered separately) carries their identity.
+  enter
     .append('text')
     .attr('class', 'name')
     .attr('x', MODULE_LABEL_X)
     .attr('y', ROW_H / 2)
     .attr('dy', '0.32em')
-    .attr('font-size', FONT_SIZE)
-    .attr('fill', COLOR_LABEL);
-  moduleText
-    .append('tspan')
-    .attr('class', 'prefix')
-    .attr('font-size', FONT_SIZE_MODULE_PREFIX)
-    .attr('fill', COLOR_MODULE_PREFIX);
-  // Crate rows (modDepth 0 — the top tier under the hidden workspace
-  // root) get a bigger, bold leaf so they read as section headers.
-  // Submodules use the default size and weight; the chip background
-  // (rendered separately) carries their visual identity instead.
-  moduleText
-    .append('tspan')
-    .attr('class', 'leaf')
     .attr('font-size', (d) => (d.modDepth === 0 ? FONT_SIZE_CRATE_LEAF : FONT_SIZE_MODULE_LEAF))
     .attr('font-weight', (d) => (d.modDepth === 0 ? 700 : 400))
     // Crate leaves lighten to slate-700 so bold+near-black doesn't
     // overpower the slate-200 band tint behind them. Module leaves
-    // keep the inherited COLOR_LABEL (slate-800) because they sit on
-    // the lighter alternating-stripe background where higher contrast
-    // is appropriate.
-    .attr('fill', (d) => (d.modDepth === 0 ? COLOR_CRATE_LABEL : null));
+    // keep the default COLOR_LABEL (slate-800) on the lighter striped
+    // background.
+    .attr('fill', (d) => (d.modDepth === 0 ? COLOR_CRATE_LABEL : COLOR_LABEL));
 
   // Expand-hit rect starts past the marker (HEADER_HIT_X) so the marker
   // owns its own pointer events without depending on DOM paint order.
@@ -1124,15 +1104,11 @@ function renderModules(
     .text((d) => (d.expanded ? '-' : '+'))
     .attr('fill', (d) => (d.expanded ? COLOR_CHEVRON_COLLAPSE : COLOR_CHEVRON_EXPAND));
 
-  // Refresh the module label tspans each draw — content may shift when
-  // crates are switched or filters are applied (focus mode collapses
-  // some intermediate modules out of the visible tree).
+  // Refresh the module label each draw — content can shift across
+  // redraws when crates change or focus mode collapses ancestors.
   merged
-    .select<SVGTSpanElement>('text.name tspan.prefix')
-    .text((d) => splitModuleDisplayLabel(d.id).prefix);
-  merged
-    .select<SVGTSpanElement>('text.name tspan.leaf')
-    .text((d) => splitModuleDisplayLabel(d.id).leaf);
+    .select<SVGTextElement>('text.name')
+    .text((d) => moduleLeafLabel(d.id));
 
   // Refresh click handler with current closure each draw.
   merged
@@ -1143,87 +1119,41 @@ function renderModules(
       if (d.hasChildren) opts.onToggle(d.id);
     });
 
-  // Cluster rendering: a per-row clipPath defines the rounded outer shape;
-  // colored segment rects sit inside that clip so their boundaries between
-  // each parent and the leaf are flush. A single outer border rect with
-  // fill=none + slate-300 stroke draws the rounded chip outline on top.
-  // Outer edges (left of first, right of last) get padding so glyphs don't
-  // sit flush against the rounded border.
-  const SEG_OUTER_PAD = 4;
-  type RowSeg = (
-    | Layout['modules'][number]['prefixSegments'][number]
-    | Layout['modules'][number]['leafBg']
-  ) & {
-    readonly fill: string;
-  };
+  // Leaf chip: a single rounded rect behind the label, colored by the
+  // module's own name when this module has submodule children
+  // (matching the hashed palette its descendants' chips reference),
+  // otherwise a neutral fill so leaf-only modules still get a chip
+  // without burning a palette slot. Crate-tier rows (modDepth 0) get
+  // no chip — they render as plain bold headings on the band tint.
+  const CHIP_OUTER_PAD = 4;
   merged.each(function (d) {
     const rowG = select(this);
 
-    // Crate tier (modDepth 0 under the hidden workspace root) renders
-    // as a plain bold heading — no chip cluster, no border. The band
-    // background (rendered separately) carries its identity. Sweep any
-    // leftover chip DOM in case a row's tier ever changes across redraws.
     if (d.modDepth === 0) {
-      rowG.select<SVGClipPathElement>('clipPath').remove();
-      rowG.select('g.prefix-bgs').selectAll<SVGRectElement, unknown>('rect.seg').remove();
+      rowG.select<SVGRectElement>('rect.leaf-chip').remove();
       rowG.select<SVGRectElement>('rect.cluster-border').remove();
       return;
     }
 
-    const prefixSegs: RowSeg[] = d.prefixSegments.map((s) => ({
-      ...s,
-      fill: colorForSegment(s.name),
-    }));
-    const leafSeg: RowSeg = {
-      ...d.leafBg,
-      // Half-step between slate-100 (band tint) and slate-200 — light enough
-      // to read as "neutral" but distinct from both the white viewport and
-      // the tinted band stripes.
-      fill: d.leafBg.isParent ? colorForSegment(d.leafBg.name) : '#eaeef4',
-    };
-    const all = [...prefixSegs, leafSeg];
-    const lastIdx = all.length - 1;
-    const firstSeg = all[0];
-    const lastSeg = all[lastIdx];
-    if (firstSeg === undefined || lastSeg === undefined) return;
-    const clusterX = firstSeg.xStart - SEG_OUTER_PAD;
-    const clusterWidth = lastSeg.xStart + lastSeg.width - clusterX + SEG_OUTER_PAD;
-    const clipId = `cc-${d.id.replace(/[^a-zA-Z0-9-]/g, '_')}`;
+    const chipX = d.leafBg.xStart - CHIP_OUTER_PAD;
+    const chipWidth = d.leafBg.width + CHIP_OUTER_PAD * 2;
+    // Half-step between slate-100 (band tint) and slate-200 for the
+    // neutral fill — reads as "no palette slot" without disappearing
+    // into the band background.
+    const chipFill = d.leafBg.isParent ? colorForSegment(d.leafBg.name) : '#eaeef4';
 
-    // ClipPath: rounded outer cluster shape. The id has to be unique in the
-    // document so the clip-path URL resolves to this row's shape, not some
-    // other row's. Inserted before g.prefix-bgs so the def precedes uses.
-    let clipPath = rowG.select<SVGClipPathElement>('clipPath');
-    if (clipPath.empty()) {
-      clipPath = rowG.insert<SVGClipPathElement>('clipPath', 'g.prefix-bgs');
-      clipPath.append('rect').attr('y', 0).attr('height', ROW_H).attr('rx', 4);
+    let chip = rowG.select<SVGRectElement>('rect.leaf-chip');
+    if (chip.empty()) {
+      chip = rowG.insert<SVGRectElement>('rect', 'text.name');
+      chip
+        .attr('class', 'leaf-chip')
+        .attr('y', 0)
+        .attr('height', ROW_H)
+        .attr('rx', 4)
+        .attr('pointer-events', 'none');
     }
-    clipPath.attr('id', clipId);
-    clipPath.select<SVGRectElement>('rect').attr('x', clusterX).attr('width', clusterWidth);
+    chip.attr('x', chipX).attr('width', chipWidth).attr('fill', chipFill);
 
-    // Inner segment rects: no stroke, no rx — the clipPath handles the
-    // rounded outer shape, and the per-row outer border draws the edge.
-    const segGroup = rowG.select<SVGGElement>('g.prefix-bgs').attr('clip-path', `url(#${clipId})`);
-    const segs = segGroup
-      .selectAll<SVGRectElement, RowSeg>('rect.seg')
-      .data(all, (s, i) => `${i === lastIdx ? 'leaf' : 'pre'}:${s.name}`);
-    segs.exit().remove();
-    segs
-      .enter()
-      .append('rect')
-      .attr('class', 'seg')
-      .attr('y', 0)
-      .attr('height', ROW_H)
-      .merge(segs)
-      .attr('x', (s, i) => s.xStart - (i === 0 ? SEG_OUTER_PAD : 0))
-      .attr(
-        'width',
-        (s, i) => s.width + (i === 0 ? SEG_OUTER_PAD : 0) + (i === lastIdx ? SEG_OUTER_PAD : 0),
-      )
-      .attr('fill', (s) => s.fill);
-
-    // Outer cluster border. Inserted before text.name (always present) so it
-    // paints over the colored zones but under the chevron and label glyphs.
     let border = rowG.select<SVGRectElement>('rect.cluster-border');
     if (border.empty()) {
       border = rowG.insert<SVGRectElement>('rect', 'text.name');
@@ -1237,7 +1167,7 @@ function renderModules(
         .attr('stroke-width', 1)
         .attr('pointer-events', 'none');
     }
-    border.attr('x', clusterX).attr('width', clusterWidth);
+    border.attr('x', chipX).attr('width', chipWidth);
   });
 
   sizeModuleExpandHit(merged);
@@ -1251,6 +1181,185 @@ function sizeModuleExpandHit(
   // frame. The hit-rect catches clicks on top of the colored segment chips.
   sel.each(function (d) {
     select(this).select<SVGRectElement>('rect.expand-hit').attr('width', d.hitWidth);
+  });
+}
+
+/** Pick the ancestor chain of `dataYTop` from the module list, in
+ *  parent-first order. A module is sticky when its full row has scrolled
+ *  above `dataYTop` (its bottom edge sits above the viewport top). The
+ *  algorithm walks bands in y-order, maintaining a stack of currently
+ *  active ancestors; popping siblings as deeper rows arrive keeps the
+ *  stack equal to "the modules currently containing dataYTop". */
+export function computeStickyModuleChain(
+  modules: ReadonlyArray<Layout['modules'][number]>,
+  dataYTop: number,
+): ReadonlyArray<Layout['modules'][number]> {
+  const stack: Array<Layout['modules'][number]> = [];
+  for (const m of modules) {
+    // m's row is still (at least partially) on-screen → stack contains
+    // the ancestors of dataYTop, nothing further to add.
+    if (m.y + ROW_H > dataYTop) return stack;
+    while (stack.length > 0 && (stack[stack.length - 1]?.modDepth ?? -1) >= m.modDepth) {
+      stack.pop();
+    }
+    stack.push(m);
+  }
+  return stack;
+}
+
+/** Render the breadcrumb stack of ancestor module rows pinned to the
+ *  top-left corner of the viewport. Mirrors `renderModules` styling so
+ *  a sticky row looks identical to its in-canvas counterpart at k=1,
+ *  except that:
+ *   • the row sits at sticky_y (a multiple of ROW_H) instead of d.y,
+ *   • an opaque background paints behind the stack so canvas content
+ *     scrolling below stays hidden — sized to the widest sticky row,
+ *     not the whole viewport, so it doesn't waste space.
+ *   • the click handler scrolls back to that module's in-canvas row
+ *     instead of toggling expansion.
+ *  The stickyLayer is rendered in viewport coordinates (no transform):
+ *  the breadcrumb is a fixed-size HUD that does not pan with the canvas
+ *  or scale with zoom. */
+export function renderStickyModules(
+  stickyLayer: Selection<SVGGElement, unknown, null, undefined>,
+  layout: Layout,
+  dataYTop: number,
+  opts: TreeRenderOptions,
+): void {
+  const chain = computeStickyModuleChain(layout.modules, dataYTop);
+
+  // Opaque backdrop just under the sticky rows. Sized to the widest
+  // sticky row so the HUD doesn't extend across the whole viewport
+  // (which would block canvas interactions and waste space). Kept first
+  // in DOM order so it paints under every row. Removed when the chain
+  // is empty so we don't leave a stray white strip after scrolling back
+  // up.
+  let bgWidth = 0;
+  for (const m of chain) {
+    const right = m.labelX + m.hitWidth;
+    if (right > bgWidth) bgWidth = right;
+  }
+  const bgSel = stickyLayer.selectAll<SVGRectElement, null>('rect.sticky-bg').data(
+    chain.length === 0 ? [] : [null],
+  );
+  bgSel.exit().remove();
+  bgSel
+    .enter()
+    .append('rect')
+    .attr('class', 'sticky-bg')
+    .attr('x', 0)
+    .attr('y', 0)
+    .attr('fill', '#ffffff')
+    .attr('pointer-events', 'none')
+    .merge(bgSel)
+    .attr('width', bgWidth)
+    .attr('height', chain.length * ROW_H);
+
+  const sel = stickyLayer
+    .selectAll<SVGGElement, Layout['modules'][number]>('g.sticky-row')
+    .data(chain, (d) => d.id);
+
+  sel.exit().remove();
+
+  const enter = sel.enter().append('g').attr('class', 'sticky-row');
+
+  // Chip + border for non-crate rows. We always append both elements so
+  // the merge step can refresh them; for crate-tier rows we'll wipe the
+  // chip/border (no visual chip on crate rows in-canvas).
+  enter
+    .filter((d) => d.hasChildren)
+    .append('text')
+    .attr('class', 'chevron')
+    .attr('x', CHEVRON_X)
+    .attr('y', ROW_H / 2)
+    .attr('dy', '0.32em')
+    .attr('text-anchor', 'middle')
+    .attr('font-size', FONT_SIZE_MODULE_CHEVRON)
+    .attr('font-weight', 600)
+    .attr('fill', COLOR_CHEVRON);
+
+  enter
+    .append('text')
+    .attr('class', 'name')
+    .attr('x', MODULE_LABEL_X)
+    .attr('y', ROW_H / 2)
+    .attr('dy', '0.32em')
+    .attr('font-size', (d) => (d.modDepth === 0 ? FONT_SIZE_CRATE_LEAF : FONT_SIZE_MODULE_LEAF))
+    .attr('font-weight', (d) => (d.modDepth === 0 ? 700 : 400))
+    .attr('fill', (d) => (d.modDepth === 0 ? COLOR_CRATE_LABEL : COLOR_LABEL));
+
+  // Transparent click-catcher covering the whole sticky-row width. Sized
+  // from d.hitWidth so the clickable area matches the in-canvas row.
+  enter
+    .append('rect')
+    .attr('class', 'sticky-hit')
+    .attr('x', 0)
+    .attr('y', 0)
+    .attr('height', ROW_H)
+    .attr('fill', 'transparent')
+    .style('cursor', 'pointer');
+
+  const merged = enter.merge(sel);
+
+  merged.attr('transform', (d, i) => `translate(${d.labelX},${i * ROW_H})`);
+
+  merged
+    .filter((d) => d.hasChildren)
+    .select<SVGTextElement>('text.chevron')
+    .text((d) => (d.expanded ? '-' : '+'))
+    .attr('fill', (d) => (d.expanded ? COLOR_CHEVRON_COLLAPSE : COLOR_CHEVRON_EXPAND));
+
+  merged.select<SVGTextElement>('text.name').text((d) => moduleLeafLabel(d.id));
+
+  const CHIP_OUTER_PAD = 4;
+  merged.each(function (d) {
+    const rowG = select(this);
+
+    if (d.modDepth === 0) {
+      rowG.select<SVGRectElement>('rect.leaf-chip').remove();
+      rowG.select<SVGRectElement>('rect.cluster-border').remove();
+    } else {
+      const chipX = d.leafBg.xStart - CHIP_OUTER_PAD;
+      const chipWidth = d.leafBg.width + CHIP_OUTER_PAD * 2;
+      const chipFill = d.leafBg.isParent ? colorForSegment(d.leafBg.name) : '#eaeef4';
+
+      let chip = rowG.select<SVGRectElement>('rect.leaf-chip');
+      if (chip.empty()) {
+        chip = rowG.insert<SVGRectElement>('rect', 'text.name');
+        chip
+          .attr('class', 'leaf-chip')
+          .attr('y', 0)
+          .attr('height', ROW_H)
+          .attr('rx', 4)
+          .attr('pointer-events', 'none');
+      }
+      chip.attr('x', chipX).attr('width', chipWidth).attr('fill', chipFill);
+
+      let border = rowG.select<SVGRectElement>('rect.cluster-border');
+      if (border.empty()) {
+        border = rowG.insert<SVGRectElement>('rect', 'text.name');
+        border
+          .attr('class', 'cluster-border')
+          .attr('y', 0)
+          .attr('height', ROW_H)
+          .attr('rx', 4)
+          .attr('fill', 'none')
+          .attr('stroke', '#cbd5e1')
+          .attr('stroke-width', 1)
+          .attr('pointer-events', 'none');
+      }
+      border.attr('x', chipX).attr('width', chipWidth);
+    }
+
+    // Hit rect spans the row's full hitWidth, expressed in the row
+    // group's local coords (just like the in-canvas expand-hit).
+    rowG
+      .select<SVGRectElement>('rect.sticky-hit')
+      .attr('width', d.hitWidth)
+      .on('click', (event: MouseEvent) => {
+        event.stopPropagation();
+        opts.onScrollToModule(d.id);
+      });
   });
 }
 
