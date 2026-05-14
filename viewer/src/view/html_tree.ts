@@ -228,18 +228,22 @@ function renderHeader(
   const chevron = document.createElement('span');
   chevron.className = 'module-chevron';
   if (m.hasChildren) {
-    // Triangle glyphs match the SVG type-header chevrons (▾ open / ▸
-    // closed) and read as navigation affordances rather than the
-    // brighter +/- "actions" they replaced. Neutral grey via CSS.
-    chevron.textContent = m.expanded ? '▾' : '▸';
+    // VS Code-style chevron: a single right-pointing angle that rotates
+    // 90° when expanded. Reads as a thin navigation affordance rather
+    // than a filled triangle.
+    chevron.textContent = '›';
     chevron.classList.add(m.expanded ? 'collapse' : 'expand');
+    if (m.expanded) chevron.style.transform = 'rotate(90deg)';
   } else {
-    chevron.textContent = '▸';
+    chevron.textContent = '›';
     chevron.classList.add('empty');
   }
-  chevron.style.width = `${12 * k}px`;
+  chevron.style.display = 'inline-block';
+  chevron.style.width = `${14 * k}px`;
   chevron.style.marginRight = `${4 * k}px`;
-  chevron.style.fontSize = `${12 * k}px`;
+  chevron.style.fontSize = `${20 * k}px`;
+  chevron.style.lineHeight = '1';
+  chevron.style.fontWeight = '700';
   header.appendChild(chevron);
 
   const chip = document.createElement('span');

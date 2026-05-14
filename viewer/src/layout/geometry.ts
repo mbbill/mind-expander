@@ -621,7 +621,15 @@ function measuredRowWidth(row: LocalRowSpec): number {
   // the stable member-name footprint. Counting them here makes one verbose
   // Rust type force the whole layout box wide even when the readable anchor
   // is just the field or method name.
-  return row.labelInset + row.textWidth;
+  //
+  // The locality `→` glyph (inlineSuffixWidth + the trailing gap before it),
+  // however, IS a permanent part of the row — its space is reserved
+  // regardless of whether the glyph is currently drawn. Excluding it
+  // pushed the type-box right edge inside the glyph, so callable rows
+  // with outgoing calls rendered the arrow OUTSIDE the box.
+  const suffix = row.inlineSuffixWidth ?? 0;
+  const trailing = suffix > 0 ? ROW_NAME_TRAILING_GAP : 0;
+  return row.labelInset + row.textWidth + trailing + suffix;
 }
 
 function bandItemClearance() {
