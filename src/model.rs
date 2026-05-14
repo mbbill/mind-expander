@@ -4,6 +4,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Source-file span for an item. 1-indexed inclusive line range so the
+/// viewer's code panel can scroll to and highlight the lines that
+/// define the item. `file` is an absolute path; the viewer's dev
+/// server sandboxes reads to the workspace root.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Span {
+    pub file: String,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceFacts {
     /// Crates discovered, indexed by crate name.
@@ -68,6 +79,9 @@ pub struct ReExport {
     /// every ghost falls back to the "struct" default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_kind: Option<TypeKind>,
+    /// Source span of the `pub use` statement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -97,6 +111,11 @@ pub struct TypeFacts {
     pub unsafe_blocks: u32,
     /// Doc comment first line (low-trust, surfaced for context only).
     pub doc_first_line: Option<String>,
+    /// Source span of the type definition. Optional so older facts
+    /// files keep loading and the viewer can fall back to the module
+    /// file's first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,6 +142,10 @@ pub struct FieldFacts {
     pub cardinality: Vec<Cardinality>,
     /// Lifetime names that appear in the field type.
     pub lifetimes: Vec<String>,
+    /// Source span of the field declaration (single line for most fields,
+    /// multi-line for complex enum variant payloads).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +170,10 @@ pub struct FnFacts {
     /// `unsafe { ... }` blocks textually in the body.
     pub unsafe_blocks: u32,
     pub doc_first_line: Option<String>,
+    /// Source span — covers the signature through the closing brace
+    /// of the body (or just the signature for trait/extern fns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

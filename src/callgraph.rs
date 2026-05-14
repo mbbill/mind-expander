@@ -722,6 +722,7 @@ mod tests {
             lifetime_flows_through: false,
             unsafe_blocks: 0,
             doc_first_line: None,
+            span: None,
         }
     }
 
@@ -744,6 +745,7 @@ mod tests {
             trait_impls: vec![],
             unsafe_blocks: 0,
             doc_first_line: None,
+            span: None,
         }
     }
 

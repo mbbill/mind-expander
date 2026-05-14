@@ -295,6 +295,12 @@ export interface TreeRenderOptions {
    *  in-canvas row lands at the top of the viewport, just below any
    *  remaining sticky rows. */
   readonly onScrollToModule: (moduleId: string) => void;
+  /** Cmd/Ctrl+click on a diagram element → open the code panel and
+   *  scroll to that element's source span. `id` is the same id form
+   *  used by `onToggle`/`onSelectField` (typePath or
+   *  `${typePath}::${memberName}`); the host looks the span up in its
+   *  facts-derived index. */
+  readonly onShowCode: (id: string) => void;
   /** Click on a type header chevron → toggle expansion. Opening selects
    *  field rows by default and expands callable buckets without selecting
    *  function rows; closing deselects hidden member rows. */
@@ -1116,6 +1122,10 @@ function renderModules(
     .attr('cursor', (d) => (d.hasChildren ? 'pointer' : 'default'))
     .on('click', (event: MouseEvent, d) => {
       event.stopPropagation();
+      if (event.metaKey || event.ctrlKey) {
+        opts.onShowCode(d.id);
+        return;
+      }
       if (d.hasChildren) opts.onToggle(d.id);
     });
 
@@ -1481,6 +1491,10 @@ function renderTypes(
     .attr('cursor', (d) => (d.hasFields || d.isGhost ? 'pointer' : 'default'))
     .on('click', (event: MouseEvent, d) => {
       event.stopPropagation();
+      if (event.metaKey || event.ctrlKey) {
+        opts.onShowCode(d.fullPath);
+        return;
+      }
       if (d.isGhost && d.ghostTarget !== null) {
         opts.onFollowGhost(d.id, d.ghostTarget);
       } else if (d.hasFields) {
@@ -1968,6 +1982,15 @@ function renderFieldsForType(
 
     const handleRowClick = (event: MouseEvent): void => {
       event.stopPropagation();
+      if (event.metaKey || event.ctrlKey) {
+        // Cmd/Ctrl+click on a row opens the code panel at the member's
+        // span (or the parent type's span as a fallback). Bucket headers
+        // ("pub fn (5)" etc.) don't have their own span, so skip them.
+        if (!isBucketHeader) {
+          opts.onShowCode(`${d.fullPath}::${f.name}`);
+        }
+        return;
+      }
       if (isBucketHeader) {
         if (f.bucketId !== null) opts.onToggle(f.bucketId);
       } else if (isCallable && f.functionFullPath !== null) {

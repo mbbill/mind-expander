@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
     File, ImplItem, Item, ItemEnum, ItemImpl, ItemMod, ItemStruct, ItemTrait, ItemType, ItemUnion,
@@ -14,7 +15,8 @@ use walkdir::WalkDir;
 use crate::callgraph::{CallGraphProvider, SynCallGraphProvider};
 use crate::model::{
     CrateFacts, Edge, EdgeKind, EdgeProfile, FieldFacts, FnFacts, ModuleFacts, Ownership,
-    ParamFacts, ReExport, ReExportKind, SelfKind, TypeFacts, TypeKind, ViaKind, WorkspaceFacts,
+    ParamFacts, ReExport, ReExportKind, SelfKind, Span, TypeFacts, TypeKind, ViaKind,
+    WorkspaceFacts,
 };
 
 /// Canonical type-kind lookup keyed by full path. Built once per
@@ -270,6 +272,7 @@ struct PendingReExport {
     exposed_name: String,
     segments: Vec<String>,
     visibility: String,
+    span: Option<Span>,
 }
 
 impl Ctx {
@@ -310,7 +313,8 @@ impl Ctx {
             Item::Fn(f) => {
                 let name = f.sig.ident.to_string();
                 let visibility = vis_text(&f.vis);
-                let facts = build_fn_facts(&name, visibility, &f.sig, Some(&f.block), &f.attrs);
+                let span = Some(span_of(&self.file, f.span()));
+                let facts = build_fn_facts(&name, visibility, &f.sig, Some(&f.block), &f.attrs, span);
                 let module_path = self.current_module_path();
                 self.ensure_module(&module_path).functions.push(facts);
             }
@@ -329,8 +333,9 @@ impl Ctx {
         }
         let visibility = vis_text(&u.vis);
         let module_path = self.current_module_path();
+        let use_span = span_of(&self.file, u.span());
         let mut leaves: Vec<PendingReExport> = Vec::new();
-        walk_use_tree(&u.tree, &mut Vec::new(), &visibility, &mut leaves);
+        walk_use_tree(&u.tree, &mut Vec::new(), &visibility, Some(&use_span), &mut leaves);
         if !leaves.is_empty() {
             self.pending_re_exports
                 .entry(module_path)
@@ -364,7 +369,8 @@ impl Ctx {
         let type_params = type_params_of(&s.generics);
         let visibility = vis_text(&s.vis);
         let doc = doc_first_line(&s.attrs);
-        let fields = fields_from_struct(&s.fields);
+        let fields = fields_from_struct(&s.fields, &self.file);
+        let span = Some(span_of(&self.file, s.span()));
         let facts = TypeFacts {
             name,
             full_path,
@@ -378,6 +384,7 @@ impl Ctx {
             trait_impls: Vec::new(),
             unsafe_blocks: 0,
             doc_first_line: doc,
+            span,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -395,7 +402,8 @@ impl Ctx {
         let mut fields = Vec::new();
         for variant in &e.variants {
             let var_name = variant.ident.to_string();
-            let inner = fields_from_struct(&variant.fields);
+            let var_span = Some(span_of(&self.file, variant.span()));
+            let inner = fields_from_struct(&variant.fields, &self.file);
             if inner.is_empty() {
                 fields.push(FieldFacts {
                     name: var_name,
@@ -404,6 +412,7 @@ impl Ctx {
                     referenced: vec![],
                     cardinality: vec![],
                     lifetimes: vec![],
+                    span: var_span,
                 });
             } else {
                 for f in inner {
@@ -415,6 +424,7 @@ impl Ctx {
             }
         }
 
+        let span = Some(span_of(&self.file, e.span()));
         let facts = TypeFacts {
             name,
             full_path,
@@ -428,6 +438,7 @@ impl Ctx {
             trait_impls: Vec::new(),
             unsafe_blocks: 0,
             doc_first_line: doc,
+            span,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -441,7 +452,13 @@ impl Ctx {
         let type_params = type_params_of(&u.generics);
         let visibility = vis_text(&u.vis);
         let doc = doc_first_line(&u.attrs);
-        let fields: Vec<FieldFacts> = u.fields.named.iter().map(|f| field_from_named(f)).collect();
+        let fields: Vec<FieldFacts> = u
+            .fields
+            .named
+            .iter()
+            .map(|f| field_from_named(f, &self.file))
+            .collect();
+        let span = Some(span_of(&self.file, u.span()));
         let facts = TypeFacts {
             name,
             full_path,
@@ -455,6 +472,7 @@ impl Ctx {
             trait_impls: Vec::new(),
             unsafe_blocks: 0,
             doc_first_line: doc,
+            span,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -475,10 +493,12 @@ impl Ctx {
                 let name = f.sig.ident.to_string();
                 let visibility = "pub".to_string();
                 let block_ref = f.default.as_ref();
-                let facts = build_fn_facts(&name, visibility, &f.sig, block_ref, &f.attrs);
+                let span = Some(span_of(&self.file, f.span()));
+                let facts = build_fn_facts(&name, visibility, &f.sig, block_ref, &f.attrs, span);
                 methods.push(facts);
             }
         }
+        let span = Some(span_of(&self.file, t.span()));
         let facts = TypeFacts {
             name,
             full_path,
@@ -492,6 +512,7 @@ impl Ctx {
             trait_impls: Vec::new(),
             unsafe_blocks: 0,
             doc_first_line: doc,
+            span,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -506,6 +527,7 @@ impl Ctx {
         let doc = doc_first_line(&t.attrs);
         let (ownership, refs, lifetimes) = classify(&t.ty);
         let (referenced, cardinality) = split_refs(refs);
+        let item_span = Some(span_of(&self.file, t.span()));
         let fields = vec![FieldFacts {
             name: "<alias>".to_string(),
             ty_text: type_text(&t.ty),
@@ -513,6 +535,7 @@ impl Ctx {
             referenced,
             cardinality,
             lifetimes,
+            span: item_span.clone(),
         }];
         let facts = TypeFacts {
             name,
@@ -527,6 +550,7 @@ impl Ctx {
             trait_impls: Vec::new(),
             unsafe_blocks: 0,
             doc_first_line: doc,
+            span: item_span,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -554,7 +578,8 @@ impl Ctx {
             if let ImplItem::Fn(f) = item {
                 let name = f.sig.ident.to_string();
                 let vis = vis_text(&f.vis);
-                let facts = build_fn_facts(&name, vis, &f.sig, Some(&f.block), &f.attrs);
+                let span = Some(span_of(&self.file, f.span()));
+                let facts = build_fn_facts(&name, vis, &f.sig, Some(&f.block), &f.attrs, span);
                 unsafe_blocks += facts.unsafe_blocks;
                 methods.push(facts);
             }
@@ -600,6 +625,7 @@ impl Ctx {
             trait_impls: trait_name.clone().into_iter().collect(),
             unsafe_blocks,
             doc_first_line: None,
+            span: None,
         };
         let module_path_owned = module_path;
         self.ensure_module(&module_path_owned).types.push(stub);
@@ -668,9 +694,9 @@ fn doc_first_line(attrs: &[syn::Attribute]) -> Option<String> {
     None
 }
 
-fn fields_from_struct(fields: &syn::Fields) -> Vec<FieldFacts> {
+fn fields_from_struct(fields: &syn::Fields, file: &str) -> Vec<FieldFacts> {
     match fields {
-        syn::Fields::Named(named) => named.named.iter().map(field_from_named).collect(),
+        syn::Fields::Named(named) => named.named.iter().map(|f| field_from_named(f, file)).collect(),
         syn::Fields::Unnamed(unn) => unn
             .unnamed
             .iter()
@@ -685,6 +711,7 @@ fn fields_from_struct(fields: &syn::Fields) -> Vec<FieldFacts> {
                     referenced,
                     cardinality,
                     lifetimes,
+                    span: Some(span_of(file, f.span())),
                 }
             })
             .collect(),
@@ -692,7 +719,7 @@ fn fields_from_struct(fields: &syn::Fields) -> Vec<FieldFacts> {
     }
 }
 
-fn field_from_named(f: &syn::Field) -> FieldFacts {
+fn field_from_named(f: &syn::Field, file: &str) -> FieldFacts {
     let name = f
         .ident
         .as_ref()
@@ -707,6 +734,7 @@ fn field_from_named(f: &syn::Field) -> FieldFacts {
         referenced,
         cardinality,
         lifetimes,
+        span: Some(span_of(file, f.span())),
     }
 }
 
@@ -724,12 +752,27 @@ fn split_refs(
     (names, cards)
 }
 
+/// Build a [`Span`] from a [`proc_macro2::Span`] and the file path the
+/// item was parsed from. proc_macro2's span carries line+column data
+/// when the "span-locations" feature is enabled (see Cargo.toml);
+/// without that feature this would return (0, 0) for every item.
+fn span_of(file: &str, s: proc_macro2::Span) -> Span {
+    let start = s.start();
+    let end = s.end();
+    Span {
+        file: file.to_string(),
+        start_line: start.line as u32,
+        end_line: end.line as u32,
+    }
+}
+
 fn build_fn_facts(
     name: &str,
     visibility: String,
     sig: &syn::Signature,
     body: Option<&syn::Block>,
     attrs: &[syn::Attribute],
+    span: Option<Span>,
 ) -> FnFacts {
     let mut self_kind = SelfKind::None;
     let mut params = Vec::new();
@@ -811,6 +854,7 @@ fn build_fn_facts(
         lifetime_flows_through,
         unsafe_blocks,
         doc_first_line: doc_first_line(attrs),
+        span,
     }
 }
 
@@ -891,12 +935,13 @@ fn walk_use_tree(
     tree: &UseTree,
     prefix: &mut Vec<String>,
     visibility: &str,
+    use_span: Option<&Span>,
     out: &mut Vec<PendingReExport>,
 ) {
     match tree {
         UseTree::Path(p) => {
             prefix.push(p.ident.to_string());
-            walk_use_tree(&p.tree, prefix, visibility, out);
+            walk_use_tree(&p.tree, prefix, visibility, use_span, out);
             prefix.pop();
         }
         UseTree::Name(n) => {
@@ -907,6 +952,7 @@ fn walk_use_tree(
                 exposed_name: name,
                 segments: segs,
                 visibility: visibility.to_string(),
+                span: use_span.cloned(),
             });
         }
         UseTree::Rename(r) => {
@@ -917,11 +963,12 @@ fn walk_use_tree(
                 exposed_name: r.rename.to_string(),
                 segments: segs,
                 visibility: visibility.to_string(),
+                span: use_span.cloned(),
             });
         }
         UseTree::Group(g) => {
             for it in &g.items {
-                walk_use_tree(it, prefix, visibility, out);
+                walk_use_tree(it, prefix, visibility, use_span, out);
             }
         }
         UseTree::Glob(_) => {
@@ -1026,6 +1073,7 @@ fn resolve_re_export(
             visibility: p.visibility.clone(),
             kind: ReExportKind::Type,
             target_kind,
+            span: p.span.clone(),
         });
     }
     if let Some(target_path) = try_resolve(fn_registry) {
@@ -1035,6 +1083,7 @@ fn resolve_re_export(
             visibility: p.visibility.clone(),
             kind: ReExportKind::Function,
             target_kind: None,
+            span: p.span.clone(),
         });
     }
     None
@@ -1267,7 +1316,7 @@ mod tests {
         }
         let visibility = vis_text(&u.vis);
         let mut out = Vec::new();
-        walk_use_tree(&u.tree, &mut Vec::new(), &visibility, &mut out);
+        walk_use_tree(&u.tree, &mut Vec::new(), &visibility, None, &mut out);
         out
     }
 
@@ -1391,6 +1440,7 @@ mod tests {
             exposed_name: "Bar".into(),
             segments: vec!["inner".into(), "Bar".into()],
             visibility: "pub".into(),
+            span: None,
         };
         let re =
             resolve_re_export(&pending, &reg, &Registry::new(), &kinds, "c::outer").unwrap();
@@ -1417,6 +1467,7 @@ mod tests {
                 exposed_name: "X".into(),
                 segments: vec!["m".into(), "X".into()],
                 visibility: "pub".into(),
+            span: None,
             };
             let re = resolve_re_export(&pending, &reg, &Registry::new(), &kinds, "c::outer")
                 .expect("should resolve");
@@ -1431,6 +1482,7 @@ mod tests {
             exposed_name: "do_thing".into(),
             segments: vec!["inner".into(), "do_thing".into()],
             visibility: "pub".into(),
+            span: None,
         };
         let re = resolve_re_export(
             &pending,
@@ -1453,6 +1505,7 @@ mod tests {
             exposed_name: "Unknown".into(),
             segments: vec!["external".into(), "crate_x".into(), "Unknown".into()],
             visibility: "pub".into(),
+            span: None,
         };
         assert!(
             resolve_re_export(
@@ -1480,6 +1533,7 @@ mod tests {
             exposed_name: "Foo".into(),
             segments: vec!["vm".into(), "wasm".into(), "Foo".into()],
             visibility: "pub".into(),
+            span: None,
         };
         let re =
             resolve_re_export(&pending, &reg, &Registry::new(), &kinds, "c::outer").unwrap();
@@ -1500,6 +1554,7 @@ mod tests {
             exposed_name: "Foo".into(),
             segments: vec!["crate".into(), "vm".into(), "wasm".into(), "Foo".into()],
             visibility: "pub".into(),
+            span: None,
         };
         let re = resolve_re_export(
             &pending,
@@ -1523,6 +1578,7 @@ mod tests {
             exposed_name: "Foo".into(),
             segments: vec!["Foo".into()],
             visibility: "pub".into(),
+            span: None,
         };
         let re = resolve_re_export(
             &pending,
@@ -1547,6 +1603,7 @@ mod tests {
             exposed_name: "Bar".into(),
             segments: vec!["inner".into(), "Bar".into()],
             visibility: "pub".into(),
+            span: None,
         };
         let re = resolve_re_export(
             &pending,

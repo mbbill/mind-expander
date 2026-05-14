@@ -78,6 +78,123 @@
         font-size: 15px;
         line-height: 1;
       }
+      /* Floating, draggable, resizable code panel. Header drags. The
+         bottom-right corner resizes. Content area is a monospace pre
+         with line gutters; the highlighted span paints a soft yellow
+         background, and clicking any line fires the host's
+         line-navigate callback. */
+      #code-panel {
+        position: fixed;
+        z-index: 200;
+        display: flex;
+        flex-direction: column;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+        overflow: hidden;
+        min-width: 280px;
+        min-height: 180px;
+      }
+      #code-panel[hidden] {
+        display: none;
+      }
+      .code-panel-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        background: #f8fafc;
+        border-bottom: 1px solid #e2e8f0;
+        cursor: move;
+        user-select: none;
+        flex: 0 0 auto;
+      }
+      .code-panel-title {
+        flex: 1;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: #475569;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        direction: rtl; /* show end of path when truncated */
+        text-align: left;
+      }
+      .code-panel-close {
+        flex: 0 0 auto;
+        background: transparent;
+        border: none;
+        font-size: 20px;
+        line-height: 1;
+        color: #64748b;
+        cursor: pointer;
+        padding: 0 4px;
+      }
+      .code-panel-close:hover {
+        color: #0f172a;
+      }
+      .code-panel-body {
+        flex: 1 1 auto;
+        margin: 0;
+        padding: 8px 0;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.45;
+        background: #ffffff;
+        color: #1e293b;
+        cursor: default;
+      }
+      .code-panel-line {
+        display: flex;
+        gap: 12px;
+        padding: 0 12px;
+        white-space: pre;
+      }
+      .code-panel-line:hover {
+        background: #f1f5f9;
+      }
+      .code-panel-line.highlight {
+        background: #fef9c3; /* soft yellow */
+      }
+      .code-panel-line.highlight:hover {
+        background: #fef08a;
+      }
+      .code-panel-gutter {
+        flex: 0 0 auto;
+        width: 3em;
+        text-align: right;
+        color: #94a3b8;
+        user-select: none;
+      }
+      .code-panel-text {
+        flex: 1 1 auto;
+        white-space: pre;
+      }
+      .code-panel-loading,
+      .code-panel-error {
+        padding: 16px;
+        color: #64748b;
+        font-style: italic;
+      }
+      .code-panel-error {
+        color: #b91c1c;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        white-space: pre-wrap;
+      }
+      /* Bottom-right resize handle: a subtle diagonal grip area. */
+      .code-panel-resize {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        width: 14px;
+        height: 14px;
+        cursor: nwse-resize;
+        background:
+          linear-gradient(135deg, transparent 50%, #cbd5e1 50%, #cbd5e1 60%, transparent 60%, transparent 75%, #cbd5e1 75%, #cbd5e1 85%, transparent 85%);
+      }
       #canvas-scroll::-webkit-scrollbar {
         display: none;
       }
@@ -875,6 +992,17 @@
         <span class="recenter-icon" aria-hidden="true">⟲</span>
         <span>Back to content</span>
       </button>
+      <!-- Floating, draggable code panel. Cmd/Ctrl+click on a diagram
+           element opens it to that element's source span; the host
+           wires showing/hiding and click-to-navigate in main.ts. -->
+      <div id="code-panel" hidden role="dialog" aria-label="Source code">
+        <div class="code-panel-header">
+          <span class="code-panel-title">source</span>
+          <button class="code-panel-close" type="button" aria-label="Close code panel">×</button>
+        </div>
+        <pre class="code-panel-body"></pre>
+        <div class="code-panel-resize" aria-hidden="true"></div>
+      </div>
     </main>
     <!-- Hidden SVG defs reachable from any inline SVG on the page —
          shared marker for the legend arrows. Same shape as the graph's

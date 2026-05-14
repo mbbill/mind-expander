@@ -15,6 +15,18 @@ export type TypeKind =
    *  inserted by `module_tree.ts`. The extractor never emits this. */
   | 'function_group';
 
+/** Source-file span for an item — emitted by the extractor when it has
+ *  the information. The viewer's code panel uses this to scroll to and
+ *  highlight the lines that define the item. All optional so older
+ *  facts files (without span info) still load. */
+export interface Span {
+  readonly file: string;
+  /** 1-indexed, inclusive. */
+  readonly start_line: number;
+  /** 1-indexed, inclusive. */
+  readonly end_line: number;
+}
+
 export type Ownership =
   | 'owned'
   | 'borrow_immut'
@@ -27,6 +39,7 @@ export interface FieldFacts {
   readonly name: string;
   readonly ty_text: string;
   readonly ownership: Ownership;
+  readonly span?: Span;
 }
 
 export interface TypeFacts {
@@ -42,6 +55,7 @@ export interface TypeFacts {
    *  impls. Optional — older facts files won't have it, in which case
    *  the viewer treats the type as having no method visualisation. */
   readonly methods?: readonly FnFacts[];
+  readonly span?: Span;
 }
 
 export interface FnFacts {
@@ -63,6 +77,7 @@ export interface FnFacts {
   readonly is_unsafe?: boolean;
   readonly is_const?: boolean;
   readonly is_async?: boolean;
+  readonly span?: Span;
 }
 
 /**
@@ -87,6 +102,7 @@ export interface ReExport {
    *  ghost synthesiser falls back to `'struct'` so the row still
    *  renders. */
   readonly target_kind?: TypeKind;
+  readonly span?: Span;
 }
 
 export interface ModuleFacts {

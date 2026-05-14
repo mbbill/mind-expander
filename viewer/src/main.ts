@@ -18,6 +18,8 @@ import {
 } from './analysis/ownership.ts';
 import { FactsLoadError, loadFacts } from './data/load.ts';
 import type { Facts } from './data/schema.ts';
+import { buildSpanIndex, findElementAtLine } from './data/spans.ts';
+import { createCodePanel } from './view/code_panel.ts';
 import { signatureExpansionId } from './layout/geometry.ts';
 import { buildLayout } from './layout/pipeline.ts';
 import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
@@ -55,7 +57,11 @@ import {
 } from './view/type_expansion.ts';
 import { attachZoom } from './view/zoom.ts';
 
-const FACTS_URL = '/data/facts.json';
+// Single source of truth for facts: the Rust backend's `/api/facts`
+// endpoint. In production, the same binary serves both this and the
+// viewer bundle. In dev, the Vite config proxies this route to a
+// locally-running `mind-expander view` process.
+const FACTS_URL = '/api/facts';
 const SCALE_MAX = 1.5;
 // Padding factor so content doesn't kiss the viewport edge at the fit scale.
 const FIT_PADDING = 0.95;
@@ -150,6 +156,30 @@ async function main(): Promise<void> {
     showError('facts.json contains no crates');
     return;
   }
+
+  // Source-span indexes for the code panel. The forward index maps an
+  // element id (type fullPath, type::field, type::method, fn fullPath)
+  // to its span; the byFile index supports reverse-navigation from a
+  // clicked line back to the element it defines. When the extractor
+  // doesn't emit per-item spans, the forward index falls back to the
+  // module file (line 1) so Cmd+click still opens the right file.
+  const spanIndex = buildSpanIndex(facts);
+  const codePanel = createCodePanel({
+    onLineNavigate: (file, line) => {
+      const elementId = findElementAtLine(spanIndex, file, line);
+      if (elementId === null) return;
+      // Member ids look like `crate::mod::Type::name`; for navigation
+      // we want the parent type. If the id resolves directly to a type
+      // (no `::` after the type position), use it as-is.
+      const typeId = parentTypeId(elementId, spanIndex);
+      currentCtx?.navigateToType(typeId);
+    },
+  });
+  const openCodeFor = (id: string): void => {
+    const span = spanIndex.forward.get(id);
+    if (span === undefined) return;
+    codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
+  };
 
   // Single canvas-backed measurer for the whole session — one canvas
   // element, one font binding, results memoized per string. Field names
@@ -746,6 +776,7 @@ async function main(): Promise<void> {
           // teleporting.
           layers.panYToTop(m.y, 0, true);
         },
+        onShowCode: (id) => openCodeFor(id),
       };
       renderTree(layers, lastLayout, treeOpts);
       // Size the scrollable canvas-content area to match the diagram's
@@ -1135,6 +1166,17 @@ async function main(): Promise<void> {
   };
 
   setupWorkspace();
+}
+
+/** Member ids are `<typeFullPath>::<memberName>`. Trim the trailing
+ *  segment if the forward index has an entry for it (i.e. the prefix
+ *  IS a type). Otherwise return the id unchanged — it's likely already
+ *  a type or a free function. */
+function parentTypeId(id: string, index: ReturnType<typeof buildSpanIndex>): string {
+  const lastSep = id.lastIndexOf('::');
+  if (lastSep < 0) return id;
+  const prefix = id.slice(0, lastSep);
+  return index.forward.has(prefix) ? prefix : id;
 }
 
 async function tryLoadFacts(): Promise<Facts | null> {

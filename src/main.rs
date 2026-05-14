@@ -11,6 +11,7 @@ mod model;
 mod ownership;
 mod print;
 mod resolve;
+mod server;
 mod survey;
 mod unified;
 
@@ -100,6 +101,21 @@ enum Cmd {
         #[arg(long)]
         from: Option<PathBuf>,
     },
+    /// Extract facts and serve the interactive viewer in your browser.
+    /// One-stop command for end users: no separate extract step, no
+    /// Node toolchain needed. Workspace path is the same `--root` as
+    /// other subcommands, but accepted positionally here for ergonomics.
+    View {
+        /// Workspace root to extract and visualize. Defaults to the
+        /// global `--root` if omitted.
+        workspace: Option<PathBuf>,
+        /// Port to bind the local server to.
+        #[arg(long, default_value_t = 5180)]
+        port: u16,
+        /// Don't try to open the browser automatically.
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Print a compact, label-free survey: counters, module table,
     /// rankings, isolated types, lifetime-declaring types, unsafe locations,
     /// trait-impls. Designed for fast orientation without reading source.
@@ -181,6 +197,14 @@ fn main() -> anyhow::Result<()> {
                 extract::extract_workspace(&cli.root)?
             };
             ownership::print_tree(&facts, krate.as_deref(), include_variants);
+        }
+        Cmd::View {
+            workspace,
+            port,
+            no_open,
+        } => {
+            let path = workspace.unwrap_or(cli.root);
+            server::run(&path, port, !no_open)?;
         }
         Cmd::Survey {
             krate,
