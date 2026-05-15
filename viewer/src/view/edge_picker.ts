@@ -60,7 +60,16 @@ export interface EdgePickerShowArgs {
    *  target row). */
   readonly direction: EdgeDirection;
   /** Picked: the entry the user clicked. Caller toggles its edge. */
-  readonly onPick: (entry: EdgeEntry) => void;
+  /** Called when the user picks one entry. `clickAnchor` is the
+   *  cursor position at click time so the host can land any
+   *  follow-up navigation under the cursor — much less disorienting
+   *  than landing it at where the picker first opened (the cursor
+   *  has by then moved). For keyboard activation, the row's centre
+   *  is used as a stand-in. */
+  readonly onPick: (
+    entry: EdgeEntry,
+    clickAnchor: { readonly x: number; readonly y: number },
+  ) => void;
   /** Bulk: reveal every entry's edge at once. Bound to the panel's
    *  "show all" toolbar button. The host decides what "show" means
    *  (typically: set the visibility key for every entry that isn't
@@ -198,15 +207,18 @@ export function createEdgePicker(): EdgePicker {
       main.textContent = entry.label;
       row.appendChild(main);
 
-      const onActivate = (): void => {
-        args.onPick(entry);
+      const onActivate = (clickAnchor: { x: number; y: number }): void => {
+        args.onPick(entry, clickAnchor);
         hide();
       };
-      row.addEventListener('click', onActivate);
+      row.addEventListener('click', (e) => {
+        onActivate({ x: e.clientX, y: e.clientY });
+      });
       row.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          onActivate();
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          onActivate({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
         }
       });
       panel.appendChild(row);

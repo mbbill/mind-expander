@@ -914,7 +914,7 @@ async function main(): Promise<void> {
       const edges = collectCallEdges(direction, anchorFullPath, calls);
       if (edges.length === 0) return;
       if (edges.length === 1 && edges[0] !== undefined) {
-        toggleSpecificEdge(direction, anchorFullPath, edges[0].otherFullPath);
+        toggleSpecificEdge(direction, anchorFullPath, edges[0].otherFullPath, anchor);
         return;
       }
       // Bold currently-active edges so the user can see state on open.
@@ -934,8 +934,13 @@ async function main(): Promise<void> {
         anchorX: anchor.x,
         anchorY: anchor.y,
         direction,
-        onPick: (entry) => {
-          toggleSpecificEdge(direction, anchorFullPath, entry.otherFullPath);
+        onPick: (entry, clickAnchor) => {
+          // Use the real click coordinates (the row the user just
+          // clicked), not the picker's opening anchor. The cursor has
+          // moved by the time the user picks an entry, and landing
+          // navigation at the original anchor would jump the diagram
+          // a long way from where the user is looking.
+          toggleSpecificEdge(direction, anchorFullPath, entry.otherFullPath, clickAnchor);
         },
         // Bulk "show all": flip on every entry that isn't already
         // revealed. Uses revealSpecificEdge (the non-drawing variant)
@@ -1165,17 +1170,34 @@ async function main(): Promise<void> {
       direction: 'outgoing' | 'incoming',
       anchorFullPath: string,
       otherFullPath: string,
+      clickAnchor?: { readonly x: number; readonly y: number },
     ): void => {
       const callerFullPath = direction === 'outgoing' ? anchorFullPath : otherFullPath;
       const calleeFullPath = direction === 'outgoing' ? otherFullPath : anchorFullPath;
       const key = specificCallArrowKey(callerFullPath, calleeFullPath);
+      const wasShown = specificCallArrowsShown.has(key);
       withAnchorPin(anchorFullPath, () => {
-        if (specificCallArrowsShown.has(key)) {
+        if (wasShown) {
           specificCallArrowsShown.delete(key);
         } else {
           revealSpecificEdge(direction, anchorFullPath, otherFullPath);
         }
       });
+      // When the user reveals a single arrow with a known click
+      // anchor (the `→` glyph or picker row they clicked), pan so the
+      // far endpoint lands AT that click anchor — same convention as
+      // clicking the arrow itself. Skipping the focus-point heuristic
+      // is intentional: that variant always tries to centre the
+      // target in the uncovered viewport, which produces a big
+      // viewport jolt when the target is far from the caller.
+      // Toggling an arrow OFF leaves the viewport alone.
+      if (!wasShown && clickAnchor !== undefined) {
+        const arrow = findCallArrow(lastLayout, callerFullPath, calleeFullPath);
+        if (arrow !== null) {
+          const endpoint: ArrowEndpoint = direction === 'outgoing' ? 'target' : 'source';
+          navigateToArrowEndpoint(arrow, endpoint, clickAnchor);
+        }
+      }
     };
 
     const navigateToType = (
@@ -1327,6 +1349,30 @@ function pickFocusScreenPoint(
   }
 
   return { x, y };
+}
+
+/** Find a call arrow in `layout.arrows` whose endpoints are the given
+ *  caller and callee full paths (e.g. `crate::mod::Type::method`).
+ *  Returns null if no such arrow is currently routed — happens when
+ *  the callee couldn't be resolved (cross-crate, external) or the
+ *  caller's row isn't in view. Caller decides what to do with null. */
+function findCallArrow(
+  layout: Layout | null,
+  callerFullPath: string,
+  calleeFullPath: string,
+): Layout['arrows'][number] | null {
+  if (layout === null) return null;
+  for (const a of layout.arrows) {
+    if (a.kind !== 'call') continue;
+    const caller = `${a.fromTypeId}::${a.fromFieldName}`;
+    if (caller !== callerFullPath) continue;
+    if (a.toFieldName !== undefined) {
+      if (`${a.toTypeId}::${a.toFieldName}` === calleeFullPath) return a;
+    } else if (a.toTypeId === calleeFullPath) {
+      return a;
+    }
+  }
+  return null;
 }
 
 async function tryLoadFacts(): Promise<Facts | null> {
