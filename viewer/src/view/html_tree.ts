@@ -22,27 +22,6 @@ import type { Layout } from '../analysis/layout_model.ts';
 // halo is sized small enough (see index.html) to stay inside its row.
 const STICKY_STEP = ROW_H;
 
-// Pastel palette duplicated from tree.ts so we can colour chips
-// identically. Each ancestor name hashes into one slot; the SVG
-// renderer uses the same function so colours match across the two.
-const SEGMENT_PALETTE: readonly string[] = [
-  '#99f6e4',
-  '#bae6fd',
-  '#c7d2fe',
-  '#ddd6fe',
-  '#fbcfe8',
-  '#a7f3d0',
-  '#fde68a',
-  '#fecdd3',
-];
-
-function colorForSegment(name: string): string {
-  let h = 5381;
-  for (let i = 0; i < name.length; i++) h = ((h << 5) + h) ^ name.charCodeAt(i);
-  const idx = (h >>> 0) % SEGMENT_PALETTE.length;
-  return SEGMENT_PALETTE[idx] ?? SEGMENT_PALETTE[0] ?? '#e2e8f0';
-}
-
 export interface HtmlModuleTreeOptions {
   readonly onToggle: (id: string) => void;
   readonly onScrollToModule: (moduleId: string) => void;
@@ -98,6 +77,19 @@ export function renderHtmlModuleTree(
     // siblings stay flush and the tree visibly nests. Depth-0 sits at
     // the root container's left edge.
     group.style.left = m.modDepth === 0 ? '0' : `${INDENT_PX * k}px`;
+    // VS Code-style indent guide. When this module is expanded we
+    // draw a thin vertical line from below its chevron down through
+    // the entire descendant block (the group's height already covers
+    // it). CSS reads these custom properties on the `::before` pseudo
+    // so the colour/width live in one place. Pixel values scale with
+    // the zoom factor so the guide aligns with the chevron at any k.
+    if (m.expanded && m.hasChildren) {
+      group.classList.add('is-expanded');
+      // Chevron center: half its rendered width (14*k); the guide
+      // drops 2px below the row to clear the chevron glyph.
+      group.style.setProperty('--guide-x', `${7 * k}px`);
+      group.style.setProperty('--guide-top', `${ROW_H * k + 2}px`);
+    }
 
     group.appendChild(renderHeader(m, k, scrollEl, opts));
 
@@ -174,6 +166,38 @@ function installScrollVisibility(
       if (Math.abs(cur - next) > 0.01) {
         entry.el.style.opacity = next >= 0.999 ? '' : String(next);
       }
+      // Mirror the same fade onto the module-group so its indent-guide
+      // pseudo-element dissolves in lockstep with the row text.
+      // ALSO clamp the guide's vertical start so it doesn't extend
+      // into the sticky-stack area: when this header sticks at
+      // depth * STICKY_STEP, the line should begin just below the
+      // sticky row in viewport-space — not at its natural pre-scroll
+      // position which is now far above the visible area. Without
+      // this clamp the line draws straight through the sticky headers
+      // above (cf. screenshot).
+      const group = entry.el.parentElement;
+      if (group !== null) {
+        const curGuide = group.style.getPropertyValue('--guide-opacity');
+        const curGuideN = curGuide === '' ? 1 : Number(curGuide);
+        if (Math.abs(curGuideN - next) > 0.01) {
+          if (next >= 0.999) {
+            group.style.removeProperty('--guide-opacity');
+          } else {
+            group.style.setProperty('--guide-opacity', String(next));
+          }
+        }
+        if (group.classList.contains('is-expanded')) {
+          const groupViewportTop = group.getBoundingClientRect().top - containerTop;
+          const naturalGuideTop = ROW_H * k + 2; // matches the value set at render time
+          const stickyBottomViewport = (entry.depth * STICKY_STEP + ROW_H) * k + 2;
+          const naturalGuideViewport = groupViewportTop + naturalGuideTop;
+          const clampedViewport = Math.max(naturalGuideViewport, stickyBottomViewport);
+          const newGuideTop = clampedViewport - groupViewportTop;
+          const cur = group.style.getPropertyValue('--guide-top');
+          const target = `${newGuideTop}px`;
+          if (cur !== target) group.style.setProperty('--guide-top', target);
+        }
+      }
       // Disable pointer events on fully faded rows so the click handler
       // doesn't fire on something the user can't see.
       const wantEvents = next > 0.05;
@@ -236,7 +260,15 @@ function renderHeader(
     // than a filled triangle.
     chevron.textContent = '›';
     chevron.classList.add(m.expanded ? 'collapse' : 'expand');
-    if (m.expanded) chevron.style.transform = 'rotate(90deg)';
+    if (m.expanded) {
+      // Rotating `›` 90° leaves the visible tip slightly left of the
+      // collapsed-chevron column because `›` isn't centred in its
+      // em-box. A small post-rotation X-shift brings the expanded
+      // glyph's tip into the same vertical line as `>` and the indent
+      // guide below. Translate is written LEFT of `rotate` so CSS
+      // applies it in the post-rotation (screen) frame.
+      chevron.style.transform = `translateX(${2 * k}px) rotate(90deg)`;
+    }
   } else {
     chevron.textContent = '›';
     chevron.classList.add('empty');
@@ -253,13 +285,10 @@ function renderHeader(
   chip.className = 'module-chip';
   chip.textContent = moduleLeafLabel(m.id);
   chip.style.fontSize = `${(m.modDepth === 0 ? 15 : 14) * k}px`;
-  chip.style.padding = `0 ${6 * k}px`;
-  chip.style.borderRadius = `${4 * k}px`;
-  if (m.modDepth !== 0) {
-    chip.style.background = m.leafBg.isParent
-      ? colorForSegment(m.leafBg.name)
-      : '#eaeef4';
-  }
+  // No background or border on the chip — legibility comes from the
+  // text-shadow halo on `.module-header`. If we want to bring chips
+  // back later, restore the background via CSS rather than JS so
+  // styling stays in one file.
   header.appendChild(chip);
 
   header.addEventListener('click', (event) => {

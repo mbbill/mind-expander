@@ -383,6 +383,23 @@
         position: absolute;
         left: 0;
       }
+      /* Indent guide for expanded modules: a thin vertical line that
+         drops from the chevron through the entire descendant block,
+         ending just before the next sibling at the same depth. The
+         group's own bottom already lands there, so the line just runs
+         to `bottom: 0`. Custom properties (set inline per row, scaled
+         with zoom) place the line on the chevron's centerline. */
+      #html-modules .module-group.is-expanded::before {
+        content: '';
+        position: absolute;
+        left: var(--guide-x, 7px);
+        top: var(--guide-top, 22px);
+        bottom: 0;
+        width: 1px;
+        background: #cbd5e1;
+        pointer-events: none;
+        opacity: var(--guide-opacity, 1);
+      }
       #html-modules .module-header {
         position: sticky;
         /* Background lives on .module-header-bg (a wider child) so the
@@ -399,6 +416,15 @@
            at font-size 15 while the canvas measurer uses 14. */
         overflow: visible;
         white-space: nowrap;
+        /* Text halo: a white outline behind every glyph so the labels
+           stay legible when arrows or canvas content pan past behind
+           the (sometimes transparent) module-header background. Same
+           role as the `paint-order: stroke` halo on SVG text. */
+        text-shadow:
+          0 0 3px #ffffff,
+          0 0 3px #ffffff,
+          0 0 2px #ffffff,
+          0 0 2px #ffffff;
       }
       #html-modules .module-header.crate-tier {
         /* Softer than full bold so the crate row reads as a section
@@ -427,35 +453,12 @@
       #html-modules .module-chip {
         display: inline-flex;
         align-items: center;
-        border: 1px solid #cbd5e1;
-        border-radius: 4px;
-        padding: 0 6px;
-        box-sizing: border-box;
+        /* No background or border — legibility comes from the text
+           halo on `.module-header`. Re-enable a chip backing here if
+           the halo proves too weak over dense diagram areas. */
         color: #1e293b;
-        /* Never wrap or shrink the chip text. The header has a fixed
-           width (from the layout's `hitWidth`), and if flex chose to
-           shrink the chip the long crate names like "sf-nano-bare-smoke"
-           would break onto two lines and overflow the row height. */
         white-space: nowrap;
         flex: 0 0 auto;
-      }
-      #html-modules .module-header.crate-tier .module-chip {
-        background: transparent !important;
-        border: none;
-        padding: 0;
-      }
-      /* Sub-module chips have colored backgrounds and a border, so they
-         read cleanly without a text halo. A halo would bleed past the
-         chip border onto the row above when sticky rows stack flush
-         and would look like an overlap. */
-      /* Crate-tier text has NO chip background — it floats over the
-         band tint — so it does need a halo for readability. */
-      #html-modules .module-header.crate-tier .module-chip {
-        text-shadow:
-          0 0 4px #ffffff,
-          0 0 4px #ffffff,
-          0 0 4px #ffffff,
-          0 0 4px #ffffff;
       }
       #tree.viewport-dragging,
       #tree.viewport-dragging:active {
