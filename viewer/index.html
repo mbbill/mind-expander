@@ -117,9 +117,96 @@
         color: #475569;
         white-space: nowrap;
         overflow: hidden;
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        min-width: 0;
+        cursor: default;
+      }
+      .code-panel-crumb {
+        background: transparent;
+        border: none;
+        padding: 1px 4px;
+        margin: 0;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+        border-radius: 3px;
+        white-space: nowrap;
+        flex-shrink: 1;
+        min-width: 0;
+        overflow: hidden;
         text-overflow: ellipsis;
-        direction: rtl; /* show end of path when truncated */
-        text-align: left;
+      }
+      .code-panel-crumb:hover {
+        background: #e2e8f0;
+      }
+      .code-panel-crumb.is-file {
+        color: #1e293b;
+        cursor: default;
+      }
+      .code-panel-crumb.is-file:hover {
+        background: transparent;
+      }
+      .code-panel-crumb-sep {
+        color: #94a3b8;
+        flex: 0 0 auto;
+        padding: 0 2px;
+      }
+      /* Floating breadcrumb popup: list of folders + files inside the
+         clicked segment. Lives in document.body so it can overflow the
+         panel boundaries when needed. */
+      .code-panel-breadcrumb-popup {
+        position: fixed;
+        z-index: 2000;
+        min-width: 180px;
+        max-height: 60vh;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+        padding: 4px 0;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: #1e293b;
+      }
+      .code-panel-breadcrumb-popup-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .code-panel-breadcrumb-popup-row:hover {
+        background: #f1f5f9;
+      }
+      .code-panel-breadcrumb-popup-row.is-current {
+        background: #ede9fe;
+      }
+      /* Tree chevron: same VS Code-style `›` glyph the left module
+         tree uses, rotated 90° when the folder is expanded. Files get
+         the slot but render no glyph so all rows align. */
+      .code-panel-breadcrumb-popup-chevron {
+        display: inline-block;
+        flex: 0 0 12px;
+        width: 12px;
+        text-align: center;
+        color: #94a3b8;
+        font-weight: 600;
+        transition: transform 80ms ease;
+      }
+      .code-panel-breadcrumb-popup-chevron.open {
+        transform: rotate(90deg);
+      }
+      .code-panel-breadcrumb-popup-chevron.is-file {
+        color: transparent;
+      }
+      .code-panel-breadcrumb-popup-empty {
+        padding: 6px 10px;
+        color: #94a3b8;
+        font-style: italic;
       }
       .code-panel-close {
         flex: 0 0 auto;

@@ -5,6 +5,12 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-rust';
 import 'prism-themes/themes/prism-one-light.css';
 
+import {
+  type FileTree,
+  childrenOf,
+  displaySegmentsFor,
+} from '../data/file_tree.ts';
+
 // Floating, draggable code panel.
 //
 // Shows the source for a clicked diagram element — Cmd/Ctrl+click on a
@@ -51,6 +57,16 @@ export interface CodePanelOptions {
    *  from outside). The host uses this to clear the diagram's
    *  selection so the two views stay in sync. */
   readonly onClose?: () => void;
+  /** Fired when the user picks a file from the title-bar breadcrumb
+   *  popup. The host normally responds the same way as a Cmd+click on
+   *  the corresponding module — opening the file AND updating the
+   *  diagram selection. */
+  readonly onShowFile?: (absolutePath: string) => void;
+  /** Directory tree built from the workspace's indexed source files.
+   *  When present, the title bar renders as a clickable breadcrumb;
+   *  segments expose siblings and children via a popup. When omitted,
+   *  the title bar falls back to a plain ellipsised path. */
+  readonly fileTree?: FileTree;
 }
 
 export interface CodePanel {
@@ -143,7 +159,18 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   // Drag the header to move the panel.
   let drag: { readonly id: number; offX: number; offY: number } | null = null;
   headerEl.addEventListener('pointerdown', (e) => {
-    if ((e.target as HTMLElement).closest('.code-panel-close') !== null) return;
+    // Skip interactive children — the drag handler swallows
+    // `pointerdown` (via preventDefault), which would otherwise
+    // suppress the synthesized click on close button and breadcrumb
+    // chips. Any element with its own pointer affordance opts out
+    // here so its native click path stays intact.
+    const target = e.target as HTMLElement;
+    if (
+      target.closest('.code-panel-close') !== null ||
+      target.closest('.code-panel-crumb') !== null
+    ) {
+      return;
+    }
     drag = { id: e.pointerId, offX: e.clientX - state.x, offY: e.clientY - state.y };
     headerEl.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -317,7 +344,7 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
 
   const show = (args: CodePanelShowArgs): void => {
     root.hidden = false;
-    titleEl.textContent = args.file;
+    renderTitle(args.file);
     // Reuse cached text if same file — common when the user clicks
     // multiple items in the same module.
     if (currentFile === args.file && currentFileText !== null) {
@@ -355,8 +382,170 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     const wasOpen = !root.hidden;
     inflight?.abort();
     inflight = null;
+    closePopup();
     root.hidden = true;
     if (wasOpen) opts.onClose?.();
+  };
+
+  // Title-bar rendering. With a file tree the title becomes a VS Code-
+  // style breadcrumb: each segment is a clickable button that opens a
+  // small popup listing the children at that depth (folders first,
+  // files second). Without a tree, fall back to plain text.
+  let popupEl: HTMLDivElement | null = null;
+  const closePopup = (): void => {
+    if (popupEl !== null) {
+      popupEl.remove();
+      popupEl = null;
+      document.removeEventListener('mousedown', onDocMouseDown, true);
+      document.removeEventListener('keydown', onDocKeyDown, true);
+    }
+  };
+  const onDocMouseDown = (e: MouseEvent): void => {
+    if (popupEl === null) return;
+    if (popupEl.contains(e.target as Node)) return;
+    closePopup();
+  };
+  const onDocKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') closePopup();
+  };
+
+  const openPopupAt = (
+    anchor: HTMLElement,
+    dirPath: string,
+    currentChildPath: string | null,
+  ): void => {
+    closePopup();
+    if (opts.fileTree === undefined) return;
+    popupEl = document.createElement('div');
+    popupEl.className = 'code-panel-breadcrumb-popup';
+
+    // Tree expansion state local to this popup. Everything starts
+    // collapsed (matches VS Code's breadcrumb popup behaviour); folder
+    // clicks toggle and re-render. `currentChildPath` is intentionally
+    // ignored here — the user opens what they want to see.
+    const expanded = new Set<string>();
+    void currentChildPath;
+
+    const treeContainer = document.createElement('div');
+    popupEl.appendChild(treeContainer);
+
+    const renderTree = (): void => {
+      treeContainer.replaceChildren();
+      const tree = opts.fileTree;
+      if (tree === undefined) return;
+      const children = childrenOf(tree, dirPath);
+      if (children.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'code-panel-breadcrumb-popup-empty';
+        empty.textContent = '(nothing indexed)';
+        treeContainer.appendChild(empty);
+        return;
+      }
+      const renderLevel = (
+        parent: HTMLElement,
+        nodes: readonly FileTreeChild[],
+        depth: number,
+      ): void => {
+        for (const child of nodes) {
+          const row = document.createElement('div');
+          row.className = 'code-panel-breadcrumb-popup-row';
+          row.style.paddingLeft = `${10 + depth * 14}px`;
+          const chevron = document.createElement('span');
+          chevron.className = 'code-panel-breadcrumb-popup-chevron';
+          if (child.isFile) {
+            chevron.classList.add('is-file');
+          } else {
+            chevron.textContent = '›';
+            if (expanded.has(child.absolutePath)) chevron.classList.add('open');
+          }
+          const label = document.createElement('span');
+          label.textContent = child.name;
+          row.appendChild(chevron);
+          row.appendChild(label);
+          row.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (child.isFile) {
+              closePopup();
+              if (opts.onShowFile !== undefined) {
+                opts.onShowFile(child.absolutePath);
+              } else {
+                show({ file: child.absolutePath, startLine: 1, endLine: 1 });
+              }
+              return;
+            }
+            if (expanded.has(child.absolutePath)) {
+              expanded.delete(child.absolutePath);
+            } else {
+              expanded.add(child.absolutePath);
+            }
+            renderTree();
+          });
+          parent.appendChild(row);
+          if (!child.isFile && expanded.has(child.absolutePath)) {
+            const sub = childrenOf(tree, child.absolutePath);
+            if (sub.length > 0) renderLevel(parent, sub, depth + 1);
+          }
+        }
+      };
+      renderLevel(treeContainer, children, 0);
+    };
+    renderTree();
+
+    document.body.appendChild(popupEl);
+    const rect = anchor.getBoundingClientRect();
+    popupEl.style.left = `${rect.left}px`;
+    popupEl.style.top = `${rect.bottom + 2}px`;
+    // Clamp to viewport.
+    const popupRect = popupEl.getBoundingClientRect();
+    if (popupRect.right > window.innerWidth - 8) {
+      popupEl.style.left = `${Math.max(8, window.innerWidth - popupRect.width - 8)}px`;
+    }
+    if (popupRect.bottom > window.innerHeight - 8) {
+      popupEl.style.top = `${Math.max(8, rect.top - popupRect.height - 2)}px`;
+    }
+    document.addEventListener('mousedown', onDocMouseDown, true);
+    document.addEventListener('keydown', onDocKeyDown, true);
+  };
+
+  type FileTreeChild = ReturnType<typeof childrenOf>[number];
+
+  const renderTitle = (filePath: string): void => {
+    closePopup();
+    if (opts.fileTree === undefined) {
+      titleEl.replaceChildren(document.createTextNode(filePath));
+      titleEl.title = filePath;
+      return;
+    }
+    const segments = displaySegmentsFor(opts.fileTree, filePath);
+    titleEl.replaceChildren();
+    titleEl.title = filePath;
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      if (seg === undefined) continue;
+      if (i > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'code-panel-crumb-sep';
+        sep.textContent = '›';
+        titleEl.appendChild(sep);
+      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'code-panel-crumb';
+      if (seg.isFile) btn.classList.add('is-file');
+      btn.textContent = seg.name;
+      if (!seg.isFile) {
+        // Folder segment: clicking opens a popup of its contents.
+        // The current path's NEXT segment is rendered "highlighted"
+        // in the popup so the user sees where they are.
+        const next = segments[i + 1];
+        const currentChild = next?.cumulativePath ?? null;
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openPopupAt(btn, seg.cumulativePath, currentChild);
+        });
+      }
+      titleEl.appendChild(btn);
+    }
   };
 
   const setHighlight = (startLine: number, endLine: number): void => {

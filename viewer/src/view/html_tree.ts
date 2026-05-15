@@ -46,6 +46,9 @@ function colorForSegment(name: string): string {
 export interface HtmlModuleTreeOptions {
   readonly onToggle: (id: string) => void;
   readonly onScrollToModule: (moduleId: string) => void;
+  /** Cmd/Ctrl+click on a module label → open its source file in the
+   *  code panel. The host looks the file up in the span index. */
+  readonly onShowCode: (id: string) => void;
 }
 
 /** Render the module tree as nested HTML inside `container`. `k` is the
@@ -261,6 +264,10 @@ function renderHeader(
 
   header.addEventListener('click', (event) => {
     event.stopPropagation();
+    if (event.metaKey || event.ctrlKey) {
+      opts.onShowCode(m.id);
+      return;
+    }
     // Module's natural top in canvas-content coords is offset by
     // scrollEl.clientHeight (the TOP_PADDING). If scrollTop is past
     // that point, the module has scrolled into the sticky stack

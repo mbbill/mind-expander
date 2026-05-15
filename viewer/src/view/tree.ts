@@ -299,7 +299,7 @@ export interface TreeRenderOptions {
    *  both share the canonical id. */
   readonly onShowCode: (
     id: string,
-    kind: 'type' | 'field' | 'method' | 'function',
+    kind: 'module' | 'type' | 'field' | 'method' | 'function',
   ) => void;
   /** Click on a type header chevron → toggle expansion. Opening selects
    *  field rows by default and expands callable buckets without selecting
@@ -370,7 +370,13 @@ export interface TreeRenderOptions {
    *  method on the same type can share the canonical id — only one
    *  row should light up. Both null = nothing selected. */
   readonly selectedElementId: string | null;
-  readonly selectedElementKind: 'type' | 'field' | 'method' | 'function' | null;
+  readonly selectedElementKind:
+    | 'module'
+    | 'type'
+    | 'field'
+    | 'method'
+    | 'function'
+    | null;
 }
 
 // Separator for fieldKey. We can't use `::` because both parts may
@@ -390,7 +396,7 @@ let callableDebugHideTimer: number | undefined;
 // matters because Rust allows a field and a method to share a name
 // on the same type — both have the same canonical id; only one row
 // should be highlighted.
-type SelectedKind = 'type' | 'field' | 'method' | 'function';
+type SelectedKind = 'module' | 'type' | 'field' | 'method' | 'function';
 function rowMatchesSelection(
   type: Layout['types'][number],
   row: Layout['types'][number]['fields'][number],
@@ -1170,9 +1176,7 @@ function renderModules(
     .on('click', (event: MouseEvent, d) => {
       event.stopPropagation();
       if (event.metaKey || event.ctrlKey) {
-        // Modules aren't indexed with a span (yet) — pass 'type' as a
-        // benign default so the host's lookup just returns null.
-        opts.onShowCode(d.id, 'type');
+        opts.onShowCode(d.id, 'module');
         return;
       }
       if (d.hasChildren) opts.onToggle(d.id);

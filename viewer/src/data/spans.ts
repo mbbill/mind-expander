@@ -18,8 +18,12 @@ import type { Facts, Span } from './schema.ts';
  *  field and a method on the same type to share a name (`Store::module`
  *  as both a struct field and an `impl fn module(&self)`), so the
  *  `(elementId, kind)` pair is what uniquely identifies an element —
- *  not the id alone. */
-export type ElementKind = 'type' | 'field' | 'method' | 'function';
+ *  not the id alone. `module` covers Cmd+clicking a module label in
+ *  the tree: the span resolves to the module's source file (whatever
+ *  the extractor put in `mod.file`, e.g. `foo.rs` or `foo/mod.rs`),
+ *  with line 1 as a "scroll to top" anchor since the extractor doesn't
+ *  emit a tighter span for the module itself. */
+export type ElementKind = 'module' | 'type' | 'field' | 'method' | 'function';
 
 export interface IndexedSpan {
   readonly elementId: string;
@@ -44,6 +48,11 @@ export interface SpanIndex {
    *  in their owning type. Used by the host to expand the right
    *  container before navigating. */
   readonly containingTypeBoxId: ReadonlyMap<string, ReadonlyMap<ElementKind, string>>;
+  /** Reverse lookup: absolute source-file path → moduleId. Lets the
+   *  code panel's breadcrumb open a file as a module (so the diagram
+   *  side also updates). When multiple modules share a file
+   *  (parent + inline `mod foo`), the first registered wins. */
+  readonly moduleByFile: ReadonlyMap<string, string>;
 }
 
 /** Convenience: fetch the span for `(id, kind)`. Returns null when the
@@ -70,6 +79,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
   const byFile = new Map<string, IndexedSpan[]>();
   const types = new Set<string>();
   const containingTypeBoxId = new Map<string, Map<ElementKind, string>>();
+  const moduleByFile = new Map<string, string>();
 
   const setForward = (id: string, kind: ElementKind, span: Span): void => {
     let inner = forward.get(id);
@@ -99,6 +109,16 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
   for (const crate of Object.values(facts.crates)) {
     for (const mod of Object.values(crate.modules)) {
       const fallback: Span = { file: mod.file, start_line: 1, end_line: 1 };
+      // Module-level entry: lets Cmd+click on a module label in the
+      // tree open its source file. The extractor's `mod.file` already
+      // points to whichever Rust file the module lives in — leaf
+      // module's `name.rs`, non-leaf's `name.rs` or `name/mod.rs`, or
+      // the parent file for inline `mod foo { ... }` declarations.
+      const moduleId =
+        mod.path === '' ? crate.name : `${crate.name}::${mod.path}`;
+      setForward(moduleId, 'module', fallback);
+      setContainer(moduleId, 'module', moduleId);
+      if (!moduleByFile.has(mod.file)) moduleByFile.set(mod.file, moduleId);
       for (const t of mod.types) {
         const tSpan = t.span ?? fallback;
         types.add(t.full_path);
@@ -180,7 +200,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
     });
   }
 
-  return { forward, byFile, types, containingTypeBoxId };
+  return { forward, byFile, types, containingTypeBoxId, moduleByFile };
 }
 
 /** Find the DEEPEST (smallest-range) element whose span contains

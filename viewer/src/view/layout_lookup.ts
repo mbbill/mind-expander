@@ -42,9 +42,13 @@ export function lookupMemberRowPoint(
 export function lookupElementPoint(
   layout: Layout | null,
   elementId: string,
-  kind: 'type' | 'field' | 'method' | 'function',
+  kind: 'module' | 'type' | 'field' | 'method' | 'function',
 ): LayoutPoint | null {
   if (!layout) return null;
+  if (kind === 'module') {
+    const m = layout.modules.find((mod) => mod.id === elementId);
+    return m === undefined ? null : { x: m.labelX, y: m.y };
+  }
   for (const typeNode of layout.types) {
     if (kind === 'type' && typeNode.fullPath === elementId) {
       return { x: typeNode.x, y: typeNode.y };

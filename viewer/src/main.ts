@@ -25,6 +25,7 @@ import {
   findElementAtLine,
   lookupSpan,
 } from './data/spans.ts';
+import { buildFileTree } from './data/file_tree.ts';
 import { createCodePanel } from './view/code_panel.ts';
 import { signatureExpansionId } from './layout/geometry.ts';
 import { buildLayout } from './layout/pipeline.ts';
@@ -184,6 +185,11 @@ async function main(): Promise<void> {
   // doesn't emit per-item spans, the forward index falls back to the
   // module file (line 1) so Cmd+click still opens the right file.
   const spanIndex = buildSpanIndex(facts);
+  // Directory tree built from every `mod.file` the extractor saw.
+  // Powers the code panel's breadcrumb popup: clicking a path segment
+  // lists the folders/files known at that depth without us needing a
+  // backend filesystem-browse endpoint.
+  const fileTree = buildFileTree(Array.from(spanIndex.moduleByFile.keys()));
   // Diagram-side mirror of the code panel's selection. We keep only
   // the original element id — the renderer derives the type-box and
   // row matches from it (see `rowMatchesSelection` /
@@ -237,6 +243,18 @@ async function main(): Promise<void> {
       currentCtx?.navigateToElement(elementId, kind);
     },
     onClose: () => setDiagramSelection(null, null),
+    fileTree,
+    // Breadcrumb popup → user picked a file. Route through openCodeFor
+    // with kind='module' when we know the module so the diagram side
+    // also updates; otherwise just show the file.
+    onShowFile: (absolutePath) => {
+      const moduleId = spanIndex.moduleByFile.get(absolutePath);
+      if (moduleId !== undefined) {
+        openCodeFor(moduleId, 'module');
+      } else {
+        codePanel.show({ file: absolutePath, startLine: 1, endLine: 1 });
+      }
+    },
   });
   const openCodeFor = (id: string, kind: ElementKind): void => {
     const span = lookupSpan(spanIndex, id, kind);
@@ -291,7 +309,11 @@ async function main(): Promise<void> {
   // Latest HTML-tree options, updated on every draw. The zoom callback
   // reads these to refresh the HTML overlay when k changes without
   // having to plumb the closure-captured opts into a separate channel.
-  let htmlTreeOpts: { onToggle: (id: string) => void; onScrollToModule: (id: string) => void } | null = null;
+  let htmlTreeOpts: {
+    onToggle: (id: string) => void;
+    onScrollToModule: (id: string) => void;
+    onShowCode: (id: string) => void;
+  } | null = null;
   const layers = attachZoom(svg, canvasScroll, (t) => {
     updateScaleIndicator(t.k);
     const arrowPopupAction = arrowDisambigViewportAction(previousViewportTransform, t);
@@ -870,6 +892,9 @@ async function main(): Promise<void> {
       htmlTreeOpts = {
         onToggle: treeOpts.onToggle,
         onScrollToModule: treeOpts.onScrollToModule,
+        // Cmd+click on a module label in the left tree → open the
+        // module's source file via the span index's `'module'` kind.
+        onShowCode: (id) => openCodeFor(id, 'module'),
       };
       renderHtmlModuleTree(htmlModules, lastLayout, k, canvasScroll, htmlTreeOpts);
       minimap?.update(lastLayout);
