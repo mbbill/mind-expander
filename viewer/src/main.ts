@@ -18,7 +18,13 @@ import {
 } from './analysis/ownership.ts';
 import { FactsLoadError, loadFacts } from './data/load.ts';
 import type { Facts } from './data/schema.ts';
-import { buildSpanIndex, findElementAtLine } from './data/spans.ts';
+import {
+  type ElementKind,
+  buildSpanIndex,
+  containingTypeBoxIdFor,
+  findElementAtLine,
+  lookupSpan,
+} from './data/spans.ts';
 import { createCodePanel } from './view/code_panel.ts';
 import { signatureExpansionId } from './layout/geometry.ts';
 import { buildLayout } from './layout/pipeline.ts';
@@ -113,7 +119,7 @@ interface RenderCtx {
    *  whichever row matches in the current layout. Use this from the
    *  code panel — it doesn't need to know whether an id resolves to a
    *  type, a member, or a free function. */
-  readonly navigateToElement: (elementId: string) => void;
+  readonly navigateToElement: (elementId: string, kind: ElementKind) => void;
   /** Navigate to one endpoint of `arrow`. `endpoint === 'source'` lands at
    *  the caller; `endpoint === 'target'` lands at the callee. Direct canvas
    *  clicks (and disambig picks) pass an anchor so the chosen endpoint pans
@@ -181,28 +187,30 @@ async function main(): Promise<void> {
   // Diagram-side mirror of the code panel's selection. We keep only
   // the original element id — the renderer derives the type-box and
   // row matches from it (see `rowMatchesSelection` /
-  // `typeMatchesSelection` in tree.ts). One value covers types,
-  // fields, methods, and free functions uniformly.
+  // `typeMatchesSelection` in tree.ts). Keyed by `(id, kind)` so a
+  // struct field and a like-named method don't collide.
   let selectedElementId: string | null = null;
-  const setDiagramSelection = (elementId: string | null): void => {
+  let selectedElementKind: ElementKind | null = null;
+  const setDiagramSelection = (
+    elementId: string | null,
+    kind: ElementKind | null,
+  ): void => {
     selectedElementId = elementId;
-    if (elementId !== null && currentCtx !== null) {
+    selectedElementKind = kind;
+    if (elementId !== null && kind !== null && currentCtx !== null) {
       // Expand whichever type-box visibly contains this element so
       // its row will render. The index handles all cases uniformly:
-      //   • type T            → containerId = T
-      //   • field/method T::x → containerId = T
-      //   • free function     → containerId = the function_group
-      //                         pseudo-type holding it
-      // For methods the container is a real type whose method buckets
-      // are also collapsed by default — expand those too so the
-      // method row appears alongside the type's fields.
-      const containerId = spanIndex.containingTypeBoxId.get(elementId);
-      if (containerId !== undefined) {
+      //   • type T              → containerId = T
+      //   • field/method T::x   → containerId = T
+      //   • free function       → containerId = the function_group
+      //                           pseudo-type holding it
+      // For methods the container is a real type whose method
+      // buckets are also collapsed by default — expand those too so
+      // the method row appears alongside the type's fields.
+      const containerId = containingTypeBoxIdFor(spanIndex, elementId, kind);
+      if (containerId !== null) {
         currentCtx.state.expand(containerId);
-        if (
-          spanIndex.callables.has(elementId) &&
-          spanIndex.types.has(containerId)
-        ) {
+        if (kind === 'method' && spanIndex.types.has(containerId)) {
           for (const bucketId of callableBucketIdsForType(containerId, currentCtx.calls)) {
             currentCtx.state.expand(bucketId);
           }
@@ -213,28 +221,27 @@ async function main(): Promise<void> {
   };
   const codePanel = createCodePanel({
     onLineNavigate: (file, line) => {
-      const elementId = findElementAtLine(spanIndex, file, line);
-      if (elementId === null) return;
+      const hit = findElementAtLine(spanIndex, file, line);
+      if (hit === null) return;
+      const { elementId, kind } = hit;
       // Repaint the panel's highlight to the clicked element's full
       // span so the user sees what got selected by clicking on code.
-      const span = spanIndex.forward.get(elementId);
-      if (span !== undefined) {
+      const span = lookupSpan(spanIndex, elementId, kind);
+      if (span !== null) {
         codePanel.setHighlight(span.start_line, span.end_line);
       }
-      setDiagramSelection(elementId);
+      setDiagramSelection(elementId, kind);
       // navigateToElement handles types, methods/fields, AND free
-      // functions in one path — it finds whichever row matches the
-      // id in the current layout. Avoids the (type, member) split
-      // that broke for free functions whose owning structure is a
-      // function_group pseudo-type.
-      currentCtx?.navigateToElement(elementId);
+      // functions in one path — it finds whichever row matches in
+      // the current layout. Disambiguates field vs method via kind.
+      currentCtx?.navigateToElement(elementId, kind);
     },
-    onClose: () => setDiagramSelection(null),
+    onClose: () => setDiagramSelection(null, null),
   });
-  const openCodeFor = (id: string): void => {
-    const span = spanIndex.forward.get(id);
-    if (span === undefined) return;
-    setDiagramSelection(id);
+  const openCodeFor = (id: string, kind: ElementKind): void => {
+    const span = lookupSpan(spanIndex, id, kind);
+    if (span === null) return;
+    setDiagramSelection(id, kind);
     codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
   };
 
@@ -676,6 +683,7 @@ async function main(): Promise<void> {
         expandedBucketIds,
         ownership,
         selectedElementId,
+        selectedElementKind,
         onToggle: (id) => {
           // Anchor the clicked item in both axes: expansion can change a
           // type's physical group, so preserving only y lets the target drift
@@ -834,7 +842,7 @@ async function main(): Promise<void> {
           // teleporting.
           layers.panYToTop(m.y, 0, true);
         },
-        onShowCode: (id) => openCodeFor(id),
+        onShowCode: (id, kind) => openCodeFor(id, kind),
       };
       renderTree(layers, lastLayout, treeOpts);
       // Size the scrollable canvas-content area to match the diagram's
@@ -1171,12 +1179,13 @@ async function main(): Promise<void> {
     // functions. The latter live in a `function_group` pseudo-type
     // that the host can't address by id, so we resolve the row from
     // the layout after a redraw (`lookupElementPoint` uses the same
-    // matcher as the renderer's selection).
-    const navigateToElement = (elementId: string): void => {
+    // matcher as the renderer's selection). `kind` disambiguates
+    // field-vs-method when the two share an id.
+    const navigateToElement = (elementId: string, kind: ElementKind): void => {
       for (const m of ancestorModuleIds(elementId)) state.expand(m);
-      if (typeIdSet.has(elementId)) state.expand(elementId);
+      if (kind === 'type' && typeIdSet.has(elementId)) state.expand(elementId);
       draw();
-      const point = lookupElementPoint(lastLayout, elementId);
+      const point = lookupElementPoint(lastLayout, elementId, kind);
       if (point === null) return;
       const target = pickFocusScreenPoint(canvasScroll, codePanel.getScreenRect());
       layers.panTo(point.x, point.y, target.x, target.y, true);

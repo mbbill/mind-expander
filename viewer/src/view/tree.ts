@@ -293,11 +293,14 @@ export interface TreeRenderOptions {
    *  remaining sticky rows. */
   readonly onScrollToModule: (moduleId: string) => void;
   /** Cmd/Ctrl+click on a diagram element → open the code panel and
-   *  scroll to that element's source span. `id` is the same id form
-   *  used by `onToggle`/`onSelectField` (typePath or
-   *  `${typePath}::${memberName}`); the host looks the span up in its
-   *  facts-derived index. */
-  readonly onShowCode: (id: string) => void;
+   *  scroll to that element's source span. `id` is the same form used
+   *  by `onToggle`/`onSelectField`; `kind` disambiguates a struct
+   *  field from a method with the same name on the same type, since
+   *  both share the canonical id. */
+  readonly onShowCode: (
+    id: string,
+    kind: 'type' | 'field' | 'method' | 'function',
+  ) => void;
   /** Click on a type header chevron → toggle expansion. Opening selects
    *  field rows by default and expands callable buckets without selecting
    *  function rows; closing deselects hidden member rows. */
@@ -362,17 +365,12 @@ export interface TreeRenderOptions {
    *  No hits → handler not called at all. */
   readonly onArrowNavigate: (hits: readonly ArrowHit[], anchor: { x: number; y: number }) => void;
   /** When the code panel is open, the host pushes the currently-shown
-   *  element's canonical id here so the diagram can paint a matching
-   *  selection. The id is whatever the span index uses:
-   *    - type: `crate::mod::Type`
-   *    - field: `crate::mod::Type::name`
-   *    - method: `crate::mod::Type::name`
-   *    - free function: `crate::mod::name`
-   *  The renderer derives both the type-box (for the glow ring) and
-   *  the row (for the member band) by matching this id against each
-   *  type-box / row, which keeps the (type, member) ambiguity out of
-   *  the host — free functions in particular have no owning type. */
+   *  element's canonical `(id, kind)` here so the diagram can paint a
+   *  matching selection. `kind` matters because a struct field and a
+   *  method on the same type can share the canonical id — only one
+   *  row should light up. Both null = nothing selected. */
   readonly selectedElementId: string | null;
+  readonly selectedElementKind: 'type' | 'field' | 'method' | 'function' | null;
 }
 
 // Separator for fieldKey. We can't use `::` because both parts may
@@ -384,34 +382,44 @@ export interface TreeRenderOptions {
 const FIELD_KEY_SEP = '\x1F';
 let callableDebugHideTimer: number | undefined;
 
-// Selection matching. The host pushes one canonical element id
-// (`TreeRenderOptions.selectedElementId`) and the renderer asks two
-// questions per draw: (1) does this row represent that element?
-// (2) does this type-box contain that element? Keeping the matcher in
-// one place means free functions, methods, fields, and types all
-// resolve through the same logic — no special cases scattered through
-// the rendering passes.
+// Selection matching. The host pushes a canonical `(id, kind)` pair
+// and the renderer asks two questions per draw: (1) does this row
+// represent that element? (2) does this type-box contain that
+// element? Centralising the matcher means types, fields, methods,
+// and free functions all resolve through the same logic. `kind`
+// matters because Rust allows a field and a method to share a name
+// on the same type — both have the same canonical id; only one row
+// should be highlighted.
+type SelectedKind = 'type' | 'field' | 'method' | 'function';
 function rowMatchesSelection(
   type: Layout['types'][number],
   row: Layout['types'][number]['fields'][number],
   selectedId: string,
+  selectedKind: SelectedKind,
 ): boolean {
   if (row.kind === 'method_bucket' || row.kind === 'signature_arg') return false;
-  if (row.kind === 'method' || row.kind === 'function') {
+  if (selectedKind === 'method' || selectedKind === 'function') {
+    if (row.kind !== 'method' && row.kind !== 'function') return false;
     return row.functionFullPath === selectedId;
   }
-  // Field rows: id is `${owning-type-path}::${row-name}`. Variant
-  // payload fields encode the variant in their name, so this also
-  // matches `Type::Variant::field` correctly.
-  return `${type.fullPath}::${row.name}` === selectedId;
+  if (selectedKind === 'field') {
+    if (row.kind !== 'field') return false;
+    return `${type.fullPath}::${row.name}` === selectedId;
+  }
+  // Selected kind is 'type': a type-box matches by id; no individual
+  // row should light up.
+  return false;
 }
 
 function typeMatchesSelection(
   type: Layout['types'][number],
   selectedId: string,
+  selectedKind: SelectedKind,
 ): boolean {
-  if (type.fullPath === selectedId) return true;
-  return type.fields.some((row) => rowMatchesSelection(type, row, selectedId));
+  if (selectedKind === 'type' && type.fullPath === selectedId) return true;
+  return type.fields.some((row) =>
+    rowMatchesSelection(type, row, selectedId, selectedKind),
+  );
 }
 
 /** Row-kind half of a fieldKey. Fields, methods, and free-function rows can
@@ -1162,7 +1170,9 @@ function renderModules(
     .on('click', (event: MouseEvent, d) => {
       event.stopPropagation();
       if (event.metaKey || event.ctrlKey) {
-        opts.onShowCode(d.id);
+        // Modules aren't indexed with a span (yet) — pass 'type' as a
+        // benign default so the host's lookup just returns null.
+        opts.onShowCode(d.id, 'type');
         return;
       }
       if (d.hasChildren) opts.onToggle(d.id);
@@ -1520,7 +1530,10 @@ function renderTypes(
   // function_group pseudo-type — the function's id alone never matches
   // the pseudo-type's fullPath, so we have to consult the rows.
   const selectedId = opts.selectedElementId;
-  merged.classed('selected', (d) => selectedId !== null && typeMatchesSelection(d, selectedId));
+  const selectedKind = opts.selectedElementKind;
+  merged.classed('selected', (d) =>
+    selectedId !== null && selectedKind !== null && typeMatchesSelection(d, selectedId, selectedKind),
+  );
   merged
     .select<SVGRectElement>('rect.selection-ring')
     .attr('x', (d) => d.boxX - d.x - SELECTION_PAD)
@@ -1568,7 +1581,7 @@ function renderTypes(
     .on('click', (event: MouseEvent, d) => {
       event.stopPropagation();
       if (event.metaKey || event.ctrlKey) {
-        opts.onShowCode(d.fullPath);
+        opts.onShowCode(d.fullPath, 'type');
         return;
       }
       if (d.isGhost && d.ghostTarget !== null) {
@@ -1784,8 +1797,9 @@ function renderFieldsForType(
   // Bucket headers and signature args have no element id of their
   // own, so they never match.
   const selId = opts.selectedElementId;
+  const selKind = opts.selectedElementKind;
   merged.classed('selected-member', (f) =>
-    selId !== null && rowMatchesSelection(d, f, selId),
+    selId !== null && selKind !== null && rowMatchesSelection(d, f, selId, selKind),
   );
   // Highlighter band spanning the type's full obstacle width (same
   // extent the selection ring uses). Vertical bounds are inset from
@@ -2100,9 +2114,13 @@ function renderFieldsForType(
         // bucket id, not the module path, so `${d.fullPath}::${f.name}`
         // would miss the span-index entry.
         if (!isBucketHeader) {
-          const id =
-            f.functionFullPath !== null ? f.functionFullPath : `${d.fullPath}::${f.name}`;
-          opts.onShowCode(id);
+          if (f.kind === 'method' && f.functionFullPath !== null) {
+            opts.onShowCode(f.functionFullPath, 'method');
+          } else if (f.kind === 'function' && f.functionFullPath !== null) {
+            opts.onShowCode(f.functionFullPath, 'function');
+          } else if (f.kind === 'field') {
+            opts.onShowCode(`${d.fullPath}::${f.name}`, 'field');
+          }
         }
         return;
       }
