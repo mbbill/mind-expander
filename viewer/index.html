@@ -99,6 +99,26 @@
       #code-panel[hidden] {
         display: none;
       }
+      /* Folded state: header only. The body and resize handles fade
+         out and the panel's height transitions down to the header.
+         Animation is gated by `.is-animating` so it only plays on the
+         fold toggle — drag/resize updates touch the same inline
+         height and shouldn't tween. */
+      #code-panel.is-animating {
+        transition: height 200ms ease;
+      }
+      #code-panel.is-collapsed {
+        min-height: 0;
+      }
+      .code-panel-body,
+      .code-panel-resize {
+        transition: opacity 150ms ease;
+      }
+      #code-panel.is-collapsed .code-panel-body,
+      #code-panel.is-collapsed .code-panel-resize {
+        opacity: 0;
+        pointer-events: none;
+      }
       .code-panel-header {
         display: flex;
         align-items: center;

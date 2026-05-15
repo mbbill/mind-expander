@@ -140,6 +140,9 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     }
   };
   let state = loadState();
+  // Declared up here (rather than next to the drag handler that owns
+  // it) because `applyState` reads it on first invocation just below.
+  let collapsed = false;
   const applyState = (): void => {
     const maxX = Math.max(0, window.innerWidth - 100);
     const maxY = Math.max(0, window.innerHeight - 60);
@@ -152,18 +155,48 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     root.style.left = `${state.x}px`;
     root.style.top = `${state.y}px`;
     root.style.width = `${state.w}px`;
-    root.style.height = `${state.h}px`;
+    // When the panel is folded the inline height represents the
+    // header-only collapsed value (set by `setCollapsed`). Writing
+    // `state.h` here on drag would override that and pop the body
+    // back open mid-drag — keep the collapsed height intact.
+    if (!collapsed) root.style.height = `${state.h}px`;
   };
   applyState();
 
-  // Drag the header to move the panel.
-  let drag: { readonly id: number; offX: number; offY: number } | null = null;
+  // Drag the header to move the panel. Pointerup without significant
+  // motion is treated as a click on the title bar's empty area, which
+  // toggles the panel's collapsed (header-only) state.
+  let animClearTimer: number | null = null;
+  const setCollapsed = (c: boolean): void => {
+    if (collapsed === c) return;
+    collapsed = c;
+    // Enable the height transition just for this toggle. Normal
+    // drag/resize updates run without `.is-animating` so they stay
+    // instant — only this state change animates.
+    root.classList.add('is-animating');
+    root.classList.toggle('is-collapsed', c);
+    root.style.height = c
+      ? `${headerEl.getBoundingClientRect().height}px`
+      : `${state.h}px`;
+    if (animClearTimer !== null) window.clearTimeout(animClearTimer);
+    animClearTimer = window.setTimeout(() => {
+      root.classList.remove('is-animating');
+      animClearTimer = null;
+    }, 220);
+  };
+  const DRAG_THRESHOLD_PX = 3;
+  let drag: {
+    readonly id: number;
+    offX: number;
+    offY: number;
+    readonly startX: number;
+    readonly startY: number;
+    moved: boolean;
+  } | null = null;
   headerEl.addEventListener('pointerdown', (e) => {
-    // Skip interactive children — the drag handler swallows
-    // `pointerdown` (via preventDefault), which would otherwise
-    // suppress the synthesized click on close button and breadcrumb
-    // chips. Any element with its own pointer affordance opts out
-    // here so its native click path stays intact.
+    // Skip interactive children — `e.preventDefault()` below would
+    // otherwise suppress the synthesized click on close button and
+    // breadcrumb chips.
     const target = e.target as HTMLElement;
     if (
       target.closest('.code-panel-close') !== null ||
@@ -171,20 +204,43 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     ) {
       return;
     }
-    drag = { id: e.pointerId, offX: e.clientX - state.x, offY: e.clientY - state.y };
+    drag = {
+      id: e.pointerId,
+      offX: e.clientX - state.x,
+      offY: e.clientY - state.y,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+    };
     headerEl.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
   headerEl.addEventListener('pointermove', (e) => {
     if (drag === null || e.pointerId !== drag.id) return;
+    if (
+      !drag.moved &&
+      (Math.abs(e.clientX - drag.startX) > DRAG_THRESHOLD_PX ||
+        Math.abs(e.clientY - drag.startY) > DRAG_THRESHOLD_PX)
+    ) {
+      drag.moved = true;
+    }
+    if (!drag.moved) return;
     state = { ...state, x: e.clientX - drag.offX, y: e.clientY - drag.offY };
     applyState();
   });
   const endDrag = (e: PointerEvent): void => {
     if (drag === null || e.pointerId !== drag.id) return;
     if (headerEl.hasPointerCapture(e.pointerId)) headerEl.releasePointerCapture(e.pointerId);
+    const wasMoved = drag.moved;
     drag = null;
-    saveState(state);
+    if (wasMoved) {
+      saveState(state);
+    } else if (e.type === 'pointerup') {
+      // Header click without drag → toggle the panel's collapsed
+      // state. Lets the user park the panel as a thin title bar and
+      // re-expand by clicking it again, without affecting drag.
+      setCollapsed(!collapsed);
+    }
   };
   headerEl.addEventListener('pointerup', endDrag);
   headerEl.addEventListener('pointercancel', endDrag);
@@ -344,6 +400,10 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
 
   const show = (args: CodePanelShowArgs): void => {
     root.hidden = false;
+    // Re-show the body if the panel was previously folded — the
+    // caller asked to display content, so a collapsed (header-only)
+    // state would silently swallow the request.
+    if (collapsed) setCollapsed(false);
     renderTitle(args.file);
     // Reuse cached text if same file — common when the user clicks
     // multiple items in the same module.
