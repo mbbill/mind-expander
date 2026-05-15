@@ -1026,17 +1026,20 @@
         stroke: #9333ea;
         stroke-width: 1.75;
         stroke-dasharray: 3 2;
+        filter: drop-shadow(0 0 3px rgba(147, 51, 234, 0.55))
+          drop-shadow(0 0 1px rgba(147, 51, 234, 0.85));
       }
-      /* Member selection: soft purple band on the selected row. CSS
-         blur softens the rect edges so the highlight reads as a glow
-         around the row rather than a hard rectangle. */
+      /* Member selection: highlighter band across the selected row.
+         Rect spans the full type-box width in the renderer; the
+         gradient handles the fade so both ends taper into the
+         canvas. `mix-blend-mode: multiply` keeps the row text and
+         row colors readable underneath. */
       .field-row-g .member-bg {
         fill: transparent;
       }
       .field-row-g.selected-member .member-bg {
-        fill: #ddd6fe; /* purple-200 */
-        filter: blur(2.5px);
-        opacity: 0.7;
+        fill: url(#member-highlight-fade);
+        mix-blend-mode: multiply;
       }
     </style>
   </head>
@@ -1075,6 +1078,16 @@
          line's stroke colour automatically. -->
     <svg width="0" height="0" aria-hidden="true" style="position: absolute" focusable="false">
       <defs>
+        <!-- Highlighter mark gradient: solid orange in the middle,
+             fading to transparent at both horizontal ends.
+             `gradientUnits="objectBoundingBox"` lets the rect stretch
+             across any width and the fade ramps follow automatically. -->
+        <linearGradient id="member-highlight-fade" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#c4b5fd" stop-opacity="0" />
+          <stop offset="12%" stop-color="#c4b5fd" stop-opacity="0.65" />
+          <stop offset="88%" stop-color="#c4b5fd" stop-opacity="0.65" />
+          <stop offset="100%" stop-color="#c4b5fd" stop-opacity="0" />
+        </linearGradient>
         <!-- markerUnits="userSpaceOnUse" pins the arrowhead size to a
              constant 8×8 in user-space, regardless of line stroke width. -->
         <marker

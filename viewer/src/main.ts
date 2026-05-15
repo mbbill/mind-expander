@@ -29,7 +29,11 @@ import { arrowDisambigViewportAction, createArrowDisambig } from './view/arrow_d
 import { type EdgeEntry, createEdgePicker } from './view/edge_picker.ts';
 import { cratePrefixOf, stripCratePrefix } from './view/display_path.ts';
 import { type ArrowEndpoint, arrowEndpointLayoutPoint } from './view/arrow_navigation.ts';
-import { lookupLayoutPoint, lookupMemberRowPoint } from './view/layout_lookup.ts';
+import {
+  lookupElementPoint,
+  lookupLayoutPoint,
+  lookupMemberRowPoint,
+} from './view/layout_lookup.ts';
 import { createTextMeasurer } from './view/measure.ts';
 import { type Minimap, createMinimap } from './view/minimap.ts';
 import {
@@ -104,6 +108,12 @@ interface RenderCtx {
     typeId: string,
     member?: { name: string; kind: FieldKeyKind },
   ) => void;
+  /** Generic id-based navigation. Accepts a span-index element id
+   *  (type / field / method / free function) and pans the diagram to
+   *  whichever row matches in the current layout. Use this from the
+   *  code panel — it doesn't need to know whether an id resolves to a
+   *  type, a member, or a free function. */
+  readonly navigateToElement: (elementId: string) => void;
   /** Navigate to one endpoint of `arrow`. `endpoint === 'source'` lands at
    *  the caller; `endpoint === 'target'` lands at the callee. Direct canvas
    *  clicks (and disambig picks) pass an anchor so the chosen endpoint pans
@@ -168,32 +178,32 @@ async function main(): Promise<void> {
   // doesn't emit per-item spans, the forward index falls back to the
   // module file (line 1) so Cmd+click still opens the right file.
   const spanIndex = buildSpanIndex(facts);
-  // Diagram-side mirror of the code panel's selection. While the panel
-  // is open the diagram paints a purple glow around `selectedTypeId`
-  // and, when a member is selected, a blue band on the matching row.
-  // Both are nulled when the panel closes so the diagram returns to
-  // its default appearance.
-  let selectedTypeId: string | null = null;
-  let selectedMemberName: string | null = null;
+  // Diagram-side mirror of the code panel's selection. We keep only
+  // the original element id — the renderer derives the type-box and
+  // row matches from it (see `rowMatchesSelection` /
+  // `typeMatchesSelection` in tree.ts). One value covers types,
+  // fields, methods, and free functions uniformly.
+  let selectedElementId: string | null = null;
   const setDiagramSelection = (elementId: string | null): void => {
-    if (elementId === null) {
-      selectedTypeId = null;
-      selectedMemberName = null;
-    } else {
-      const typeId = parentTypeId(elementId, spanIndex);
-      selectedTypeId = typeId;
-      selectedMemberName = typeId === elementId ? null : elementId.slice(typeId.length + 2);
-      // Make sure the selected row will actually render: expand the
-      // owning type, and when the selection is a method, also expand
-      // every callable bucket on that type. Buckets stay collapsed by
-      // default to keep dense types readable, so a selected method
-      // inside a `pub fn (N)` bucket is invisible until we open it.
-      // Fields don't need that step — they render as soon as the
-      // type itself is expanded.
-      if (currentCtx !== null) {
-        currentCtx.state.expand(typeId);
-        if (selectedMemberName !== null && spanIndex.callables.has(elementId)) {
-          for (const bucketId of callableBucketIdsForType(typeId, currentCtx.calls)) {
+    selectedElementId = elementId;
+    if (elementId !== null && currentCtx !== null) {
+      // Expand whichever type-box visibly contains this element so
+      // its row will render. The index handles all cases uniformly:
+      //   • type T            → containerId = T
+      //   • field/method T::x → containerId = T
+      //   • free function     → containerId = the function_group
+      //                         pseudo-type holding it
+      // For methods the container is a real type whose method buckets
+      // are also collapsed by default — expand those too so the
+      // method row appears alongside the type's fields.
+      const containerId = spanIndex.containingTypeBoxId.get(elementId);
+      if (containerId !== undefined) {
+        currentCtx.state.expand(containerId);
+        if (
+          spanIndex.callables.has(elementId) &&
+          spanIndex.types.has(containerId)
+        ) {
+          for (const bucketId of callableBucketIdsForType(containerId, currentCtx.calls)) {
             currentCtx.state.expand(bucketId);
           }
         }
@@ -211,25 +221,13 @@ async function main(): Promise<void> {
       if (span !== undefined) {
         codePanel.setHighlight(span.start_line, span.end_line);
       }
-      // Member ids look like `crate::mod::Type::name`; for navigation
-      // we want the parent type. If the id resolves directly to a type
-      // (no `::` after the type position), use it as-is.
-      const typeId = parentTypeId(elementId, spanIndex);
       setDiagramSelection(elementId);
-      // Center on the member row when one was clicked, not on the
-      // type's header — clicking a method's body in the code panel
-      // should scroll the diagram to that method, not just to the
-      // owning struct.
-      const member =
-        typeId === elementId
-          ? undefined
-          : {
-              name: elementId.slice(typeId.length + 2),
-              kind: (spanIndex.callables.has(elementId)
-                ? 'method'
-                : 'field') as FieldKeyKind,
-            };
-      currentCtx?.navigateToType(typeId, member);
+      // navigateToElement handles types, methods/fields, AND free
+      // functions in one path — it finds whichever row matches the
+      // id in the current layout. Avoids the (type, member) split
+      // that broke for free functions whose owning structure is a
+      // function_group pseudo-type.
+      currentCtx?.navigateToElement(elementId);
     },
     onClose: () => setDiagramSelection(null),
   });
@@ -677,15 +675,7 @@ async function main(): Promise<void> {
         selectedArrows,
         expandedBucketIds,
         ownership,
-        selectedTypeId,
-        selectedMemberName,
-        selectedMemberIsCallable: selectedMemberName !== null
-          && spanIndex.callables.has(
-            // Rebuild the full element id: `${typeId}::${memberName}`.
-            // (We don't keep the original elementId around since the
-            // member name can carry `::` for variant payload fields.)
-            `${selectedTypeId}::${selectedMemberName}`,
-          ),
+        selectedElementId,
         onToggle: (id) => {
           // Anchor the clicked item in both axes: expansion can change a
           // type's physical group, so preserving only y lets the target drift
@@ -1159,23 +1149,37 @@ async function main(): Promise<void> {
       typeId: string,
       member?: { name: string; kind: FieldKeyKind },
     ): void => {
-      // Make the target visible: expand it (so its module is in focus
-      // relevance and its row renders), expand its containing modules,
-      // redraw, then center the viewport on its new y. When a member
-      // (field/method) is named, center on that row instead of the
-      // type's header — otherwise clicking a deep method line in the
-      // code panel jumps to the type header and the user has to scroll
-      // down to find the row that just got highlighted.
+      // Make the target visible: expand its module ancestors and the
+      // type itself, redraw, then pan so the focus point lands in the
+      // uncovered part of the viewport. The code panel reports its
+      // own screen rect; we avoid landing the focus point under it.
+      // Member rows take priority over the type header when named.
       for (const m of ancestorModuleIds(typeId)) state.expand(m);
       state.expand(typeId);
       draw();
-      let y: number | null = null;
+      let point: { readonly x: number; readonly y: number } | null = null;
       if (member !== undefined) {
-        const point = lookupMemberRowPoint(lastLayout, typeId, member.name, member.kind);
-        if (point !== null) y = point.y;
+        point = lookupMemberRowPoint(lastLayout, typeId, member.name, member.kind);
       }
-      if (y === null) y = lookupY(lastLayout, typeId);
-      if (y !== null) layers.centerOnY(y, true);
+      if (point === null) point = lookupLayoutPoint(lastLayout, typeId);
+      if (point === null) return;
+      const target = pickFocusScreenPoint(canvasScroll, codePanel.getScreenRect());
+      layers.panTo(point.x, point.y, target.x, target.y, true);
+    };
+
+    // Element-id navigation: works for types, members, AND free
+    // functions. The latter live in a `function_group` pseudo-type
+    // that the host can't address by id, so we resolve the row from
+    // the layout after a redraw (`lookupElementPoint` uses the same
+    // matcher as the renderer's selection).
+    const navigateToElement = (elementId: string): void => {
+      for (const m of ancestorModuleIds(elementId)) state.expand(m);
+      if (typeIdSet.has(elementId)) state.expand(elementId);
+      draw();
+      const point = lookupElementPoint(lastLayout, elementId);
+      if (point === null) return;
+      const target = pickFocusScreenPoint(canvasScroll, codePanel.getScreenRect());
+      layers.panTo(point.x, point.y, target.x, target.y, true);
     };
 
     // Single navigation path for both direct-click and popup-pick. The
@@ -1234,6 +1238,7 @@ async function main(): Promise<void> {
       typeIdSet,
       typeInfo,
       navigateToType,
+      navigateToElement,
       navigateToArrowEndpoint,
       resetAll,
       focusMode: false,
@@ -1252,20 +1257,42 @@ async function main(): Promise<void> {
  *  segment if the forward index has an entry for it (i.e. the prefix
  *  IS a type). Otherwise return the id unchanged — it's likely already
  *  a type or a free function. */
-function parentTypeId(id: string, index: ReturnType<typeof buildSpanIndex>): string {
-  // Walk up `::` segments until we hit a known type. Enum variant
-  // payload fields encode the variant in the field name itself
-  // (`Variant::field`), so a single-level strip lands on a non-type
-  // intermediate and would fall through. Stop at the deepest prefix
-  // recorded as a type; fall back to the original id when none matches
-  // (e.g. free functions, where the parent is a module, not a type).
-  let s = id;
-  while (true) {
-    const lastSep = s.lastIndexOf('::');
-    if (lastSep < 0) return id;
-    s = s.slice(0, lastSep);
-    if (index.types.has(s)) return s;
+// Where on screen we'd like a "focused" data-space point to land,
+// given the diagram viewport and an optional rect (e.g. the code
+// panel) we want to keep clear. Returns a point in window coords —
+// `layers.panTo` takes the same coord space.
+//
+// Default is the viewport centre. When `avoid` covers the centre on
+// one side, we shift to the centre of the uncovered side along that
+// axis. If `avoid` straddles the centre on an axis (e.g. a full-width
+// overlay), we fall back to the viewport mid-point for that axis —
+// nothing better to do without shrinking the diagram itself.
+function pickFocusScreenPoint(
+  viewportEl: HTMLElement,
+  avoid: DOMRect | null,
+): { x: number; y: number } {
+  const vp = viewportEl.getBoundingClientRect();
+  const midX = vp.left + vp.width / 2;
+  const midY = vp.top + vp.height / 2;
+  if (avoid === null) return { x: midX, y: midY };
+
+  let x = midX;
+  if (avoid.left >= midX && avoid.left > vp.left) {
+    // Panel on the right of centre → focus in the left half.
+    x = (vp.left + Math.min(avoid.left, vp.right)) / 2;
+  } else if (avoid.right <= midX && avoid.right < vp.right) {
+    // Panel on the left of centre → focus in the right half.
+    x = (Math.max(avoid.right, vp.left) + vp.right) / 2;
   }
+
+  let y = midY;
+  if (avoid.top >= midY && avoid.top > vp.top) {
+    y = (vp.top + Math.min(avoid.top, vp.bottom)) / 2;
+  } else if (avoid.bottom <= midY && avoid.bottom < vp.bottom) {
+    y = (Math.max(avoid.bottom, vp.top) + vp.bottom) / 2;
+  }
+
+  return { x, y };
 }
 
 async function tryLoadFacts(): Promise<Facts | null> {

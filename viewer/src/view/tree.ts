@@ -362,17 +362,17 @@ export interface TreeRenderOptions {
    *  No hits → handler not called at all. */
   readonly onArrowNavigate: (hits: readonly ArrowHit[], anchor: { x: number; y: number }) => void;
   /** When the code panel is open, the host pushes the currently-shown
-   *  element here so the diagram can paint a matching selection.
-   *  `selectedTypeId` is the owning type's fullPath (always set when
-   *  anything is selected). `selectedMemberName` is the member's row
-   *  name when a field/method is selected, or null when only the type
-   *  itself is. Both null = nothing selected. */
-  readonly selectedTypeId: string | null;
-  readonly selectedMemberName: string | null;
-  /** True when the selected member is a method/function (so only
-   *  callable rows match); false for fields. Ignored when
-   *  `selectedMemberName` is null. */
-  readonly selectedMemberIsCallable: boolean;
+   *  element's canonical id here so the diagram can paint a matching
+   *  selection. The id is whatever the span index uses:
+   *    - type: `crate::mod::Type`
+   *    - field: `crate::mod::Type::name`
+   *    - method: `crate::mod::Type::name`
+   *    - free function: `crate::mod::name`
+   *  The renderer derives both the type-box (for the glow ring) and
+   *  the row (for the member band) by matching this id against each
+   *  type-box / row, which keeps the (type, member) ambiguity out of
+   *  the host — free functions in particular have no owning type. */
+  readonly selectedElementId: string | null;
 }
 
 // Separator for fieldKey. We can't use `::` because both parts may
@@ -383,6 +383,36 @@ export interface TreeRenderOptions {
 // or extractor output.
 const FIELD_KEY_SEP = '\x1F';
 let callableDebugHideTimer: number | undefined;
+
+// Selection matching. The host pushes one canonical element id
+// (`TreeRenderOptions.selectedElementId`) and the renderer asks two
+// questions per draw: (1) does this row represent that element?
+// (2) does this type-box contain that element? Keeping the matcher in
+// one place means free functions, methods, fields, and types all
+// resolve through the same logic — no special cases scattered through
+// the rendering passes.
+function rowMatchesSelection(
+  type: Layout['types'][number],
+  row: Layout['types'][number]['fields'][number],
+  selectedId: string,
+): boolean {
+  if (row.kind === 'method_bucket' || row.kind === 'signature_arg') return false;
+  if (row.kind === 'method' || row.kind === 'function') {
+    return row.functionFullPath === selectedId;
+  }
+  // Field rows: id is `${owning-type-path}::${row-name}`. Variant
+  // payload fields encode the variant in their name, so this also
+  // matches `Type::Variant::field` correctly.
+  return `${type.fullPath}::${row.name}` === selectedId;
+}
+
+function typeMatchesSelection(
+  type: Layout['types'][number],
+  selectedId: string,
+): boolean {
+  if (type.fullPath === selectedId) return true;
+  return type.fields.some((row) => rowMatchesSelection(type, row, selectedId));
+}
 
 /** Row-kind half of a fieldKey. Fields, methods, and free-function rows can
  *  share labels inside different row groups, so the selection key needs both
@@ -1484,7 +1514,13 @@ function renderTypes(
   // so we subtract that translation to land in local coords.
   const SELECTION_PAD = 4;
   const headerTopFor = (d: Layout['types'][number]) => d.y - ROW_H / 2;
-  merged.classed('selected', (d) => d.fullPath === opts.selectedTypeId);
+  // A type-box is "selected" when its own fullPath matches the host's
+  // selected element id, OR when one of its rows does. The latter
+  // covers free functions, whose owning visible structure is a
+  // function_group pseudo-type — the function's id alone never matches
+  // the pseudo-type's fullPath, so we have to consult the rows.
+  const selectedId = opts.selectedElementId;
+  merged.classed('selected', (d) => selectedId !== null && typeMatchesSelection(d, selectedId));
   merged
     .select<SVGRectElement>('rect.selection-ring')
     .attr('x', (d) => d.boxX - d.x - SELECTION_PAD)
@@ -1741,34 +1777,28 @@ function renderFieldsForType(
 
   const merged = enter.merge(sel);
 
-  // Member-selection: highlight the field row that matches the code
-  // panel's currently-shown element. Match key is (parent type fullPath,
-  // member name); see `selectedTypeId` / `selectedMemberName` on
-  // TreeRenderOptions. We skip method_bucket rows and signature_arg
-  // rows since they aren't real selectable members — a struct field
-  // and a method with the same name would otherwise both light up.
-  const memberIsSelected =
-    opts.selectedTypeId === d.fullPath && opts.selectedMemberName !== null;
-  const targetIsCallable = opts.selectedMemberIsCallable;
-  merged.classed('selected-member', (f) => {
-    if (!memberIsSelected || f.name !== opts.selectedMemberName) return false;
-    const isCallableRow = f.kind === 'method' || f.kind === 'function';
-    return targetIsCallable ? isCallableRow : f.kind === 'field';
-  });
-  // Position the background rect to span this type's box width minus
-  // the header indent, centered vertically on the row baseline. Width
-  // intentionally tracks the type-box width so the band reads as a
-  // full-row fill regardless of the individual row's text length.
-  // The member band must span the same horizontal extent as the
-  // type's obstacle block (which is what the selection ring uses too)
-  // — otherwise rows like `from_module_with_registry` extend past
-  // `d.width` (header-only) and the blue band cuts off mid-name.
+  // Member-selection: highlight the row whose canonical id matches
+  // the host's `selectedElementId`. The matcher handles all row
+  // shapes uniformly — callables use their pre-resolved
+  // `functionFullPath`, fields fall back to `${typePath}::${name}`.
+  // Bucket headers and signature args have no element id of their
+  // own, so they never match.
+  const selId = opts.selectedElementId;
+  merged.classed('selected-member', (f) =>
+    selId !== null && rowMatchesSelection(d, f, selId),
+  );
+  // Highlighter band spanning the type's full obstacle width (same
+  // extent the selection ring uses). Vertical bounds are inset from
+  // ROW_H so the brush stroke hugs the row's text instead of bleeding
+  // into the neighbouring rows above and below. The fade gradient
+  // tapers both horizontal ends to transparent.
+  const MARK_VERTICAL_INSET = 5;
   merged
     .select<SVGRectElement>('rect.member-bg')
     .attr('x', d.boxX - d.x)
-    .attr('y', (f) => f.y - groupTopY - ROW_H / 2)
+    .attr('y', (f) => f.y - groupTopY - ROW_H / 2 + MARK_VERTICAL_INSET)
     .attr('width', d.boxWidth)
-    .attr('height', ROW_H);
+    .attr('height', Math.max(0, ROW_H - MARK_VERTICAL_INSET * 2));
 
   merged.each(function (f) {
     const fg = select(this);
@@ -2063,10 +2093,16 @@ function renderFieldsForType(
       event.stopPropagation();
       if (event.metaKey || event.ctrlKey) {
         // Cmd/Ctrl+click on a row opens the code panel at the member's
-        // span (or the parent type's span as a fallback). Bucket headers
-        // ("pub fn (5)" etc.) don't have their own span, so skip them.
+        // span. Bucket headers ("pub fn (5)" etc.) don't have their
+        // own span, so skip them. For callable rows we prefer the
+        // pre-resolved `functionFullPath` because free functions live
+        // under a `function_group` pseudo-type — its `fullPath` is the
+        // bucket id, not the module path, so `${d.fullPath}::${f.name}`
+        // would miss the span-index entry.
         if (!isBucketHeader) {
-          opts.onShowCode(`${d.fullPath}::${f.name}`);
+          const id =
+            f.functionFullPath !== null ? f.functionFullPath : `${d.fullPath}::${f.name}`;
+          opts.onShowCode(id);
         }
         return;
       }

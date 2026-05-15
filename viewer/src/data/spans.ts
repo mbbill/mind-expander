@@ -11,6 +11,7 @@
 // so Cmd+click still opens the right file even though it can\'t
 // highlight the exact lines yet.
 
+import { classifyVisibility } from '../analysis/visibility.ts';
 import type { Facts, Span } from './schema.ts';
 
 export interface IndexedSpan {
@@ -33,6 +34,18 @@ export interface SpanIndex {
    *  should auto-expand its parent type's callable buckets — fields
    *  are already visible whenever the type itself is expanded. */
   readonly callables: ReadonlySet<string>;
+  /** For every element id, the diagram type-box id whose expansion
+   *  state controls that element's visibility:
+   *    - Method T::m → T (and a method-bucket inside T needs expanding)
+   *    - Field T::f → T
+   *    - Free function M::f → the function_group pseudo-type
+   *      `${M}::__fn_${visibilityBucket}` that holds it
+   *    - Type T → T (self)
+   *  The host uses this map to decide what to expand before scrolling
+   *  the diagram to a clicked code line — without it, free functions
+   *  whose function_group is collapsed can never be located in the
+   *  layout. Mirrors module_tree.ts's `__fn_${bucket}` id formula. */
+  readonly containingTypeBoxId: ReadonlyMap<string, string>;
 }
 
 export function buildSpanIndex(facts: Facts): SpanIndex {
@@ -40,6 +53,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
   const byFile = new Map<string, IndexedSpan[]>();
   const types = new Set<string>();
   const callables = new Set<string>();
+  const containingTypeBoxId = new Map<string, string>();
   const appendToFile = (entry: IndexedSpan): void => {
     let list = byFile.get(entry.file);
     if (list === undefined) {
@@ -56,6 +70,9 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
         const tSpan = t.span ?? fallback;
         types.add(t.full_path);
         forward.set(t.full_path, tSpan);
+        // Self-reference: a type "contains" itself for expansion
+        // purposes. Lets the host treat all element ids uniformly.
+        containingTypeBoxId.set(t.full_path, t.full_path);
         if (t.span !== undefined) {
           appendToFile({
             elementId: t.full_path,
@@ -67,6 +84,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
         for (const f of t.fields) {
           const id = `${t.full_path}::${f.name}`;
           forward.set(id, f.span ?? tSpan);
+          containingTypeBoxId.set(id, t.full_path);
           if (f.span !== undefined) {
             appendToFile({
               elementId: id,
@@ -81,6 +99,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
             const id = `${t.full_path}::${m.name}`;
             callables.add(id);
             forward.set(id, m.span ?? tSpan);
+            containingTypeBoxId.set(id, t.full_path);
             if (m.span !== undefined) {
               appendToFile({
                 elementId: id,
@@ -94,9 +113,16 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
       }
       for (const fn of mod.functions) {
         const modPath = mod.path === '' ? '' : `::${mod.path}`;
-        const id = `${crate.name}${modPath}::${fn.name}`;
+        const moduleId = `${crate.name}${modPath}`;
+        const id = `${moduleId}::${fn.name}`;
         callables.add(id);
         forward.set(id, fn.span ?? fallback);
+        // Free functions live in `function_group` pseudo-types
+        // (one per visibility bucket per module). The id formula is
+        // owned by `module_tree.ts:239`; we mirror it here so the
+        // host knows which pseudo-type to expand without having to
+        // walk the module tree at click time.
+        containingTypeBoxId.set(id, `${moduleId}::__fn_${classifyVisibility(fn.visibility)}`);
         if (fn.span !== undefined) {
           appendToFile({
             elementId: id,
@@ -117,7 +143,7 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
     });
   }
 
-  return { forward, byFile, types, callables };
+  return { forward, byFile, types, callables, containingTypeBoxId };
 }
 
 /** Find the DEEPEST (smallest-range) element whose span contains

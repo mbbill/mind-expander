@@ -61,6 +61,11 @@ export interface CodePanel {
    *  Used by the host when a click inside the panel resolves to a new
    *  element so the visual selection follows the cursor. */
   setHighlight: (startLine: number, endLine: number) => void;
+  /** Current on-screen rect of the panel (window coords), or null when
+   *  hidden. Lets the diagram's navigation logic avoid scrolling a
+   *  focused element behind the panel — the panel reports where it is,
+   *  the navigator decides where to land the focus. */
+  getScreenRect: () => DOMRect | null;
 }
 
 export function createCodePanel(opts: CodePanelOptions): CodePanel {
@@ -369,10 +374,14 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     });
   };
 
+  const getScreenRect = (): DOMRect | null =>
+    root.hidden ? null : root.getBoundingClientRect();
+
   return {
     show,
     hide,
     isOpen: () => !root.hidden,
     setHighlight,
+    getScreenRect,
   };
 }
