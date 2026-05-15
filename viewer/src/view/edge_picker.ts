@@ -80,6 +80,8 @@ export interface EdgePicker {
   moveBy: (dx: number, dy: number) => void;
 }
 
+import { forwardWheelToCanvas } from './wheel_forward.ts';
+
 const MARGIN = 8;
 const ENTRY_GAP = 2;
 
@@ -96,6 +98,9 @@ export function createEdgePicker(): EdgePicker {
   const panel = document.createElement('div');
   panel.className = 'edge-picker-panel';
   panel.style.pointerEvents = 'auto';
+  // Wheel events on the panel forward to the canvas so the user can
+  // still pan/zoom the diagram while the picker is open.
+  forwardWheelToCanvas(panel);
   panel.style.position = 'absolute';
   panel.style.display = 'flex';
   panel.style.flexDirection = 'column';

@@ -10,6 +10,7 @@
 import type { ArrowHit } from '../analysis/arrow_hit.ts';
 import type { ArrowEndpoint } from './arrow_navigation.ts';
 import { cratePrefixOf, stripCratePrefix } from './display_path.ts';
+import { forwardWheelToCanvas } from './wheel_forward.ts';
 
 const MARGIN = 8;
 const TRANSFORM_EPSILON = 0.000001;
@@ -71,6 +72,9 @@ export function createArrowDisambig(opts: {
   panel.style.pointerEvents = 'auto';
   panel.style.position = 'absolute';
   root.appendChild(panel);
+  // Wheel events on the panel forward to the canvas so the diagram
+  // stays scrollable/zoomable while the disambiguation popover is open.
+  forwardWheelToCanvas(panel);
 
   let panelLeft = 0;
   let panelTop = 0;
