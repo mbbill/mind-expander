@@ -11,29 +11,30 @@ import {
   displaySegmentsFor,
 } from '../data/file_tree.ts';
 
-// Floating, draggable code panel.
+// Right-side docked code panel.
 //
-// Shows the source for a clicked diagram element — Cmd/Ctrl+click on a
-// type/field/method chip opens this panel scrolled to the element's
-// definition. The panel lives in screen-space (fixed position), is
-// draggable by its header, and persists size + position to localStorage
-// so it sticks where the user puts it.
+// The panel is a flex sibling of `#viewer-left` inside `<main>`, so
+// its width is subtracted from the diagram pane (`#canvas-scroll`'s
+// outer flex item). Opening / closing it via `show()` / `hide()`
+// resizes the diagram naturally — no overlap, no z-index gymnastics.
+//
+// The only interactive geometry left on the panel is the left-edge
+// splitter: dragging it adjusts the panel's width and the flex layout
+// reflows the diagram live. Width is persisted to localStorage so the
+// user's preferred split survives reloads.
 //
 // Two-way linking lives partly here: clicking a line inside the panel
-// fires the host\'s `onLineNavigate` callback so the diagram can pan
+// fires the host's `onLineNavigate` callback so the diagram can pan
 // back to the element defined at that line. The host owns the file-to-
 // element index (built at facts-load time) so the panel stays generic.
 
 const STORAGE_KEY = 'mind-expander.code-panel';
+const DEFAULT_WIDTH = 480;
+const MIN_WIDTH = 280;
 
 interface PersistedState {
-  readonly x: number;
-  readonly y: number;
   readonly w: number;
-  readonly h: number;
 }
-
-const DEFAULT_STATE: PersistedState = { x: 80, y: 100, w: 520, h: 480 };
 
 function escapeHtml(text: string): string {
   return text
@@ -71,6 +72,11 @@ export interface CodePanelOptions {
 
 export interface CodePanel {
   show: (args: CodePanelShowArgs) => void;
+  /** Open the panel without loading any file. Used by the "C" hotkey
+   *  when no diagram element is selected — the user wanted the split
+   *  open even if there's nothing to show yet. Subsequent `show()` calls
+   *  replace the placeholder with actual source. */
+  openEmpty: () => void;
   hide: () => void;
   isOpen: () => boolean;
   /** Replace the highlighted line range without re-fetching the file.
@@ -78,9 +84,8 @@ export interface CodePanel {
    *  element so the visual selection follows the cursor. */
   setHighlight: (startLine: number, endLine: number) => void;
   /** Current on-screen rect of the panel (window coords), or null when
-   *  hidden. Lets the diagram's navigation logic avoid scrolling a
-   *  focused element behind the panel — the panel reports where it is,
-   *  the navigator decides where to land the focus. */
+   *  hidden. Lets the tour bubble avoid landing on top of the panel
+   *  (it floats above all elements regardless of layout). */
   getScreenRect: () => DOMRect | null;
 }
 
@@ -91,22 +96,8 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   const closeBtn = root.querySelector<HTMLButtonElement>('.code-panel-close');
   const bodyEl = root.querySelector<HTMLElement>('.code-panel-body');
   const headerEl = root.querySelector<HTMLElement>('.code-panel-header');
-  const resizerBrEl = root.querySelector<HTMLElement>('.code-panel-resize-br');
-  const resizerBlEl = root.querySelector<HTMLElement>('.code-panel-resize-bl');
-  const resizerLEl = root.querySelector<HTMLElement>('.code-panel-resize-l');
-  const resizerREl = root.querySelector<HTMLElement>('.code-panel-resize-r');
-  const resizerBEl = root.querySelector<HTMLElement>('.code-panel-resize-b');
-  if (
-    !titleEl ||
-    !closeBtn ||
-    !bodyEl ||
-    !headerEl ||
-    !resizerBrEl ||
-    !resizerBlEl ||
-    !resizerLEl ||
-    !resizerREl ||
-    !resizerBEl
-  ) {
+  const splitterEl = root.querySelector<HTMLElement>('.code-panel-resize-l');
+  if (!titleEl || !closeBtn || !bodyEl || !headerEl || !splitterEl) {
     throw new Error('code-panel missing required child elements');
   }
 
@@ -114,22 +105,17 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   let currentFileText: string | null = null;
   let inflight: AbortController | null = null;
 
-  // Apply saved position + size on first open. Saved values are
-  // clamped to the viewport so a smaller window after the last session
-  // doesn\'t leave the panel offscreen.
+  // Persisted width. Clamped on load so a smaller window after the
+  // last session doesn't strand the panel wider than the viewport
+  // (would leave the diagram pane with zero room).
   const loadState = (): PersistedState => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw === null) return DEFAULT_STATE;
+      if (raw === null) return { w: DEFAULT_WIDTH };
       const parsed = JSON.parse(raw) as Partial<PersistedState>;
-      return {
-        x: typeof parsed.x === 'number' ? parsed.x : DEFAULT_STATE.x,
-        y: typeof parsed.y === 'number' ? parsed.y : DEFAULT_STATE.y,
-        w: typeof parsed.w === 'number' ? parsed.w : DEFAULT_STATE.w,
-        h: typeof parsed.h === 'number' ? parsed.h : DEFAULT_STATE.h,
-      };
+      return { w: typeof parsed.w === 'number' ? parsed.w : DEFAULT_WIDTH };
     } catch {
-      return DEFAULT_STATE;
+      return { w: DEFAULT_WIDTH };
     }
   };
   const saveState = (s: PersistedState): void => {
@@ -140,195 +126,50 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     }
   };
   let state = loadState();
-  // Declared up here (rather than next to the drag handler that owns
-  // it) because `applyState` reads it on first invocation just below.
-  let collapsed = false;
-  const applyState = (): void => {
-    const maxX = Math.max(0, window.innerWidth - 100);
-    const maxY = Math.max(0, window.innerHeight - 60);
-    state = {
-      x: Math.min(Math.max(0, state.x), maxX),
-      y: Math.min(Math.max(0, state.y), maxY),
-      w: Math.min(Math.max(280, state.w), window.innerWidth),
-      h: Math.min(Math.max(180, state.h), window.innerHeight),
-    };
-    root.style.left = `${state.x}px`;
-    root.style.top = `${state.y}px`;
+  const applyWidth = (): void => {
+    // Leave at least 200px for the diagram pane so the diagram never
+    // collapses to nothing when the user drags the splitter all the way.
+    const maxW = Math.max(MIN_WIDTH, window.innerWidth - 200);
+    state = { w: Math.min(Math.max(MIN_WIDTH, state.w), maxW) };
+    root.style.setProperty('--code-panel-w', `${state.w}px`);
     root.style.width = `${state.w}px`;
-    // When the panel is folded the inline height represents the
-    // header-only collapsed value (set by `setCollapsed`). Writing
-    // `state.h` here on drag would override that and pop the body
-    // back open mid-drag — keep the collapsed height intact.
-    if (!collapsed) root.style.height = `${state.h}px`;
   };
-  applyState();
+  applyWidth();
 
-  // Drag the header to move the panel. Pointerup without significant
-  // motion is treated as a click on the title bar's empty area, which
-  // toggles the panel's collapsed (header-only) state.
-  let animClearTimer: number | null = null;
-  const setCollapsed = (c: boolean): void => {
-    if (collapsed === c) return;
-    collapsed = c;
-    // Enable the height transition just for this toggle. Normal
-    // drag/resize updates run without `.is-animating` so they stay
-    // instant — only this state change animates.
-    root.classList.add('is-animating');
-    root.classList.toggle('is-collapsed', c);
-    root.style.height = c
-      ? `${headerEl.getBoundingClientRect().height}px`
-      : `${state.h}px`;
-    if (animClearTimer !== null) window.clearTimeout(animClearTimer);
-    animClearTimer = window.setTimeout(() => {
-      root.classList.remove('is-animating');
-      animClearTimer = null;
-    }, 220);
-  };
-  const DRAG_THRESHOLD_PX = 3;
-  let drag: {
-    readonly id: number;
-    offX: number;
-    offY: number;
-    readonly startX: number;
-    readonly startY: number;
-    moved: boolean;
-  } | null = null;
-  headerEl.addEventListener('pointerdown', (e) => {
-    // Skip interactive children — `e.preventDefault()` below would
-    // otherwise suppress the synthesized click on close button and
-    // breadcrumb chips.
-    const target = e.target as HTMLElement;
-    if (
-      target.closest('.code-panel-close') !== null ||
-      target.closest('.code-panel-crumb') !== null
-    ) {
-      return;
-    }
-    drag = {
-      id: e.pointerId,
-      offX: e.clientX - state.x,
-      offY: e.clientY - state.y,
-      startX: e.clientX,
-      startY: e.clientY,
-      moved: false,
-    };
-    headerEl.setPointerCapture(e.pointerId);
+  // Splitter on the panel's LEFT edge. Dragging it left grows the
+  // panel (and shrinks the diagram pane); dragging right does the
+  // inverse. Width is computed from the panel's right edge minus the
+  // cursor position so the right edge stays glued to the viewport
+  // edge while only the left side moves.
+  let resize: { id: number; rightEdge: number } | null = null;
+  splitterEl.addEventListener('pointerdown', (e) => {
+    const rect = root.getBoundingClientRect();
+    resize = { id: e.pointerId, rightEdge: rect.right };
+    splitterEl.setPointerCapture(e.pointerId);
     e.preventDefault();
+    e.stopPropagation();
   });
-  headerEl.addEventListener('pointermove', (e) => {
-    if (drag === null || e.pointerId !== drag.id) return;
-    if (
-      !drag.moved &&
-      (Math.abs(e.clientX - drag.startX) > DRAG_THRESHOLD_PX ||
-        Math.abs(e.clientY - drag.startY) > DRAG_THRESHOLD_PX)
-    ) {
-      drag.moved = true;
-    }
-    if (!drag.moved) return;
-    state = { ...state, x: e.clientX - drag.offX, y: e.clientY - drag.offY };
-    applyState();
+  splitterEl.addEventListener('pointermove', (e) => {
+    if (resize === null || e.pointerId !== resize.id) return;
+    const newW = resize.rightEdge - e.clientX;
+    state = { w: newW };
+    applyWidth();
   });
-  const endDrag = (e: PointerEvent): void => {
-    if (drag === null || e.pointerId !== drag.id) return;
-    if (headerEl.hasPointerCapture(e.pointerId)) headerEl.releasePointerCapture(e.pointerId);
-    const wasMoved = drag.moved;
-    drag = null;
-    if (wasMoved) {
-      saveState(state);
-    } else if (e.type === 'pointerup') {
-      // Header click without drag → toggle the panel's collapsed
-      // state. Lets the user park the panel as a thin title bar and
-      // re-expand by clicking it again, without affecting drag.
-      setCollapsed(!collapsed);
-    }
+  const endResize = (e: PointerEvent): void => {
+    if (resize === null || e.pointerId !== resize.id) return;
+    if (splitterEl.hasPointerCapture(e.pointerId)) splitterEl.releasePointerCapture(e.pointerId);
+    resize = null;
+    saveState(state);
   };
-  headerEl.addEventListener('pointerup', endDrag);
-  headerEl.addEventListener('pointercancel', endDrag);
-
-  // Resize from any edge or bottom corner. Right/bottom edges keep
-  // their adjacent edge anchored; the left edge keeps the right edge
-  // anchored and moves `x` left as the panel widens (same as how the
-  // bottom-left corner already worked). Combined edge motions live
-  // in the two corner handles, which override edge cursors at the
-  // intersections.
-  type ResizeMode = 'br' | 'bl' | 'l' | 'r' | 'b';
-  type ResizeState = {
-    readonly id: number;
-    readonly mode: ResizeMode;
-    readonly startW: number;
-    readonly startH: number;
-    readonly startX: number;
-    readonly startY: number;
-    readonly startStateX: number;
-  };
-  let resize: ResizeState | null = null;
-
-  const startResize = (handle: HTMLElement, mode: ResizeMode): void => {
-    handle.addEventListener('pointerdown', (e) => {
-      resize = {
-        id: e.pointerId,
-        mode,
-        startW: state.w,
-        startH: state.h,
-        startX: e.clientX,
-        startY: e.clientY,
-        startStateX: state.x,
-      };
-      handle.setPointerCapture(e.pointerId);
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    handle.addEventListener('pointermove', (e) => {
-      if (resize === null || e.pointerId !== resize.id) return;
-      const dx = e.clientX - resize.startX;
-      const dy = e.clientY - resize.startY;
-      const minW = 280;
-      switch (resize.mode) {
-        case 'r':
-          state = { ...state, w: resize.startW + dx };
-          break;
-        case 'b':
-          state = { ...state, h: resize.startH + dy };
-          break;
-        case 'br':
-          state = { ...state, w: resize.startW + dx, h: resize.startH + dy };
-          break;
-        case 'l':
-        case 'bl': {
-          // Anchor the right edge (startStateX + startW) and let `x`
-          // travel left as `w` grows. Same math for both because the
-          // corner just adds vertical motion on top.
-          const rightEdge = resize.startStateX + resize.startW;
-          const newW = Math.max(minW, resize.startW - dx);
-          const newX = rightEdge - newW;
-          const newH = resize.mode === 'bl' ? resize.startH + dy : state.h;
-          state = { ...state, x: newX, w: newW, h: newH };
-          break;
-        }
-      }
-      applyState();
-    });
-    const endResize = (e: PointerEvent): void => {
-      if (resize === null || e.pointerId !== resize.id) return;
-      if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
-      resize = null;
-      saveState(state);
-    };
-    handle.addEventListener('pointerup', endResize);
-    handle.addEventListener('pointercancel', endResize);
-  };
-  startResize(resizerBrEl, 'br');
-  startResize(resizerBlEl, 'bl');
-  startResize(resizerLEl, 'l');
-  startResize(resizerREl, 'r');
-  startResize(resizerBEl, 'b');
+  splitterEl.addEventListener('pointerup', endResize);
+  splitterEl.addEventListener('pointercancel', endResize);
 
   closeBtn.addEventListener('click', () => {
     hide();
   });
 
   // Click on a line in the code body → fire onLineNavigate. Skip when
-  // the user is dragging out a text selection (don\'t hijack copy).
+  // the user is dragging out a text selection (don't hijack copy).
   bodyEl.addEventListener('click', (e) => {
     const sel = window.getSelection();
     if (sel !== null && sel.toString().length > 0) return;
@@ -345,10 +186,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     // split the resulting HTML on \n. Splitting after highlighting is
     // what keeps multi-line block comments and raw strings rendering
     // correctly across the per-line gutter layout.
-    // Prism's grammar table is typed as possibly-undefined per language.
-    // The Rust grammar is imported above, so it's present at runtime;
-    // the fallback to plain-text keeps the panel functional if some
-    // build configuration ever drops the import.
     const grammar = Prism.languages.rust;
     const highlighted =
       grammar !== undefined
@@ -369,22 +206,16 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       gutter.textContent = String(lineNum);
       const code = document.createElement('span');
       code.className = 'code-panel-text';
-      // Highlighted HTML is escaped by Prism for non-token text, so
-      // setting innerHTML is safe here. Empty string when the line
-      // is blank — fine as innerHTML.
       code.innerHTML = lineHtml[i] ?? '';
       lineEl.appendChild(gutter);
       lineEl.appendChild(code);
       frag.appendChild(lineEl);
     }
     bodyEl.replaceChildren(frag);
-    // Scroll the highlighted span into view. Use the first highlighted
-    // line as the anchor; align near the top so the user sees the
-    // beginning of the item plus context below.
     const target = bodyEl.querySelector<HTMLElement>('.code-panel-line.highlight');
     if (target !== null) {
       // Position the highlight ~25% from the top of the panel body so
-      // there\'s breathing room above for the surrounding context.
+      // there's breathing room above for the surrounding context.
       const offsetTop = target.offsetTop - bodyEl.clientHeight * 0.25;
       bodyEl.scrollTop = Math.max(0, offsetTop);
     } else {
@@ -400,10 +231,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
 
   const show = (args: CodePanelShowArgs): void => {
     root.hidden = false;
-    // Re-show the body if the panel was previously folded — the
-    // caller asked to display content, so a collapsed (header-only)
-    // state would silently swallow the request.
-    if (collapsed) setCollapsed(false);
     renderTitle(args.file);
     // Reuse cached text if same file — common when the user clicks
     // multiple items in the same module.
@@ -436,6 +263,25 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
           }),
         );
       });
+  };
+
+  // Open the split with no file loaded. If a file was previously
+  // shown, leave its body in place so closing/reopening doesn't lose
+  // the user's scroll position. Otherwise paint a brief placeholder
+  // so the body isn't empty.
+  const openEmpty = (): void => {
+    if (!root.hidden) return;
+    root.hidden = false;
+    if (currentFile === null) {
+      titleEl.replaceChildren(document.createTextNode('source'));
+      titleEl.title = '';
+      bodyEl.replaceChildren(
+        Object.assign(document.createElement('div'), {
+          className: 'code-panel-loading',
+          textContent: 'No source selected — click a diagram element to load its source here.',
+        }),
+      );
+    }
   };
 
   const hide = (): void => {
@@ -479,10 +325,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     popupEl = document.createElement('div');
     popupEl.className = 'code-panel-breadcrumb-popup';
 
-    // Tree expansion state local to this popup. Everything starts
-    // collapsed (matches VS Code's breadcrumb popup behaviour); folder
-    // clicks toggle and re-render. `currentChildPath` is intentionally
-    // ignored here — the user opens what they want to see.
     const expanded = new Set<string>();
     void currentChildPath;
 
@@ -555,7 +397,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     const rect = anchor.getBoundingClientRect();
     popupEl.style.left = `${rect.left}px`;
     popupEl.style.top = `${rect.bottom + 2}px`;
-    // Clamp to viewport.
     const popupRect = popupEl.getBoundingClientRect();
     if (popupRect.right > window.innerWidth - 8) {
       popupEl.style.left = `${Math.max(8, window.innerWidth - popupRect.width - 8)}px`;
@@ -594,9 +435,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       if (seg.isFile) btn.classList.add('is-file');
       btn.textContent = seg.name;
       if (!seg.isFile) {
-        // Folder segment: clicking opens a popup of its contents.
-        // The current path's NEXT segment is rendered "highlighted"
-        // in the popup so the user sees where they are.
         const next = segments[i + 1];
         const currentChild = next?.cumulativePath ?? null;
         btn.addEventListener('click', (e) => {
@@ -609,9 +447,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   };
 
   const setHighlight = (startLine: number, endLine: number): void => {
-    // Repaint just the highlight class — much cheaper than re-rendering
-    // every line and (more importantly) preserves scroll position so
-    // the user keeps looking at the same code after clicking.
     const lines = bodyEl.querySelectorAll<HTMLElement>('.code-panel-line');
     lines.forEach((el) => {
       const n = Number(el.dataset.line);
@@ -628,6 +463,7 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
 
   return {
     show,
+    openEmpty,
     hide,
     isOpen: () => !root.hidden,
     setHighlight,

@@ -413,52 +413,19 @@ async function main(): Promise<void> {
       `g.arrow[data-arrow-from="${cssEscape(fromId)}"][data-arrow-to="${cssEscape(toId)}"]`,
     );
 
-  // Canvas viewport rect with the code panel's footprint cut out.
-  // The code panel always anchors flush against the canvas's right
-  // edge (or, rarely, the left); when open it covers a strip of the
-  // viewport that the tour must NOT consider visible. Returning a
-  // narrower rect lets every tour pan/containment check funnel
-  // through a single notion of "where the diagram actually is".
-  const uncoveredCanvasRect = (): DOMRect => {
-    const vp = canvasScroll.getBoundingClientRect();
-    const avoid = codePanel.getScreenRect();
-    if (avoid === null || avoid.left >= vp.right || avoid.right <= vp.left) {
-      return vp;
-    }
-    if (avoid.right >= vp.right - 2 && avoid.left > vp.left) {
-      return new DOMRect(vp.left, vp.top, avoid.left - vp.left, vp.height);
-    }
-    if (avoid.left <= vp.left + 2 && avoid.right < vp.right) {
-      return new DOMRect(avoid.right, vp.top, vp.right - avoid.right, vp.height);
-    }
-    return vp;
-  };
-
-  // True iff `rect` lies entirely inside the uncovered canvas
-  // viewport (canvas rect minus code panel footprint). The
-  // panOnlyIfOffscreen optimization uses this so an element hidden
-  // behind the code panel correctly counts as off-screen.
-  const isRectFullyInUncoveredCanvas = (rect: DOMRect): boolean => {
-    const u = uncoveredCanvasRect();
-    return (
-      rect.left >= u.left &&
-      rect.right <= u.right &&
-      rect.top >= u.top &&
-      rect.bottom <= u.bottom
-    );
-  };
-
   // Left-biased focus point for tour playback. Returns a window-coords
-  // point ~1/3 from the *uncovered* canvas viewport's left edge,
-  // vertically centred. The bubble auto-positions to the right of
-  // the focused element by default; centring the element would push
-  // the bubble to the far right and feel unbalanced. Anchoring at
-  // 1/3 keeps roughly 2/3 of the visible area open on the right for
-  // the bubble. Tour-only — other navigation paths still use
-  // `pickFocusScreenPoint`.
+  // point ~1/3 from the canvas viewport's left edge, vertically
+  // centred. The bubble auto-positions to the right of the focused
+  // element by default; centring the element would push the bubble
+  // to the far right and feel unbalanced. Anchoring at 1/3 keeps
+  // roughly 2/3 of the canvas pane open on the right for the bubble.
+  // The canvas pane is now a flex sibling of the code panel — when
+  // the panel is open, `canvasScroll.getBoundingClientRect()` already
+  // returns the smaller (uncovered) area, so no extra "subtract the
+  // panel" math is needed.
   const TOUR_FOCUS_LEFT_FRACTION = 1 / 3;
   const tourFocusScreenPoint = (): { readonly x: number; readonly y: number } => {
-    const r = uncoveredCanvasRect();
+    const r = canvasScroll.getBoundingClientRect();
     return {
       x: r.left + r.width * TOUR_FOCUS_LEFT_FRACTION,
       y: r.top + r.height / 2,
@@ -579,7 +546,10 @@ async function main(): Promise<void> {
       // the current layout. Disambiguates field vs method via kind.
       currentCtx?.navigateToElement(elementId, kind);
     },
-    onClose: () => setDiagramSelection(null, null),
+    onClose: () => {
+      setDiagramSelection(null, null);
+      updateCodeIndicator(false);
+    },
     fileTree,
     // Breadcrumb popup → user picked a file. Route through openCodeFor
     // with kind='module' when we know the module so the diagram side
@@ -598,6 +568,7 @@ async function main(): Promise<void> {
     if (span === null) return;
     setDiagramSelection(id, kind);
     codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
+    updateCodeIndicator(true);
   };
   /** Same diagram selection + navigation as `openCodeFor`, but the code
    *  panel is left in whatever state the user has it in. If the panel
@@ -881,10 +852,31 @@ async function main(): Promise<void> {
     }
     if (e.key === 'f') toggleFocus();
     else if (e.key === 'm') toggleMethods();
+    else if (e.key === 'c') toggleCodePanel();
     else if (e.key === 's') layers.resetScale(true);
     else if (e.key === 'r') currentCtx?.resetAll();
     else if (e.key === '?') toggleKeyhints?.();
   });
+
+  // C → toggle the code panel. Closes it if open; otherwise opens it
+  // pointed at the most recently selected type element (mirrors what
+  // a Cmd-click on that element does). With no selection we still
+  // open the split with a placeholder body so the user can dock /
+  // resize the pane before there's anything to load — clicking a
+  // diagram element later replaces the placeholder with real source.
+  const toggleCodePanel = (): void => {
+    if (codePanel.isOpen()) {
+      codePanel.hide();
+      return;
+    }
+    const id = currentCtx !== null ? mostRecentSelection(currentCtx) : null;
+    if (id !== null) {
+      openCodeFor(id, 'type');
+    } else {
+      codePanel.openEmpty();
+      updateCodeIndicator(true);
+    }
+  };
 
   // Foldable legend / shortcuts panel — collapsed by default. Toggle by
   // clicking the "?" chip OR pressing the `?` key. State persists in
@@ -933,6 +925,8 @@ async function main(): Promise<void> {
   if (focusHint) focusHint.addEventListener('click', () => toggleFocus());
   const methodsHint = document.querySelector<HTMLElement>('#hint-methods');
   if (methodsHint) methodsHint.addEventListener('click', () => toggleMethods());
+  const codeHint = document.querySelector<HTMLElement>('#hint-code');
+  if (codeHint) codeHint.addEventListener('click', () => toggleCodePanel());
   const scaleHint = document.querySelector<HTMLElement>('#hint-scale');
   if (scaleHint) scaleHint.addEventListener('click', () => layers.resetScale(true));
   const resetHint = document.querySelector<HTMLElement>('#hint-reset');
@@ -1568,7 +1562,11 @@ async function main(): Promise<void> {
       }
       if (point === null) point = lookupLayoutPoint(lastLayout, typeId);
       if (point === null) return;
-      const target = pickFocusScreenPoint(canvasScroll, codePanel.getScreenRect());
+      // Code panel is now a flex sibling, not an overlay — the canvas
+      // viewport already excludes its footprint, so there's nothing
+      // to avoid here. Pass null and let the focus point land at the
+      // canvas centre.
+      const target = pickFocusScreenPoint(canvasScroll, null);
       layers.panTo(point.x, point.y, target.x, target.y, true);
     };
 
@@ -1595,19 +1593,21 @@ async function main(): Promise<void> {
       // collapsed container — after draw, we know for sure.
       if (panOnlyIfOffscreen === true) {
         const rect = findElementRect({ id: elementId, kind });
-        // Containment uses the *uncovered* canvas rect (canvas minus
-        // code panel) so an element hidden behind the panel correctly
-        // counts as off-screen and triggers a pan into the visible area.
-        if (rect !== null && isRectFullyInUncoveredCanvas(rect)) return;
+        // `canvasScroll.getBoundingClientRect()` already excludes the
+        // code panel's footprint (the panel is a flex sibling), so a
+        // plain containment check is enough — nothing to subtract.
+        if (rect !== null && isRectFullyInCanvas(rect)) return;
       }
       const point = lookupElementPoint(lastLayout, elementId, kind);
       if (point === null) return;
-      // Default: avoid the code panel by shifting away from it. Tour
-      // playback overrides this with a left-biased target (~1/3 from
-      // the viewport's left edge) so the bubble can sit on the right
-      // without crowding the diagram. Caller decides.
-      const target =
-        screenTarget ?? pickFocusScreenPoint(canvasScroll, codePanel.getScreenRect());
+      // Default: land at the canvas viewport centre. The code panel
+      // is a flex sibling now, so the canvas viewport's bounding rect
+      // already excludes the panel's footprint — `pickFocusScreenPoint`
+      // doesn't need an avoid rect. Tour playback overrides this
+      // entirely with a left-biased target (~1/3 from the viewport's
+      // left edge) so the bubble can sit on the right without
+      // crowding the diagram. Caller decides.
+      const target = screenTarget ?? pickFocusScreenPoint(canvasScroll, null);
       layers.panTo(point.x, point.y, target.x, target.y, true);
     };
 
@@ -1686,52 +1686,48 @@ async function main(): Promise<void> {
       const bboxH = Math.max(1, maxY - minY);
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      // Visible area = canvas viewport minus the code panel's
-      // footprint. Used for both the "already on-screen?" check
-      // and the fit/centre target so the arrow never lands behind
-      // the panel.
-      const u = uncoveredCanvasRect();
+      // Canvas pane's current viewport rect. With the code panel as
+      // a flex sibling, this rect already excludes the panel — no
+      // extra "subtract avoid" math is needed.
+      const vp = canvasScroll.getBoundingClientRect();
       // Optimization: if the arrow's whole routed bbox is already
-      // fully inside the uncovered area, don't shift the canvas. Map
+      // fully inside the canvas viewport, don't shift the canvas. Map
       // the data-space bbox into client coordinates via the current
       // transform and the canvas's page offset.
       if (panOnlyIfOffscreen === true) {
         const t = layers.getTransform();
-        const vp = canvasScroll.getBoundingClientRect();
         const screenLeft = vp.left + t.x + minX * t.k;
         const screenRight = vp.left + t.x + maxX * t.k;
         const screenTop = vp.top + t.y + minY * t.k;
         const screenBottom = vp.top + t.y + maxY * t.k;
         const fits =
-          screenLeft >= u.left &&
-          screenRight <= u.right &&
-          screenTop >= u.top &&
-          screenBottom <= u.bottom;
+          screenLeft >= vp.left &&
+          screenRight <= vp.right &&
+          screenTop >= vp.top &&
+          screenBottom <= vp.bottom;
         if (fits) return;
       }
       // Comfortable margin around the arrow so it has room to breathe
       // and the bubble can sit beside it without covering an endpoint.
       const PAD = 80;
-      const fitW = Math.max(0, u.width - PAD * 2);
-      const fitH = Math.max(0, u.height - PAD * 2);
+      const fitW = Math.max(0, vp.width - PAD * 2);
+      const fitH = Math.max(0, vp.height - PAD * 2);
       if (fitW <= 0 || fitH <= 0) return;
       // Cap at 1.0 so a tiny arrow doesn't trigger an extreme zoom-in
       // that disorients the viewer; users can pinch closer manually.
       // d3.zoom's scaleExtent clamps the transition automatically if
       // kFit ends up below the configured minimum.
       const k = Math.min(1, Math.min(fitW / bboxW, fitH / bboxH));
-      // Left-biased centring within the uncovered area — same 1/3
+      // Left-biased centring within the canvas viewport — same 1/3
       // rule as the element step. The arrow's bbox lands ~1/3 from
       // the visible region's left edge so the bubble can sit on
-      // its right without crowding the diagram or the code panel.
-      // layers.setTransform expects (tx, ty) in canvasScroll-local
-      // coords, so we subtract the canvas's page-origin before
-      // applying the data-space cx/cy.
-      const vp = canvasScroll.getBoundingClientRect();
-      const focusX = u.left + u.width * TOUR_FOCUS_LEFT_FRACTION;
-      const focusY = u.top + u.height / 2;
-      const tx = focusX - vp.left - cx * k;
-      const ty = focusY - vp.top - cy * k;
+      // its right without crowding the diagram. `layers.setTransform`
+      // expects (tx, ty) in canvasScroll-local coords, so we work
+      // entirely in those: cw * 1/3 for x, ch / 2 for y.
+      const cw = canvasScroll.clientWidth;
+      const ch = canvasScroll.clientHeight;
+      const tx = cw * TOUR_FOCUS_LEFT_FRACTION - cx * k;
+      const ty = ch / 2 - cy * k;
       layers.setTransform(k, tx, ty, true);
     };
 
@@ -2137,6 +2133,15 @@ function updateMethodsIndicator(hidden: boolean): void {
   const el = document.querySelector<HTMLElement>('#hint-methods');
   if (!el) return;
   el.classList.toggle('active', !hidden);
+}
+
+// Code-panel toggle indicator. The "C" chip lights up while the panel
+// is open so the user can see at a glance whether C will open or
+// close it. Driven from openCodeFor / toggleCodePanel / codePanel.onClose.
+function updateCodeIndicator(open: boolean): void {
+  const el = document.querySelector<HTMLElement>('#hint-code');
+  if (!el) return;
+  el.classList.toggle('active', open);
 }
 
 function updateScaleIndicator(k: number): void {

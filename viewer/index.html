@@ -19,6 +19,24 @@
       main {
         position: absolute;
         inset: 0;
+        /* Horizontal split: diagram pane on the left, code panel on
+           the right when open. The code panel is a flex sibling, not
+           an overlay, so the diagram's viewport (`#canvas-scroll`)
+           naturally shrinks when the panel opens and expands when it
+           closes — no z-index stacking, no overlap. */
+        display: flex;
+        flex-direction: row;
+        overflow: hidden;
+      }
+      /* Left pane wrapping the diagram. Flex-1 so it grows to take all
+         the space the code panel isn't using; `min-width: 0` lets it
+         shrink below its content's natural width when the panel opens
+         wide. `position: relative` so the absolute-positioned
+         scroll viewport / recenter button inside still anchor here. */
+      #viewer-left {
+        flex: 1 1 auto;
+        position: relative;
+        min-width: 0;
         overflow: hidden;
       }
       /* Scroll viewport. Native browser scrollTop is the source of truth
@@ -78,46 +96,28 @@
         font-size: 15px;
         line-height: 1;
       }
-      /* Floating, draggable, resizable code panel. Header drags. The
-         bottom-right corner resizes. Content area is a monospace pre
+      /* Right-side docked code panel. Sits as a flex sibling of
+         `#viewer-left` inside `<main>`, so its width is taken out of
+         the diagram pane's available space. Width is user-resizable
+         via the left-edge splitter (`.code-panel-resize-l`) and
+         persisted to localStorage. Content area is a monospace pre
          with line gutters; the highlighted span paints a soft yellow
          background, and clicking any line fires the host's
          line-navigate callback. */
       #code-panel {
-        position: fixed;
-        z-index: 200;
+        position: relative;
+        flex: 0 0 var(--code-panel-w, 480px);
+        width: var(--code-panel-w, 480px);
+        height: 100%;
         display: flex;
         flex-direction: column;
         background: #ffffff;
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+        border-left: 1px solid #cbd5e1;
         overflow: hidden;
         min-width: 280px;
-        min-height: 180px;
       }
       #code-panel[hidden] {
         display: none;
-      }
-      /* Folded state: header only. The body and resize handles fade
-         out and the panel's height transitions down to the header.
-         Animation is gated by `.is-animating` so it only plays on the
-         fold toggle — drag/resize updates touch the same inline
-         height and shouldn't tween. */
-      #code-panel.is-animating {
-        transition: height 200ms ease;
-      }
-      #code-panel.is-collapsed {
-        min-height: 0;
-      }
-      .code-panel-body,
-      .code-panel-resize {
-        transition: opacity 150ms ease;
-      }
-      #code-panel.is-collapsed .code-panel-body,
-      #code-panel.is-collapsed .code-panel-resize {
-        opacity: 0;
-        pointer-events: none;
       }
       .code-panel-header {
         display: flex;
@@ -126,7 +126,6 @@
         padding: 6px 10px;
         background: #f8fafc;
         border-bottom: 1px solid #e2e8f0;
-        cursor: move;
         user-select: none;
         flex: 0 0 auto;
       }
@@ -291,52 +290,23 @@
         font-size: 11px;
         white-space: pre-wrap;
       }
-      /* Resize handles. Left/right/bottom edges plus the two bottom
-         corners. Edges sit underneath the corner handles so the
-         corners "win" the cursor at the intersection. Edges start
-         below the header so they don't fight with header drag. */
+      /* Splitter between the diagram pane and the code panel. Sits on
+         the panel's left edge; dragging it left/right adjusts the
+         panel's width and reflows the flex layout so the diagram
+         pane resizes live. Slightly wider hit area (8px) than the
+         old edge handle since this is now the panel's only resize
+         control. */
       .code-panel-resize {
         position: absolute;
         background: transparent;
       }
       .code-panel-resize-l {
-        left: 0;
-        top: 32px;
-        bottom: 14px;
-        width: 6px;
-        cursor: ew-resize;
-      }
-      .code-panel-resize-r {
-        right: 0;
-        top: 32px;
-        bottom: 14px;
-        width: 6px;
-        cursor: ew-resize;
-      }
-      .code-panel-resize-b {
-        left: 14px;
-        right: 14px;
+        left: -4px;
+        top: 0;
         bottom: 0;
-        height: 6px;
-        cursor: ns-resize;
-      }
-      .code-panel-resize-br,
-      .code-panel-resize-bl {
-        bottom: 0;
-        width: 14px;
-        height: 14px;
-      }
-      .code-panel-resize-br {
-        right: 0;
-        cursor: nwse-resize;
-        background:
-          linear-gradient(135deg, transparent 50%, #cbd5e1 50%, #cbd5e1 60%, transparent 60%, transparent 75%, #cbd5e1 75%, #cbd5e1 85%, transparent 85%);
-      }
-      .code-panel-resize-bl {
-        left: 0;
-        cursor: nesw-resize;
-        background:
-          linear-gradient(45deg, transparent 50%, #cbd5e1 50%, #cbd5e1 60%, transparent 60%, transparent 75%, #cbd5e1 75%, #cbd5e1 85%, transparent 85%);
+        width: 8px;
+        cursor: ew-resize;
+        z-index: 1;
       }
       #canvas-scroll::-webkit-scrollbar {
         display: none;
@@ -570,7 +540,11 @@
         stroke-width: 8px;
       }
       #top-controls {
-        position: fixed;
+        /* `absolute` (not `fixed`) so the cluster anchors to its
+           containing block — `#viewer-left`. When the code panel opens
+           and `#viewer-left` shrinks, the right edge of these controls
+           tracks the splitter rather than running off behind the panel. */
+        position: absolute;
         top: 8px;
         right: 8px;
         z-index: 10;
@@ -578,6 +552,22 @@
         flex-direction: column;
         align-items: flex-end;
         gap: 6px;
+      }
+      /* Pointer-events shim. The cluster is a wide flex bbox (as wide
+         as its widest child, e.g. the legend panel) but most of that
+         area is whitespace or non-interactive decoration. Default to
+         `none` so canvas pans / drags pass through the empty regions,
+         then opt back in on the actual interactive elements. */
+      #top-controls,
+      #top-controls * {
+        pointer-events: none;
+      }
+      #top-controls button,
+      #top-controls input,
+      #top-controls select,
+      #top-controls .minimap-body,
+      #top-controls .row {
+        pointer-events: auto;
       }
       #crate {
         font-size: 12px;
@@ -1394,32 +1384,186 @@
   </head>
   <body>
     <main>
-      <div id="canvas-scroll">
-        <div id="canvas-content">
-          <svg id="tree" role="img" aria-label="module and type tree"></svg>
-          <div id="html-modules"></div>
+      <!-- Left pane: the diagram (canvas + HTML module overlay) plus
+           any controls that should anchor to the diagram's region.
+           The code panel below is a flex sibling that sits to the
+           right; opening it shrinks this pane via flexbox. -->
+      <div id="viewer-left">
+        <div id="canvas-scroll">
+          <div id="canvas-content">
+            <svg id="tree" role="img" aria-label="module and type tree"></svg>
+            <div id="html-modules"></div>
+          </div>
+        </div>
+        <div id="error" class="error" hidden></div>
+
+        <button id="recenter-btn" hidden type="button" aria-label="Back to content">
+          <span class="recenter-icon" aria-hidden="true">⟲</span>
+          <span>Back to content</span>
+        </button>
+        <!-- Overlay cluster — minimap, settings (hamburger), legend +
+             shortcuts (?). Lives inside `#viewer-left` and uses
+             `position: absolute` so its right edge tracks the
+             splitter when the code panel opens, instead of running
+             off behind the panel. -->
+        <div id="top-controls" aria-label="viewer controls">
+          <select id="crate" aria-label="crate"></select>
+          <div id="minimap" aria-label="diagram minimap">
+            <button
+              type="button"
+              class="minimap-toggle"
+              aria-expanded="true"
+              aria-controls="minimap-body"
+              title="Toggle minimap"
+            >
+              <span>map</span>
+              <span class="minimap-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="minimap-body" id="minimap-body" title="Click or drag to pan">
+              <svg aria-hidden="true" focusable="false"></svg>
+            </div>
+          </div>
+          <div id="settings" aria-label="settings">
+            <button
+              type="button"
+              class="settings-toggle"
+              aria-expanded="false"
+              aria-controls="settings-body"
+              title="Toggle settings"
+            >
+              ☰
+            </button>
+            <div class="settings-body" id="settings-body" hidden>
+              <label class="settings-row">
+                <input id="settings-trackpad-mode" type="checkbox" />
+                <span>trackpad mode</span>
+              </label>
+              <label class="settings-row" title="Show layout obstacle rectangles and placement grid">
+                <input id="settings-debug-layout" type="checkbox" />
+                <span>debug overlay</span>
+              </label>
+              <div class="settings-summary" id="settings-input-summary"></div>
+              <div class="settings-default" id="settings-input-default"></div>
+            </div>
+          </div>
+          <div id="keyhints" aria-label="keybindings">
+            <button
+              type="button"
+              class="keyhints-toggle"
+              aria-expanded="false"
+              aria-controls="keyhints-body"
+              title="Toggle legend & shortcuts"
+            >
+              ?
+            </button>
+            <div class="keyhints-body" id="keyhints-body" hidden>
+              <div class="legend" aria-label="legend">
+                <div class="legend-col" aria-label="arrow legend">
+                  <div class="legend-row">
+                    <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                      <line
+                        x1="2"
+                        y1="5"
+                        x2="28"
+                        y2="5"
+                        stroke="#94a3b8"
+                        stroke-width="1"
+                        marker-end="url(#legend-arrow-marker)"
+                      />
+                    </svg>
+                    <span>canonical</span>
+                  </div>
+                  <div class="legend-row">
+                    <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                      <line
+                        x1="2"
+                        y1="5"
+                        x2="28"
+                        y2="5"
+                        stroke="#3b82f6"
+                        stroke-width="1"
+                        marker-end="url(#legend-arrow-marker)"
+                      />
+                    </svg>
+                    <span>selected</span>
+                  </div>
+                  <div class="legend-row">
+                    <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                      <line
+                        x1="2"
+                        y1="5"
+                        x2="28"
+                        y2="5"
+                        stroke="#f59e0b"
+                        stroke-width="1"
+                        marker-end="url(#legend-arrow-marker)"
+                      />
+                    </svg>
+                    <span>drift_below</span>
+                  </div>
+                  <div class="legend-row">
+                    <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                      <line
+                        x1="2"
+                        y1="5"
+                        x2="28"
+                        y2="5"
+                        stroke="#ef4444"
+                        stroke-width="1"
+                        marker-end="url(#legend-arrow-marker)"
+                      />
+                    </svg>
+                    <span>drift_above</span>
+                  </div>
+                </div>
+                <div class="legend-col" aria-label="visibility legend">
+                  <div class="legend-row">
+                    <span class="legend-dot" style="background:#ef4444"></span>
+                    <span>pub</span>
+                  </div>
+                  <div class="legend-row">
+                    <span class="legend-dot" style="background:#22c55e"></span>
+                    <span>pub(crate)</span>
+                  </div>
+                  <div class="legend-row">
+                    <span class="legend-dot" style="background:#3b82f6"></span>
+                    <span>pub(super)</span>
+                  </div>
+                  <div class="legend-row">
+                    <span class="legend-dot" style="background:#f97316"></span>
+                    <span>pub(in path)</span>
+                  </div>
+                  <div class="legend-row">
+                    <span class="legend-dot" style="background:#94a3b8"></span>
+                    <span>local</span>
+                  </div>
+                </div>
+              </div>
+              <div class="chips">
+                <div class="row" id="hint-focus"><kbd>F</kbd><span>focus</span></div>
+                <div class="row" id="hint-methods" title="Show or hide the per-type method buckets"><kbd>M</kbd><span>methods</span></div>
+                <div class="row" id="hint-code" title="Show or hide the source code panel"><kbd>C</kbd><span>code</span></div>
+                <div class="row" id="hint-scale" title="Reset zoom to 100%"><kbd>S</kbd><span>scale</span><span id="scale-value">100%</span></div>
+                <div class="row" id="hint-reset" title="Reset everything"><kbd>R</kbd><span>reset</span></div>
+                <div class="row" id="hint-overview" title="Toggle fit-all overview / 100% at cursor"><kbd>Space</kbd><span>overview</span></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-      <div id="error" class="error" hidden></div>
-      <button id="recenter-btn" hidden type="button" aria-label="Back to content">
-        <span class="recenter-icon" aria-hidden="true">⟲</span>
-        <span>Back to content</span>
-      </button>
-      <!-- Floating, draggable code panel. Cmd/Ctrl+click on a diagram
-           element opens it to that element's source span; the host
-           wires showing/hiding and click-to-navigate in main.ts. -->
-      <div id="code-panel" hidden role="dialog" aria-label="Source code">
+      <!-- Right-docked code panel. Cmd/Ctrl+click on a diagram element
+           opens it to that element's source span; the host wires
+           showing/hiding and click-to-navigate in main.ts. The single
+           remaining resize handle acts as the splitter between the
+           diagram pane and this one. -->
+      <aside id="code-panel" hidden role="complementary" aria-label="Source code">
         <div class="code-panel-header">
           <span class="code-panel-title">source</span>
           <button class="code-panel-close" type="button" aria-label="Close code panel">×</button>
         </div>
         <pre class="code-panel-body"></pre>
         <div class="code-panel-resize code-panel-resize-l" aria-hidden="true"></div>
-        <div class="code-panel-resize code-panel-resize-r" aria-hidden="true"></div>
-        <div class="code-panel-resize code-panel-resize-b" aria-hidden="true"></div>
-        <div class="code-panel-resize code-panel-resize-bl" aria-hidden="true"></div>
-        <div class="code-panel-resize code-panel-resize-br" aria-hidden="true"></div>
-      </div>
+      </aside>
     </main>
     <!-- Hidden SVG defs reachable from any inline SVG on the page —
          shared marker for the legend arrows. Same shape as the graph's
@@ -1453,149 +1597,6 @@
         </marker>
       </defs>
     </svg>
-    <div id="top-controls" aria-label="viewer controls">
-      <select id="crate" aria-label="crate"></select>
-      <div id="minimap" aria-label="diagram minimap">
-        <button
-          type="button"
-          class="minimap-toggle"
-          aria-expanded="true"
-          aria-controls="minimap-body"
-          title="Toggle minimap"
-        >
-          <span>map</span>
-          <span class="minimap-caret" aria-hidden="true">▾</span>
-        </button>
-        <div class="minimap-body" id="minimap-body" title="Click or drag to pan">
-          <svg aria-hidden="true" focusable="false"></svg>
-        </div>
-      </div>
-      <div id="settings" aria-label="settings">
-        <button
-          type="button"
-          class="settings-toggle"
-          aria-expanded="false"
-          aria-controls="settings-body"
-          title="Toggle settings"
-        >
-          ☰
-        </button>
-        <div class="settings-body" id="settings-body" hidden>
-          <label class="settings-row">
-            <input id="settings-trackpad-mode" type="checkbox" />
-            <span>trackpad mode</span>
-          </label>
-          <label class="settings-row" title="Show layout obstacle rectangles and placement grid">
-            <input id="settings-debug-layout" type="checkbox" />
-            <span>debug overlay</span>
-          </label>
-          <div class="settings-summary" id="settings-input-summary"></div>
-          <div class="settings-default" id="settings-input-default"></div>
-        </div>
-      </div>
-      <div id="keyhints" aria-label="keybindings">
-        <button
-          type="button"
-          class="keyhints-toggle"
-          aria-expanded="false"
-          aria-controls="keyhints-body"
-          title="Toggle legend & shortcuts"
-        >
-          ?
-        </button>
-        <div class="keyhints-body" id="keyhints-body" hidden>
-          <div class="legend" aria-label="legend">
-            <div class="legend-col" aria-label="arrow legend">
-              <div class="legend-row">
-                <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
-                  <line
-                    x1="2"
-                    y1="5"
-                    x2="28"
-                    y2="5"
-                    stroke="#94a3b8"
-                    stroke-width="1"
-                    marker-end="url(#legend-arrow-marker)"
-                  />
-                </svg>
-                <span>canonical</span>
-              </div>
-              <div class="legend-row">
-                <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
-                  <line
-                    x1="2"
-                    y1="5"
-                    x2="28"
-                    y2="5"
-                    stroke="#3b82f6"
-                    stroke-width="1"
-                    marker-end="url(#legend-arrow-marker)"
-                  />
-                </svg>
-                <span>selected</span>
-              </div>
-              <div class="legend-row">
-                <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
-                  <line
-                    x1="2"
-                    y1="5"
-                    x2="28"
-                    y2="5"
-                    stroke="#f59e0b"
-                    stroke-width="1"
-                    marker-end="url(#legend-arrow-marker)"
-                  />
-                </svg>
-                <span>drift_below</span>
-              </div>
-              <div class="legend-row">
-                <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
-                  <line
-                    x1="2"
-                    y1="5"
-                    x2="28"
-                    y2="5"
-                    stroke="#ef4444"
-                    stroke-width="1"
-                    marker-end="url(#legend-arrow-marker)"
-                  />
-                </svg>
-                <span>drift_above</span>
-              </div>
-            </div>
-            <div class="legend-col" aria-label="visibility legend">
-              <div class="legend-row">
-                <span class="legend-dot" style="background:#ef4444"></span>
-                <span>pub</span>
-              </div>
-              <div class="legend-row">
-                <span class="legend-dot" style="background:#22c55e"></span>
-                <span>pub(crate)</span>
-              </div>
-              <div class="legend-row">
-                <span class="legend-dot" style="background:#3b82f6"></span>
-                <span>pub(super)</span>
-              </div>
-              <div class="legend-row">
-                <span class="legend-dot" style="background:#f97316"></span>
-                <span>pub(in path)</span>
-              </div>
-              <div class="legend-row">
-                <span class="legend-dot" style="background:#94a3b8"></span>
-                <span>local</span>
-              </div>
-            </div>
-          </div>
-          <div class="chips">
-            <div class="row" id="hint-focus"><kbd>F</kbd><span>focus</span></div>
-            <div class="row" id="hint-methods" title="Show or hide the per-type method buckets"><kbd>M</kbd><span>methods</span></div>
-            <div class="row" id="hint-scale" title="Reset zoom to 100%"><kbd>S</kbd><span>scale</span><span id="scale-value">100%</span></div>
-            <div class="row" id="hint-reset" title="Reset everything"><kbd>R</kbd><span>reset</span></div>
-            <div class="row" id="hint-overview" title="Toggle fit-all overview / 100% at cursor"><kbd>Space</kbd><span>overview</span></div>
-          </div>
-        </div>
-      </div>
-    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
