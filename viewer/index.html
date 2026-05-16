@@ -1151,7 +1151,202 @@
         fill: url(#member-highlight-fade);
         mix-blend-mode: multiply;
       }
+
+      /* Top-center tour bar: shows the active tour's title with a
+         dropdown chevron + play/stop. Halo animation runs briefly
+         when a fresh tour arrives via SSE. */
+      #tour-bar {
+        position: fixed;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 30;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 6px 4px 10px;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 12px;
+        color: #1e293b;
+        max-width: 60vw;
+      }
+      #tour-bar[hidden] { display: none; }
+      .tour-bar-title {
+        background: transparent;
+        border: none;
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+        padding: 4px 8px;
+        max-width: 50vw;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border-radius: 999px;
+      }
+      .tour-bar-title:hover { background: #f1f5f9; }
+      .tour-bar-play {
+        background: #7e22ce;
+        color: #fff;
+        border: none;
+        font-size: 12px;
+        line-height: 1;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        cursor: pointer;
+      }
+      .tour-bar-play:hover { background: #6b21a8; }
+      .tour-bar-play.is-playing {
+        background: #475569;
+      }
+      /* Rainbow halo for a freshly arrived tour. */
+      @keyframes tour-bar-halo {
+        0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        25%  { box-shadow: 0 0 0 6px rgba(234, 179, 8, 0.4), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        50%  { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0.35), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        75%  { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.4), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0), 0 6px 18px rgba(15, 23, 42, 0.14); }
+      }
+      #tour-bar.is-new {
+        animation: tour-bar-halo 3.6s ease-in-out 1;
+      }
+      .tour-bar-menu {
+        position: fixed;
+        z-index: 31;
+        min-width: 240px;
+        max-height: 60vh;
+        overflow: auto;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+        padding: 4px 0;
+        font: 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      .tour-bar-menu-row {
+        padding: 6px 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        color: #1e293b;
+      }
+      .tour-bar-menu-row:hover { background: #f1f5f9; }
+      .tour-bar-menu-row.is-active { background: #ede9fe; font-weight: 600; }
+
+      /* Yellow sticky-note tour bubble. Position is fixed so the
+         note floats above the canvas, with a CSS triangle "pointer"
+         on one of the four sides aimed at the focused element. */
+      .tour-bubble {
+        position: fixed;
+        z-index: 35;
+        min-width: 240px;
+        max-width: 360px;
+        background: #fef9c3;
+        border: 1px solid #eab308;
+        border-radius: 4px;
+        padding: 12px 14px 10px 14px;
+        box-shadow: 4px 6px 16px rgba(15, 23, 42, 0.22);
+        font: 14px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #1e293b;
+        cursor: move;
+        user-select: none;
+        transform: rotate(-0.4deg);
+      }
+      .tour-bubble-body {
+        line-height: 1.45;
+        margin-bottom: 8px;
+      }
+      /* Compact markdown rendering inside the sticky note. Margins
+         on first/last children are zeroed so paragraphs sit flush
+         against the bubble's top/bottom padding. */
+      .tour-bubble-body p {
+        margin: 0 0 6px 0;
+      }
+      .tour-bubble-body > :first-child { margin-top: 0; }
+      .tour-bubble-body > :last-child { margin-bottom: 0; }
+      .tour-bubble-body code {
+        background: rgba(146, 64, 14, 0.12);
+        padding: 0 4px;
+        border-radius: 3px;
+        font: 0.92em ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .tour-bubble-body pre {
+        background: rgba(146, 64, 14, 0.1);
+        padding: 6px 8px;
+        border-radius: 4px;
+        overflow-x: auto;
+        font: 0.92em ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 0 0 6px 0;
+      }
+      .tour-bubble-body pre code {
+        background: transparent;
+        padding: 0;
+      }
+      .tour-bubble-body ul,
+      .tour-bubble-body ol {
+        margin: 0 0 6px 0;
+        padding-left: 1.2em;
+      }
+      .tour-bubble-body li { margin-bottom: 2px; }
+      .tour-bubble-body a {
+        color: #7e22ce;
+        text-decoration: underline;
+      }
+      .tour-bubble-body a:hover { color: #6b21a8; }
+      .tour-bubble-body strong { font-weight: 700; }
+      .tour-bubble-body em { font-style: italic; }
+      .tour-bubble-footer {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .tour-bubble-footer button {
+        font: inherit;
+        padding: 3px 8px;
+        border-radius: 3px;
+        border: 1px solid #ca8a04;
+        background: #fde68a;
+        color: #1e293b;
+        cursor: pointer;
+      }
+      .tour-bubble-footer button[disabled] {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .tour-bubble-footer button:not([disabled]):hover {
+        background: #fcd34d;
+      }
+      .tour-bubble-counter {
+        margin-left: auto;
+        color: #78716c;
+        font-size: 11px;
+      }
+      /* SVG tail that stretches from the bubble's edge to a point on
+         the focused element's bounding box. Updated per rAF frame
+         by the bubble component; covers the viewport so polygon
+         coordinates can use raw screen pixels. Sits just under the
+         bubble in z order so the body draws on top. */
+      .tour-bubble-tail-svg {
+        position: fixed;
+        left: 0;
+        top: 0;
+        z-index: 34;
+        pointer-events: none;
+      }
+      .tour-bubble-tail {
+        fill: none;
+        stroke: #eab308;
+        stroke-width: 1.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.9;
+      }
     </style>
+
   </head>
   <body>
     <main>

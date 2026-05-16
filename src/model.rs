@@ -348,6 +348,16 @@ pub struct CallEdge {
     pub resolution: CallResolution,
     /// Textual callee expression, e.g. `foo`, `Type::new`, or `.push`.
     pub origin: String,
+    /// 1-indexed inclusive line range of the call expression
+    /// inside the caller's source file. Lets tour resolution map any
+    /// line inside the call (not just its start) to the callee. Both
+    /// default to 0 on older facts files that pre-date the field —
+    /// the resolver treats 0 as "no callsite hint" and falls back to
+    /// the smallest-containing-element rule.
+    #[serde(default)]
+    pub callsite_start_line: u32,
+    #[serde(default)]
+    pub callsite_end_line: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -13,6 +13,8 @@ mod print;
 mod resolve;
 mod server;
 mod survey;
+mod tour;
+mod tour_client;
 mod unified;
 
 use std::path::PathBuf;
@@ -116,6 +118,20 @@ enum Cmd {
         #[arg(long)]
         no_open: bool,
     },
+    /// Send a tour JSON to a running `mind-expander view` server.
+    /// `file` is a path; `-` reads JSON from stdin. The server
+    /// validates the schema, resolves every `{file, line}` reference
+    /// to a canonical element, and queues the resolved tour for the
+    /// viewer to play. Prints `ok` on success or one error per line
+    /// from the server's resolution failures.
+    Tour {
+        /// Path to a tour JSON, or `-` to read from stdin.
+        file: PathBuf,
+        /// Server to send the tour to, `host:port`. The LLM that
+        /// started the server already knows this.
+        #[arg(long)]
+        host: String,
+    },
     /// Print a compact, label-free survey: counters, module table,
     /// rankings, isolated types, lifetime-declaring types, unsafe locations,
     /// trait-impls. Designed for fast orientation without reading source.
@@ -205,6 +221,9 @@ fn main() -> anyhow::Result<()> {
         } => {
             let path = workspace.unwrap_or(cli.root);
             server::run(&path, port, !no_open)?;
+        }
+        Cmd::Tour { file, host } => {
+            tour_client::send(&file, &host)?;
         }
         Cmd::Survey {
             krate,

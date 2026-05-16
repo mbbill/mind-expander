@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
     Expr, ExprCall, ExprMethodCall, File, FnArg, ImplItem, Item, ItemImpl, ItemMod, ItemTrait, Pat,
@@ -408,7 +409,12 @@ struct BodyCallVisitor<'a> {
 }
 
 impl BodyCallVisitor<'_> {
-    fn handle_path_call(&mut self, path: &syn::Path) {
+    fn handle_path_call(
+        &mut self,
+        path: &syn::Path,
+        callsite_start_line: u32,
+        callsite_end_line: u32,
+    ) {
         let segments = path_segments(path);
         if segments.is_empty() {
             return;
@@ -423,7 +429,13 @@ impl BodyCallVisitor<'_> {
             &self.current_module_full_path,
             self.current_type,
         ) {
-            self.push_edges(resolved, CallKind::AssociatedFunction, origin);
+            self.push_edges(
+                resolved,
+                CallKind::AssociatedFunction,
+                origin,
+                callsite_start_line,
+                callsite_end_line,
+            );
             return;
         }
 
@@ -431,7 +443,13 @@ impl BodyCallVisitor<'_> {
             .registry
             .resolve_free_call(&segments, &self.current_module_full_path)
         {
-            self.push_edges(resolved, CallKind::Function, origin);
+            self.push_edges(
+                resolved,
+                CallKind::Function,
+                origin,
+                callsite_start_line,
+                callsite_end_line,
+            );
         }
     }
 
@@ -444,10 +462,26 @@ impl BodyCallVisitor<'_> {
         else {
             return;
         };
-        self.push_edges(resolved, CallKind::Method, format!(".{method_name}"));
+        let span = node.span();
+        let start = span.start().line as u32;
+        let end = span.end().line as u32;
+        self.push_edges(
+            resolved,
+            CallKind::Method,
+            format!(".{method_name}"),
+            start,
+            end,
+        );
     }
 
-    fn push_edges(&mut self, resolved: ResolvedTargets, kind: CallKind, origin: String) {
+    fn push_edges(
+        &mut self,
+        resolved: ResolvedTargets,
+        kind: CallKind,
+        origin: String,
+        callsite_start_line: u32,
+        callsite_end_line: u32,
+    ) {
         for callee in resolved.paths {
             let key = (
                 self.caller.to_string(),
@@ -465,6 +499,8 @@ impl BodyCallVisitor<'_> {
                 kind,
                 resolution: resolved.resolution,
                 origin: origin.clone(),
+                callsite_start_line,
+                callsite_end_line,
             });
         }
     }
@@ -473,7 +509,10 @@ impl BodyCallVisitor<'_> {
 impl<'ast> Visit<'ast> for BodyCallVisitor<'_> {
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
         if let Expr::Path(p) = &*node.func {
-            self.handle_path_call(&p.path);
+            let span = node.span();
+            let start = span.start().line as u32;
+            let end = span.end().line as u32;
+            self.handle_path_call(&p.path, start, end);
         }
         syn::visit::visit_expr_call(self, node);
     }

@@ -27,6 +27,9 @@ import {
 } from './data/spans.ts';
 import { buildFileTree } from './data/file_tree.ts';
 import { createCodePanel } from './view/code_panel.ts';
+import { createTourBar } from './view/tour_bar.ts';
+import { createTourPlayer } from './view/tour_player.ts';
+import type { ResolvedRef, ResolvedStep, ResolvedTour } from './data/tour_schema.ts';
 import { signatureExpansionId } from './layout/geometry.ts';
 import { buildLayout } from './layout/pipeline.ts';
 import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
@@ -153,6 +156,146 @@ let currentCtx: RenderCtx | null = null;
 void main();
 
 async function main(): Promise<void> {
+  // Tour bar (top-center) + player wiring. The bar holds the list
+  // of received tours and the play/stop toggle; the player drives
+  // step lifecycle and owns the floating bubble. The `applyStep` and
+  // `anchorFor` callbacks reference variables declared further down
+  // (selectAndSyncCode, currentCtx, codePanel) — that's fine since
+  // they fire on user action, well after main() finishes setup.
+  const tourBar = createTourBar({
+    onPlay: (tour) => {
+      tourPlayer.start(tour);
+      tourBar.setPlaying(true);
+    },
+    onStop: () => {
+      tourPlayer.stop();
+    },
+  });
+  const tourPlayer = createTourPlayer({
+    applyStep: (step) => applyTourStep(step),
+    anchorFor: (step) => anchorForStep(step),
+    onStop: () => tourBar.setPlaying(false),
+  });
+  const tourEvents = new EventSource('/api/tour-events');
+  tourEvents.addEventListener('tour', (e) => {
+    try {
+      const tour = JSON.parse((e as MessageEvent).data) as ResolvedTour;
+      console.log('[tour received]', tour);
+      tourBar.addTour(tour);
+    } catch (err) {
+      console.error('[tour] failed to parse SSE payload', err);
+    }
+  });
+  tourEvents.addEventListener('error', () => {
+    // SSE auto-reconnects; just log so we know the channel hiccuped.
+    console.warn('[tour] SSE error (auto-reconnects)');
+  });
+
+  // Per-step diagram dispatcher. Centralises the "what does the
+  // viewer do when a tour lands on this step" rules:
+  //   focus = none      → no diagram action.
+  //   focus = element   → select + navigate to refs[0]. Sync the
+  //                       code panel only if it's already open.
+  //   focus = arrow     → select refs[0]; pan so both endpoints
+  //                       fit; bubble points at the midpoint.
+  // We never auto-open the code panel during playback so the user's
+  // panel state (open / closed / collapsed) is preserved.
+  const applyTourStep = (step: ResolvedStep): Promise<void> => {
+    if (step.refs.length === 0) return Promise.resolve();
+    const head = step.refs[0];
+    if (head === undefined) return Promise.resolve();
+    // 1. Selection state (purple ring + member band) + container expand.
+    setDiagramSelection(head.id, head.kind);
+    // 2. Expand ancestor modules and pan to the element. Without
+    //    this the type stays nested inside a collapsed module band
+    //    and the bubble has nothing visible to point at.
+    currentCtx?.navigateToElement(head.id, head.kind);
+    // 3. Code panel: sync only if already open. Tour playback never
+    //    forces the panel onto the user.
+    const span = lookupSpan(spanIndex, head.id, head.kind);
+    if (span !== null && codePanel.isOpen()) {
+      codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
+    }
+    // No artificial wait — the bubble polls `getAnchor()` each
+    // frame and follows the animating row to its final position.
+    return Promise.resolve();
+  };
+
+  /** Returns a CALLABLE the bubble polls each frame to re-locate
+   *  the focused element. Live evaluation makes the pointer follow
+   *  the target during pan / zoom / scroll instead of staying
+   *  glued to a stale screen position. */
+  const anchorForStep = (step: ResolvedStep): (() => DOMRect | null) => {
+    if (step.focus === 'none' || step.refs.length === 0) {
+      return () => null;
+    }
+    if (step.focus === 'arrow' && step.refs.length >= 2) {
+      const r0 = step.refs[0]!;
+      const r1 = step.refs[1]!;
+      return () => {
+        const a = findElementRect(r0);
+        const b = findElementRect(r1);
+        if (a === null || b === null) return a ?? b;
+        const cx = (a.left + a.right + b.left + b.right) / 4;
+        const cy = (a.top + a.bottom + b.top + b.bottom) / 4;
+        return new DOMRect(cx - 8, cy - 8, 16, 16);
+      };
+    }
+    const head = step.refs[0]!;
+    return () => findElementRect(head);
+  };
+
+  const findElementRect = (ref: ResolvedRef): DOMRect | null => {
+    if (ref.kind === 'module') {
+      // Modules render in the left HTML tree, not the SVG diagram.
+      const node = document.querySelector<HTMLElement>(
+        `#html-modules .module-group[data-id="${cssEscape(ref.id)}"] > .module-header`,
+      );
+      return node?.getBoundingClientRect() ?? null;
+    }
+    if (ref.kind === 'type') {
+      // For a type-kind anchor we want the HEADER ROW specifically
+      // (the "S Instance ▾" line), not the whole bounding box —
+      // arrowhead lands on the type's name row, same vertical
+      // discipline we use for member rows. Use the selection-ring's
+      // horizontal extent (it spans the full visible box width) and
+      // the header text's vertical extent (just one row tall).
+      const box = document.querySelector<SVGGraphicsElement>(
+        `g.type-box[data-element-id="${cssEscape(ref.id)}"]`,
+      );
+      if (box === null) return null;
+      const ring = box.querySelector<SVGRectElement>('rect.selection-ring');
+      const header = box.querySelector<SVGTextElement>('text.header-label');
+      if (ring === null || header === null) {
+        return ring?.getBoundingClientRect() ?? null;
+      }
+      const ringRect = ring.getBoundingClientRect();
+      const headerRect = header.getBoundingClientRect();
+      return new DOMRect(
+        ringRect.left,
+        headerRect.top,
+        ringRect.width,
+        headerRect.height,
+      );
+    }
+    // field / method / function: anchor on the row's `member-bg`
+    // rect — the purple highlight band. It spans the full type-box
+    // width (so its left edge is on the type-box boundary) AND is
+    // only the row's height. The arrow lands perpendicular to the
+    // LEFT side at the row's vertical middle, exactly outside the
+    // type at the row the user is on.
+    const row = document.querySelector<SVGGraphicsElement>(
+      `[data-element-id="${cssEscape(ref.id)}"][data-element-kind="${ref.kind}"]`,
+    );
+    const band = row?.querySelector<SVGRectElement>('rect.member-bg');
+    if (band !== null && band !== undefined) return band.getBoundingClientRect();
+    // Fallback: the row's own bbox if member-bg isn't ready yet.
+    return row?.getBoundingClientRect() ?? null;
+  };
+
+  const cssEscape = (s: string): string =>
+    (window as unknown as { CSS?: { escape?: (s: string) => string } }).CSS?.escape?.(s) ??
+    s.replace(/(["\\])/g, '\\$1');
   const facts = await tryLoadFacts();
   if (!facts) return;
 
@@ -262,6 +405,19 @@ async function main(): Promise<void> {
     setDiagramSelection(id, kind);
     codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
   };
+  /** Same diagram selection + navigation as `openCodeFor`, but the code
+   *  panel is left in whatever state the user has it in. If the panel
+   *  is already open we sync its highlight; if it's closed we don't
+   *  pop it back up. Tour playback uses this so a step about a method
+   *  doesn't force the source onto the user. */
+  const selectAndSyncCode = (id: string, kind: ElementKind): void => {
+    const span = lookupSpan(spanIndex, id, kind);
+    setDiagramSelection(id, kind);
+    if (span !== null && codePanel.isOpen()) {
+      codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
+    }
+  };
+  void selectAndSyncCode; // consumer wires in shortly via the tour player
 
   // Single canvas-backed measurer for the whole session — one canvas
   // element, one font binding, results memoized per string. Field names

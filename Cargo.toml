@@ -26,3 +26,10 @@ axum = "0.7"
 tower-http = { version = "0.5", features = ["fs"] }
 include_dir = "0.7"
 opener = "0.7"
+# Tiny sync HTTP client for the `tour` subcommand. Stays under the
+# tokio/axum stack so we don't pull a second async runtime just to
+# POST a JSON.
+ureq = { version = "2", default-features = false, features = ["json"] }
+# Adapter from broadcast::Receiver to a Stream for axum SSE.
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"

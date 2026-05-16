@@ -1442,6 +1442,8 @@ function renderTypes(
     .enter()
     .append('g')
     .attr('class', 'type-box')
+    .attr('data-element-id', (d) => d.fullPath)
+    .attr('data-element-kind', 'type')
     .attr('transform', (d) => `translate(${d.x},${d.y - ROW_H / 2})`)
     .style('opacity', 0);
 
@@ -1732,6 +1734,25 @@ function renderFieldsForType(
     .remove();
 
   const enter = sel.enter().append('g').attr('class', 'field-row-g').style('opacity', 0);
+
+  // Tour anchors. Each row gets a stable `data-element-id` + kind so
+  // the tour bubble can `querySelector` it and compute a pointer
+  // position via getBoundingClientRect().
+  enter
+    .attr('data-element-id', (f) =>
+      f.kind === 'method' || f.kind === 'function'
+        ? f.functionFullPath ?? `${d.fullPath}::${f.name}`
+        : `${d.fullPath}::${f.name}`,
+    )
+    .attr('data-element-kind', (f) =>
+      f.kind === 'method'
+        ? 'method'
+        : f.kind === 'function'
+          ? 'function'
+          : f.kind === 'field'
+            ? 'field'
+            : f.kind,
+    );
 
   // Member-selection background. Sits as the first child so all other
   // row art paints on top of it. CSS fills it when the parent
