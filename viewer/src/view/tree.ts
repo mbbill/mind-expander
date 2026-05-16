@@ -913,6 +913,37 @@ function renderArrows(
     select(this).raise();
   });
 
+  // Stable endpoint identifiers on every arrow `<g>` so external
+  // callers (the tour bubble's arrow-step anchor) can locate the
+  // routed path without re-walking the layout. Full element id for
+  // a row endpoint is `typeId::fieldName`; for a type endpoint
+  // (toFieldName undefined) it's just the typeId.
+  //
+  // Free functions are special: the diagram nests them inside a
+  // `function_group` pseudo-type whose id is `${moduleId}::__fn_*`,
+  // but the rest of the system (tour resolver, callgraph index,
+  // facts.json) addresses them by their natural module path
+  // `${moduleId}::${name}`. Strip the pseudo-segment when the row
+  // is a function so the attribute matches the natural id and
+  // external lookups succeed without round-tripping through the
+  // layout.
+  const stripFunctionGroup = (typeId: string): string =>
+    typeId.replace(/::__fn_[^:]+$/, '');
+  const endpointId = (
+    typeId: string,
+    field: string | undefined,
+    rowKind: 'field' | 'method' | 'function' | undefined,
+  ): string => {
+    const base = rowKind === 'function' ? stripFunctionGroup(typeId) : typeId;
+    return field === undefined ? base : `${base}::${field}`;
+  };
+  enter.attr('data-arrow-from', (a) =>
+    endpointId(a.fromTypeId, a.fromFieldName, a.fromRowKind),
+  );
+  enter.attr('data-arrow-to', (a) =>
+    endpointId(a.toTypeId, a.toFieldName ?? undefined, a.toRowKind),
+  );
+
   enter
     .append('path')
     .attr('class', 'hit')

@@ -1,97 +1,82 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "title": "How sf-nano-core's Instance is used",
   "subject": {
     "file": "sf-nano-core/src/vm/instance.rs",
-    "line": 426
+    "line": 419
   },
   "steps": [
     {
       "say": "## Engine walk-through\n\nWe'll cover three things:\n\n- **what** `Instance` owns\n- **how** it's constructed\n- **how** it dispatches into runtime evaluation"
     },
     {
-      "say": "`Instance` is a **thin wrapper** \u2014 a boxed `Store` plus an exports table. The `Store` holds the heavy state: registries, heaps, function bodies. `Instance` exposes the friendly API.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs",
-          "line": 426
-        }
-      ]
+      "say": "`Instance` is a **thin wrapper** — a boxed `Store` plus an exports table. The `Store` holds the heavy state: registries, heaps, function bodies. `Instance` exposes the friendly API.",
+      "ref": {
+        "file": "sf-nano-core/src/vm/instance.rs",
+        "line": 419
+      }
     },
     {
-      "say": "The `store` field is where everything heavy lives. Type is `Box<Store>` \u2014 note the heap indirection so `Instance` itself stays tiny on the stack.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs",
-          "line": 427
-        }
-      ]
+      "say": "The `store` field is where everything heavy lives. Type is `Box<Store>` — note the heap indirection so `Instance` itself stays tiny on the stack.",
+      "ref": {
+        "file": "sf-nano-core/src/vm/instance.rs",
+        "line": 420
+      }
     },
     {
       "say": "Most callers don't build an `Instance` directly. `Instance::new` is the entry point that **compiles raw WASM bytes**; the real work happens further down in `from_module_with_registry`.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs",
-          "line": 656
-        }
-      ]
+      "ref": {
+        "file": "sf-nano-core/src/vm/instance.rs",
+        "line": 547
+      }
     },
     {
-      "say": "`from_module_with_registry` is where `Instance` gets linked against an imported registry and wired up to a fresh `Store`. Treat this as *the* construction primitive \u2014 `Instance::new` is just sugar on top.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs",
-          "line": 667
-        }
-      ]
+      "say": "`from_module_with_registry` is where `Instance` gets linked against an imported registry and wired up to a fresh `Store`. Treat this as *the* construction primitive — `Instance::new` is just sugar on top.",
+      "ref": {
+        "file": "sf-nano-core/src/vm/instance.rs",
+        "line": 558
+      }
     },
     {
       "say": "Once an `Instance` exists, `invoke` is the call surface:\n\n```rust\ninstance.invoke(\"add\", &[Value::I32(2), Value::I32(3)])\n```\n\nIt looks up the exported function by name and dispatches it.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs",
-          "line": 1350
-        }
-      ]
+      "ref": {
+        "file": "sf-nano-core/src/vm/instance.rs",
+        "line": 1234
+      }
     },
     {
-      "say": "Inside `invoke`, the actual evaluation hands off to `runtime::eval`. The next stage should reveal the call edge between `Instance::invoke` and `runtime::eval`.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs",
-          "line": 1365
-        },
-        {
-          "file": "sf-nano-core/src/vm/runtime/mod.rs",
-          "line": 80
-        }
-      ]
+      "say": "Inside `invoke`, the actual evaluation hands off to `runtime::eval`. We make this hand-off **explicit** with an arrow step — the bubble points at the call arrow on the diagram, and the resolver checks that the edge really runs `invoke → eval`.",
+      "arrow": {
+        "from": { "file": "sf-nano-core/src/vm/instance.rs", "line": 1234 },
+        "to":   { "file": "sf-nano-core/src/vm/runtime/mod.rs", "line": 80 }
+      }
     },
     {
-      "say": "Construction can fail in two flavours:\n\n- `Complete` \u2014 no partial state, you get the error\n- `Partial { instance, error }` \u2014 half-built `Instance` plus the error\n\nUse `into_parts()` to destructure.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs",
-          "line": 431
-        }
-      ]
+      "say": "Here's `runtime::eval` itself — the interpreter loop that does the heavy lifting once `invoke` has located the function body.",
+      "ref": {
+        "file": "sf-nano-core/src/vm/runtime/mod.rs",
+        "line": 80
+      }
     },
     {
-      "say": "`eval_offset` is a *private* helper inside `instance.rs` \u2014 exercising a **free-function reference** and a callable kind that lives in a `function_group` bucket on the diagram.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs",
-          "line": 1644
-        }
-      ]
+      "say": "Construction can fail in two flavours:\n\n- `Complete` — no partial state, you get the error\n- `Partial { instance, error }` — half-built `Instance` plus the error\n\nUse `into_parts()` to destructure.",
+      "ref": {
+        "file": "sf-nano-core/src/vm/instance.rs",
+        "line": 424
+      }
     },
     {
-      "say": "Finally, here's the whole module-level view of `instance.rs` \u2014 useful when you want to drop back from a specific element to the file as a whole.",
-      "refs": [
-        {
-          "file": "sf-nano-core/src/vm/instance.rs"
-        }
-      ]
+      "say": "`eval_offset` is a *private* helper inside `instance.rs` — exercising a **free-function reference** and a callable kind that lives in a `function_group` bucket on the diagram.",
+      "ref": {
+        "file": "sf-nano-core/src/vm/instance.rs",
+        "line": 1520
+      }
+    },
+    {
+      "say": "Finally, here's the whole module-level view of `instance.rs` — useful when you want to drop back from a specific element to the file as a whole.",
+      "ref": {
+        "file": "sf-nano-core/src/vm/instance.rs"
+      }
     },
     {
       "say": "That covers `Instance`'s construction, invocation surface, and supporting cast. **End of tour.**"

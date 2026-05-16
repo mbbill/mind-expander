@@ -2,6 +2,11 @@
 //! consumed by the viewer's eventual SSE channel.
 //!
 //! Contract (mirror of the docs in the schema spec):
+//!   • A step is one of three shapes; the author picks intent explicitly:
+//!       1. `{ say }`                        — narration only
+//!       2. `{ say, ref: Reference }`        — focus one element
+//!       3. `{ say, arrow: { from, to } }`   — focus a directed arrow
+//!     The resolver rejects any step that sets both `ref` and `arrow`.
 //!   • Each `Reference` is workspace-relative: `{file, line?}`.
 //!   • `line == None` → "the module that owns this file".
 //!   • `line == Some(n)` → resolve via a fallback ladder:
@@ -9,6 +14,10 @@
 //!       2. nearest element starting at or after `n`;
 //!       3. nearest element ending before `n`;
 //!       4. the file's module.
+//!   • Arrow steps additionally require a directed edge `from → to`
+//!     to exist in the workspace facts (call or type-level edge).
+//!     A wrong-way edge is rejected so the bubble's text and the
+//!     diagram arrow always agree on direction.
 //!   • Validation rejects unknown schema versions and unresolvable refs
 //!     with one structured error per failing reference.
 
@@ -25,8 +34,10 @@ use crate::model::WorkspaceFacts;
 /// Schema version emitted by the AI / accepted by the server. Bumped
 /// when a backwards-incompatible change lands; the server rejects
 /// unknown versions with a clear error rather than silently mis-playing
-/// a tour.
-pub const SCHEMA_VERSION: u32 = 1;
+/// a tour. v2 replaced `refs: [...]` with the explicit three-shape
+/// step (`say` / `say + ref` / `say + arrow`) so direction and intent
+/// are never inferred.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Deserialize)]
 pub struct Tour {
@@ -38,11 +49,27 @@ pub struct Tour {
     pub steps: Vec<Step>,
 }
 
+/// A step is one of three explicit shapes, distinguished by which of
+/// `ref` / `arrow` is set. The resolver rejects steps that set both —
+/// there is no implicit "ref wins" or "arrow wins" rule because the
+/// whole point of v2 is to eliminate ambiguity.
 #[derive(Debug, Deserialize)]
 pub struct Step {
     pub say: String,
+    #[serde(default, rename = "ref")]
+    pub r#ref: Option<Reference>,
     #[serde(default)]
-    pub refs: Vec<Reference>,
+    pub arrow: Option<ArrowSpec>,
+}
+
+/// A directed arrow the author wants the bubble to focus on. `from`
+/// and `to` are ordered: `from` is the caller / source, `to` is the
+/// callee / target. The resolver verifies a matching directed edge
+/// exists; a backwards-only edge is rejected, not silently flipped.
+#[derive(Debug, Deserialize)]
+pub struct ArrowSpec {
+    pub from: Reference,
+    pub to: Reference,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -86,9 +113,11 @@ pub enum StepFocus {
     None,
     /// Bubble points at `refs[0]`.
     Element,
-    /// Bubble points at the arrow midpoint between `refs[0]` and
-    /// `refs[1]` — generated automatically when the original step had
-    /// 2+ refs and the server detected an edge between them.
+    /// Bubble points at the arrow midpoint between `refs[0]` (from /
+    /// caller) and `refs[1]` (to / callee). Order matches the
+    /// author's `arrow.from` and `arrow.to` exactly, so the viewer
+    /// can reveal the call edge in the correct direction without
+    /// guessing.
     Arrow,
 }
 
@@ -141,14 +170,13 @@ struct IndexedEntry {
 pub struct SpanIndex {
     by_file: BTreeMap<PathBuf, Vec<IndexedEntry>>,
     module_by_file: BTreeMap<PathBuf, String>,
-    /// Adjacency built from `WorkspaceFacts.edges` and `call_edges`.
-    /// `connections.get(a)` returns every element id directly connected
-    /// to `a`. Membership is symmetric — both endpoints are inserted —
-    /// so a single lookup answers "is there an edge between A and B?".
-    /// The server uses this to inject an extra "focus the arrow"
-    /// stage when a tour step has multiple refs that are known to be
-    /// connected.
-    connections: BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// Directed adjacency built from `WorkspaceFacts.edges` and
+    /// `call_edges`. `directed_edges` contains every `(from, to)`
+    /// pair exactly as it appears in the facts — no symmetric
+    /// mirroring. The arrow-step validator uses this so an author
+    /// who writes the wrong direction is rejected, not silently
+    /// flipped.
+    directed_edges: std::collections::BTreeSet<(String, String)>,
     /// Per-file list of call expressions, each with its inclusive
     /// line range and resolved callee id. The resolver uses this to
     /// answer "the line the AI cited falls inside a call expression
@@ -256,23 +284,14 @@ impl SpanIndex {
                     .then_with(|| (a.end_line - a.start_line).cmp(&(b.end_line - b.start_line)))
             });
         }
-        let mut connections: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
-        let mut record = |a: &str, b: &str| {
-            connections
-                .entry(a.to_string())
-                .or_default()
-                .insert(b.to_string());
-            connections
-                .entry(b.to_string())
-                .or_default()
-                .insert(a.to_string());
-        };
+        let mut directed_edges: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
         for edge in &facts.edges {
-            record(&edge.from, &edge.to);
+            directed_edges.insert((edge.from.clone(), edge.to.clone()));
         }
         let mut callsites_by_file: BTreeMap<PathBuf, Vec<CallSite>> = BTreeMap::new();
         for call in &facts.call_edges {
-            record(&call.caller, &call.callee);
+            directed_edges.insert((call.caller.clone(), call.callee.clone()));
             if call.callsite_start_line == 0 || call.callsite_end_line == 0 {
                 continue;
             }
@@ -297,7 +316,7 @@ impl SpanIndex {
         Self {
             by_file,
             module_by_file,
-            connections,
+            directed_edges,
             callsites_by_file,
         }
     }
@@ -316,14 +335,14 @@ impl SpanIndex {
         None
     }
 
-    /// Are the two element ids directly connected via any edge
-    /// (type-level Edge or CallEdge)? Symmetric — direction doesn't
-    /// matter for "should we show an arrow stage here?".
-    pub fn connected(&self, a: &str, b: &str) -> bool {
-        self.connections
-            .get(a)
-            .map(|set| set.contains(b))
-            .unwrap_or(false)
+    /// Does a directed edge `from → to` exist in the facts? Used by
+    /// the arrow-step validator: an author who writes the wrong
+    /// direction gets rejected, not silently flipped. Checks both
+    /// type-level edges and call edges (calls are stored as
+    /// `caller → callee`).
+    pub fn has_directed_edge(&self, from: &str, to: &str) -> bool {
+        self.directed_edges
+            .contains(&(from.to_string(), to.to_string()))
     }
 
     /// Resolve one reference, prepending `workspace_root` to its file
@@ -507,48 +526,105 @@ pub fn ingest(
         }
     });
 
+    // Resolve each step into its explicit shape. The three step
+    // shapes are mutually exclusive — `ref` XOR `arrow` XOR neither —
+    // and the resolver rejects any mix or any wrong-direction arrow
+    // up front so the wire form (refs + focus) is unambiguous.
     let mut resolved_steps: Vec<ResolvedStep> = Vec::with_capacity(tour.steps.len());
     for (si, step) in tour.steps.iter().enumerate() {
-        let mut refs: Vec<ResolvedRef> = Vec::with_capacity(step.refs.len());
-        for (ri, r) in step.refs.iter().enumerate() {
-            match index.resolve(r, workspace_root) {
-                Ok(rr) => refs.push(rr),
-                Err(msg) => errors.push(ResolveError {
+        let resolved = match (&step.r#ref, &step.arrow) {
+            (Some(_), Some(_)) => {
+                errors.push(ResolveError {
                     step: si + 1,
-                    r#ref: ri + 1,
-                    msg,
-                }),
-            }
-        }
-        let focus = if refs.is_empty() {
-            StepFocus::None
-        } else {
-            StepFocus::Element
-        };
-        // The author-written stage: bubble points at the first ref (or
-        // has no pointer for a text-only step). Multiple refs go in
-        // untouched — the viewer can still highlight the rest.
-        resolved_steps.push(ResolvedStep {
-            say: step.say.clone(),
-            refs: refs.clone(),
-            focus,
-        });
-        // Server-injected stage: if 2+ refs and at least one pair is
-        // connected via a known edge (call or ownership), append a
-        // duplicate-text stage that points at the arrow between the
-        // first ref and the first connected partner. Detecting
-        // "connected" via the precomputed adjacency keeps this cheap
-        // (no facts re-traversal per step).
-        if refs.len() >= 2 {
-            let head = &refs[0];
-            if let Some(partner) = refs.iter().skip(1).find(|r| index.connected(&head.id, &r.id)) {
-                resolved_steps.push(ResolvedStep {
-                    say: step.say.clone(),
-                    refs: vec![head.clone(), partner.clone()],
-                    focus: StepFocus::Arrow,
+                    r#ref: 0,
+                    msg: "step sets both `ref` and `arrow`; pick exactly one shape".into(),
                 });
+                continue;
             }
-        }
+            (None, None) => ResolvedStep {
+                say: step.say.clone(),
+                refs: Vec::new(),
+                focus: StepFocus::None,
+            },
+            (Some(r), None) => match index.resolve(r, workspace_root) {
+                Ok(rr) => ResolvedStep {
+                    say: step.say.clone(),
+                    refs: vec![rr],
+                    focus: StepFocus::Element,
+                },
+                Err(msg) => {
+                    errors.push(ResolveError {
+                        step: si + 1,
+                        r#ref: 1,
+                        msg,
+                    });
+                    continue;
+                }
+            },
+            (None, Some(arrow)) => {
+                // Resolve both endpoints first so the author sees every
+                // bad reference in one pass rather than fix-one-rerun.
+                let from = index.resolve(&arrow.from, workspace_root);
+                let to = index.resolve(&arrow.to, workspace_root);
+                let from = match from {
+                    Ok(r) => r,
+                    Err(msg) => {
+                        errors.push(ResolveError {
+                            step: si + 1,
+                            r#ref: 1,
+                            msg: format!("arrow.from: {msg}"),
+                        });
+                        continue;
+                    }
+                };
+                let to = match to {
+                    Ok(r) => r,
+                    Err(msg) => {
+                        errors.push(ResolveError {
+                            step: si + 1,
+                            r#ref: 2,
+                            msg: format!("arrow.to: {msg}"),
+                        });
+                        continue;
+                    }
+                };
+                if from.id == to.id {
+                    errors.push(ResolveError {
+                        step: si + 1,
+                        r#ref: 0,
+                        msg: "arrow.from and arrow.to resolve to the same element".into(),
+                    });
+                    continue;
+                }
+                // Direction matters: facts contain `caller → callee`
+                // for calls and `owner → owned` for type-level edges.
+                // A wrong-direction arrow is rejected with a hint so
+                // the author can swap, rather than have the bubble
+                // show one direction while the diagram shows another.
+                if !index.has_directed_edge(&from.id, &to.id) {
+                    let hint = if index.has_directed_edge(&to.id, &from.id) {
+                        " (the reverse direction does exist — did you swap `from` and `to`?)"
+                    } else {
+                        ""
+                    };
+                    errors.push(ResolveError {
+                        step: si + 1,
+                        r#ref: 0,
+                        msg: format!(
+                            "no directed edge from `{}` to `{}`{hint}",
+                            from.id, to.id
+                        ),
+                    });
+                    continue;
+                }
+                ResolvedStep {
+                    say: step.say.clone(),
+                    refs: vec![from, to],
+                    focus: StepFocus::Arrow,
+                }
+            }
+        };
+        resolved_steps.push(resolved);
     }
 
     if !errors.is_empty() {

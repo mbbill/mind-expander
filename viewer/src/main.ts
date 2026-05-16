@@ -123,13 +123,32 @@ interface RenderCtx {
    *  whichever row matches in the current layout. Use this from the
    *  code panel — it doesn't need to know whether an id resolves to a
    *  type, a member, or a free function. */
-  readonly navigateToElement: (elementId: string, kind: ElementKind) => void;
+  readonly navigateToElement: (
+    elementId: string,
+    kind: ElementKind,
+    screenTarget?: { readonly x: number; readonly y: number },
+    panOnlyIfOffscreen?: boolean,
+  ) => void;
   /** Navigate to one endpoint of `arrow`. `endpoint === 'source'` lands at
    *  the caller; `endpoint === 'target'` lands at the callee. Direct canvas
    *  clicks (and disambig picks) pass an anchor so the chosen endpoint pans
    *  to that screen point instead of jumping to centre. The endpoint row
    *  is expanded into view before the pan, so the data-space point is read
    *  from the freshly built layout rather than the arrow's stale waypoints. */
+  /** Reveal a specific call arrow from caller → callee. Used by
+   *  tour arrow stages. No-op if the call edge isn't known. */
+  readonly revealCallArrow: (callerFullPath: string, calleeFullPath: string) => void;
+  /** Pan + zoom the canvas so the entire routed path of the given
+   *  arrow fits in the visible viewport. No-op if the arrow isn't
+   *  currently routed in the layout. Called by the tour after
+   *  revealing an arrow stage so the user sees both endpoints.
+   *  When `panOnlyIfOffscreen` is true, skips the transform when the
+   *  arrow's routed bbox is already fully inside the viewport. */
+  readonly panToFitArrow: (
+    callerFullPath: string,
+    calleeFullPath: string,
+    panOnlyIfOffscreen?: boolean,
+  ) => void;
   readonly navigateToArrowEndpoint: (
     arrow: Layout['arrows'][number],
     endpoint: ArrowEndpoint,
@@ -174,7 +193,17 @@ async function main(): Promise<void> {
   const tourPlayer = createTourPlayer({
     applyStep: (step) => applyTourStep(step),
     anchorFor: (step) => anchorForStep(step),
-    onStop: () => tourBar.setPlaying(false),
+    onStop: () => {
+      tourBar.setPlaying(false);
+      // Drop any sticky arrow highlight from the last arrow step so
+      // the diagram returns to its normal idle styling when playback
+      // ends or the user hits Stop.
+      setTourArrowHighlight(null, null);
+    },
+    // Bubble queries this per-frame to avoid landing under the code
+    // panel when it's open. Re-evaluates on each rAF tick so opening
+    // or closing the panel mid-tour re-flows the bubble immediately.
+    getAvoidRect: () => codePanel.getScreenRect(),
   });
   const tourEvents = new EventSource('/api/tour-events');
   tourEvents.addEventListener('tour', (e) => {
@@ -202,14 +231,51 @@ async function main(): Promise<void> {
   // panel state (open / closed / collapsed) is preserved.
   const applyTourStep = (step: ResolvedStep): Promise<void> => {
     if (step.refs.length === 0) return Promise.resolve();
+    if (step.focus === 'arrow' && step.refs.length >= 2) {
+      // Arrow step: refs are guaranteed [from, to] in the directed
+      // edge's natural orientation (caller→callee for calls,
+      // owner→owned for type edges). The resolver rejects mis-oriented
+      // arrows, so the viewer can reveal the call edge directly
+      // without trying both directions.
+      const from = step.refs[0]!;
+      const to = step.refs[1]!;
+      // 1. Expand both endpoints into view so the routed arrow has
+      //    both anchor rows in the layout. navigateToElement also
+      //    pans, but panToFitArrow below supersedes those
+      //    transitions — only the final transform sticks. We pass
+      //    panOnlyIfOffscreen here too so the intermediate pans
+      //    don't kick off animations we'll immediately cancel.
+      setDiagramSelection(from.id, from.kind);
+      currentCtx?.navigateToElement(to.id, to.kind, tourFocusScreenPoint(), true);
+      currentCtx?.navigateToElement(from.id, from.kind, tourFocusScreenPoint(), true);
+      // 2. Reveal the call arrow on the diagram. Call edges need the
+      //    explicit toggle; type-level edges (ownership / re-export)
+      //    render by default once both endpoints are expanded.
+      currentCtx?.revealCallArrow(from.id, to.id);
+      // 3. Pan + zoom so the whole routed path is on-screen, BUT only
+      //    if the bbox isn't already fully visible. Minimizes canvas
+      //    motion between consecutive arrow steps that share the
+      //    same screen region.
+      currentCtx?.panToFitArrow(from.id, to.id, true);
+      // 4. Pulse the arrow so the user sees which relationship the
+      //    bubble is about, even when several arrows cross the area.
+      setTourArrowHighlight(from.id, to.id);
+      return Promise.resolve();
+    }
+    // Non-arrow step: drop any sticky arrow highlight from a prior step.
+    setTourArrowHighlight(null, null);
     const head = step.refs[0];
     if (head === undefined) return Promise.resolve();
     // 1. Selection state (purple ring + member band) + container expand.
     setDiagramSelection(head.id, head.kind);
-    // 2. Expand ancestor modules and pan to the element. Without
-    //    this the type stays nested inside a collapsed module band
-    //    and the bubble has nothing visible to point at.
-    currentCtx?.navigateToElement(head.id, head.kind);
+    // 2. Expand ancestor modules and pan to the element ONLY if it
+    //    isn't already on-screen. Skipping the pan when the target
+    //    is visible keeps the canvas still between consecutive
+    //    steps that focus elements in the same region — much less
+    //    disorienting than gliding the diagram on every Next click.
+    //    When we do pan, use the left-biased target (~1/3 from the
+    //    viewport's left edge) so the bubble has room on the right.
+    currentCtx?.navigateToElement(head.id, head.kind, tourFocusScreenPoint(), true);
     // 3. Code panel: sync only if already open. Tour playback never
     //    forces the panel onto the user.
     const span = lookupSpan(spanIndex, head.id, head.kind);
@@ -230,15 +296,19 @@ async function main(): Promise<void> {
       return () => null;
     }
     if (step.focus === 'arrow' && step.refs.length >= 2) {
-      const r0 = step.refs[0]!;
-      const r1 = step.refs[1]!;
+      const from = step.refs[0]!;
+      const to = step.refs[1]!;
       return () => {
-        const a = findElementRect(r0);
-        const b = findElementRect(r1);
-        if (a === null || b === null) return a ?? b;
-        const cx = (a.left + a.right + b.left + b.right) / 4;
-        const cy = (a.top + a.bottom + b.top + b.bottom) / 4;
-        return new DOMRect(cx - 8, cy - 8, 16, 16);
+        // Preferred anchor: the geometric midpoint of the *rendered*
+        // arrow path, not the bbox center. For an L-shaped or curved
+        // route, the bbox center can sit in empty space far from the
+        // line itself; the path midpoint always lands ON the line so
+        // the bubble visibly points at the relationship.
+        const pt = findArrowMidpointScreenPoint(from.id, to.id);
+        if (pt !== null) return new DOMRect(pt.x - 8, pt.y - 8, 16, 16);
+        // Fallback: the caller's row rect. Used when the arrow isn't
+        // currently routed (collapsed container, off-layout endpoint).
+        return findElementRect(from);
       };
     }
     const head = step.refs[0]!;
@@ -296,6 +366,130 @@ async function main(): Promise<void> {
   const cssEscape = (s: string): string =>
     (window as unknown as { CSS?: { escape?: (s: string) => string } }).CSS?.escape?.(s) ??
     s.replace(/(["\\])/g, '\\$1');
+
+  // True iff `rect` lies entirely inside the canvas scroll viewport.
+  // Used by the tour to skip pan transitions when the target is
+  // already visible — every avoided pan is a chunk of canvas motion
+  // the user didn't have to track between steps.
+  const isRectFullyInCanvas = (rect: DOMRect): boolean => {
+    const vp = canvasScroll.getBoundingClientRect();
+    return (
+      rect.left >= vp.left &&
+      rect.right <= vp.right &&
+      rect.top >= vp.top &&
+      rect.bottom <= vp.bottom
+    );
+  };
+
+  // Screen-space position of the GEOMETRIC MIDPOINT of the rendered
+  // arrow path `from → to`. Walking the path in user-space via
+  // `getPointAtLength(totalLength/2)` keeps the anchor on the actual
+  // line even when the route is L-shaped or curved (the bbox center
+  // can sit in empty space far from any visible segment). Returns
+  // null if no such arrow is currently routed in the DOM. Renderer
+  // tags each `<g class="arrow">` with `data-arrow-from` and
+  // `data-arrow-to` for this lookup.
+  const findArrowMidpointScreenPoint = (
+    fromId: string,
+    toId: string,
+  ): { readonly x: number; readonly y: number } | null => {
+    const g = findArrowGroup(fromId, toId);
+    if (g === null) return null;
+    const path = g.querySelector<SVGPathElement>('path.visible');
+    if (path === null) return null;
+    const ctm = path.getScreenCTM();
+    if (ctm === null) return null;
+    const total = path.getTotalLength();
+    if (!Number.isFinite(total) || total <= 0) return null;
+    const pt = path.getPointAtLength(total / 2);
+    return {
+      x: ctm.a * pt.x + ctm.c * pt.y + ctm.e,
+      y: ctm.b * pt.x + ctm.d * pt.y + ctm.f,
+    };
+  };
+
+  const findArrowGroup = (fromId: string, toId: string): SVGGElement | null =>
+    document.querySelector<SVGGElement>(
+      `g.arrow[data-arrow-from="${cssEscape(fromId)}"][data-arrow-to="${cssEscape(toId)}"]`,
+    );
+
+  // Canvas viewport rect with the code panel's footprint cut out.
+  // The code panel always anchors flush against the canvas's right
+  // edge (or, rarely, the left); when open it covers a strip of the
+  // viewport that the tour must NOT consider visible. Returning a
+  // narrower rect lets every tour pan/containment check funnel
+  // through a single notion of "where the diagram actually is".
+  const uncoveredCanvasRect = (): DOMRect => {
+    const vp = canvasScroll.getBoundingClientRect();
+    const avoid = codePanel.getScreenRect();
+    if (avoid === null || avoid.left >= vp.right || avoid.right <= vp.left) {
+      return vp;
+    }
+    if (avoid.right >= vp.right - 2 && avoid.left > vp.left) {
+      return new DOMRect(vp.left, vp.top, avoid.left - vp.left, vp.height);
+    }
+    if (avoid.left <= vp.left + 2 && avoid.right < vp.right) {
+      return new DOMRect(avoid.right, vp.top, vp.right - avoid.right, vp.height);
+    }
+    return vp;
+  };
+
+  // True iff `rect` lies entirely inside the uncovered canvas
+  // viewport (canvas rect minus code panel footprint). The
+  // panOnlyIfOffscreen optimization uses this so an element hidden
+  // behind the code panel correctly counts as off-screen.
+  const isRectFullyInUncoveredCanvas = (rect: DOMRect): boolean => {
+    const u = uncoveredCanvasRect();
+    return (
+      rect.left >= u.left &&
+      rect.right <= u.right &&
+      rect.top >= u.top &&
+      rect.bottom <= u.bottom
+    );
+  };
+
+  // Left-biased focus point for tour playback. Returns a window-coords
+  // point ~1/3 from the *uncovered* canvas viewport's left edge,
+  // vertically centred. The bubble auto-positions to the right of
+  // the focused element by default; centring the element would push
+  // the bubble to the far right and feel unbalanced. Anchoring at
+  // 1/3 keeps roughly 2/3 of the visible area open on the right for
+  // the bubble. Tour-only — other navigation paths still use
+  // `pickFocusScreenPoint`.
+  const TOUR_FOCUS_LEFT_FRACTION = 1 / 3;
+  const tourFocusScreenPoint = (): { readonly x: number; readonly y: number } => {
+    const r = uncoveredCanvasRect();
+    return {
+      x: r.left + r.width * TOUR_FOCUS_LEFT_FRACTION,
+      y: r.top + r.height / 2,
+    };
+  };
+
+  // Single-arrow-at-a-time tour highlight. Tracks the currently
+  // pulsing arrow so a subsequent step can drop the class cleanly
+  // without scanning the whole arrow layer. CSS rule in index.html
+  // (`.tour-highlight`) drives the visual pulse.
+  let tourHighlightedArrow: SVGGElement | null = null;
+  const setTourArrowHighlight = (
+    fromId: string | null,
+    toId: string | null,
+  ): void => {
+    if (tourHighlightedArrow !== null) {
+      tourHighlightedArrow.classList.remove('tour-highlight');
+      tourHighlightedArrow = null;
+    }
+    if (fromId === null || toId === null) return;
+    // Defer one frame: the arrow may have just been revealed and
+    // d3's enter transition hasn't appended the `<g>` to the DOM yet.
+    // requestAnimationFrame fires after the layout draw so the
+    // querySelector finds the freshly added node.
+    requestAnimationFrame(() => {
+      const g = findArrowGroup(fromId, toId);
+      if (g === null) return;
+      g.classList.add('tour-highlight');
+      tourHighlightedArrow = g;
+    });
+  };
   const facts = await tryLoadFacts();
   if (!facts) return;
 
@@ -1384,13 +1578,36 @@ async function main(): Promise<void> {
     // the layout after a redraw (`lookupElementPoint` uses the same
     // matcher as the renderer's selection). `kind` disambiguates
     // field-vs-method when the two share an id.
-    const navigateToElement = (elementId: string, kind: ElementKind): void => {
+    const navigateToElement = (
+      elementId: string,
+      kind: ElementKind,
+      screenTarget?: { readonly x: number; readonly y: number },
+      panOnlyIfOffscreen?: boolean,
+    ): void => {
       for (const m of ancestorModuleIds(elementId)) state.expand(m);
       if (kind === 'type' && typeIdSet.has(elementId)) state.expand(elementId);
       draw();
+      // Optimization: skip the pan transition when the element is
+      // already visible on screen. Saves a chunk of canvas motion
+      // between tour steps when the target is in the same screen
+      // region as the previous step. The expand+draw above still
+      // runs because the target may have been invisible due to a
+      // collapsed container — after draw, we know for sure.
+      if (panOnlyIfOffscreen === true) {
+        const rect = findElementRect({ id: elementId, kind });
+        // Containment uses the *uncovered* canvas rect (canvas minus
+        // code panel) so an element hidden behind the panel correctly
+        // counts as off-screen and triggers a pan into the visible area.
+        if (rect !== null && isRectFullyInUncoveredCanvas(rect)) return;
+      }
       const point = lookupElementPoint(lastLayout, elementId, kind);
       if (point === null) return;
-      const target = pickFocusScreenPoint(canvasScroll, codePanel.getScreenRect());
+      // Default: avoid the code panel by shifting away from it. Tour
+      // playback overrides this with a left-biased target (~1/3 from
+      // the viewport's left edge) so the bubble can sit on the right
+      // without crowding the diagram. Caller decides.
+      const target =
+        screenTarget ?? pickFocusScreenPoint(canvasScroll, codePanel.getScreenRect());
       layers.panTo(point.x, point.y, target.x, target.y, true);
     };
 
@@ -1415,6 +1632,107 @@ async function main(): Promise<void> {
       const point = arrowEndpointLayoutPoint(lastLayout, arrow, endpoint);
       if (!point) return;
       layers.panTo(point.x, point.y, anchor.x, anchor.y, true);
+    };
+
+    /** Reveal the specific call arrow from caller → callee on the
+     *  diagram if a call edge exists. Expands the callee's
+     *  containing type / bucket / modules so the routed arrow has
+     *  somewhere to land. No-op if already shown or if the edge
+     *  isn't known. */
+    const revealCallArrow = (callerFullPath: string, calleeFullPath: string): void => {
+      const key = specificCallArrowKey(callerFullPath, calleeFullPath);
+      if (specificCallArrowsShown.has(key)) {
+        draw();
+        return;
+      }
+      // Only reveal if the callgraph actually has this edge.
+      const edges = calls.callsByFunction.get(callerFullPath);
+      const known = edges?.some((e) => e.callee === calleeFullPath) ?? false;
+      if (!known) return;
+      withAnchorPin(callerFullPath, () => {
+        revealSpecificEdge('outgoing', callerFullPath, calleeFullPath);
+      });
+    };
+
+    // Pan + zoom so the WHOLE routed arrow path (every waypoint) is
+    // inside the visible canvas viewport with a comfortable margin.
+    // The tour's arrow step calls this after revealing the arrow so
+    // the user sees both endpoints AND the connecting line at once,
+    // rather than landing on one endpoint with the other off-screen.
+    //
+    // Algorithm: bbox the waypoints in data space, derive a uniform
+    // scale `k` so the bbox fits inside the available viewport
+    // (canvasScroll minus a padding), then translate so the bbox
+    // centre lands at the viewport centre. `k` is clamped to the
+    // current zoom scale extent so we don't pop outside the
+    // configured min/max.
+    const panToFitArrow = (
+      callerFullPath: string,
+      calleeFullPath: string,
+      panOnlyIfOffscreen?: boolean,
+    ): void => {
+      const layout = lastLayout;
+      if (layout === null) return;
+      const arrow = findCallArrow(layout, callerFullPath, calleeFullPath);
+      if (arrow === null || arrow.waypoints.length < 2) return;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const w of arrow.waypoints) {
+        if (w.x < minX) minX = w.x;
+        if (w.x > maxX) maxX = w.x;
+        if (w.y < minY) minY = w.y;
+        if (w.y > maxY) maxY = w.y;
+      }
+      const bboxW = Math.max(1, maxX - minX);
+      const bboxH = Math.max(1, maxY - minY);
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      // Visible area = canvas viewport minus the code panel's
+      // footprint. Used for both the "already on-screen?" check
+      // and the fit/centre target so the arrow never lands behind
+      // the panel.
+      const u = uncoveredCanvasRect();
+      // Optimization: if the arrow's whole routed bbox is already
+      // fully inside the uncovered area, don't shift the canvas. Map
+      // the data-space bbox into client coordinates via the current
+      // transform and the canvas's page offset.
+      if (panOnlyIfOffscreen === true) {
+        const t = layers.getTransform();
+        const vp = canvasScroll.getBoundingClientRect();
+        const screenLeft = vp.left + t.x + minX * t.k;
+        const screenRight = vp.left + t.x + maxX * t.k;
+        const screenTop = vp.top + t.y + minY * t.k;
+        const screenBottom = vp.top + t.y + maxY * t.k;
+        const fits =
+          screenLeft >= u.left &&
+          screenRight <= u.right &&
+          screenTop >= u.top &&
+          screenBottom <= u.bottom;
+        if (fits) return;
+      }
+      // Comfortable margin around the arrow so it has room to breathe
+      // and the bubble can sit beside it without covering an endpoint.
+      const PAD = 80;
+      const fitW = Math.max(0, u.width - PAD * 2);
+      const fitH = Math.max(0, u.height - PAD * 2);
+      if (fitW <= 0 || fitH <= 0) return;
+      // Cap at 1.0 so a tiny arrow doesn't trigger an extreme zoom-in
+      // that disorients the viewer; users can pinch closer manually.
+      // d3.zoom's scaleExtent clamps the transition automatically if
+      // kFit ends up below the configured minimum.
+      const k = Math.min(1, Math.min(fitW / bboxW, fitH / bboxH));
+      // Left-biased centring within the uncovered area — same 1/3
+      // rule as the element step. The arrow's bbox lands ~1/3 from
+      // the visible region's left edge so the bubble can sit on
+      // its right without crowding the diagram or the code panel.
+      // layers.setTransform expects (tx, ty) in canvasScroll-local
+      // coords, so we subtract the canvas's page-origin before
+      // applying the data-space cx/cy.
+      const vp = canvasScroll.getBoundingClientRect();
+      const focusX = u.left + u.width * TOUR_FOCUS_LEFT_FRACTION;
+      const focusY = u.top + u.height / 2;
+      const tx = focusX - vp.left - cx * k;
+      const ty = focusY - vp.top - cy * k;
+      layers.setTransform(k, tx, ty, true);
     };
 
     const resetAll = (): void => {
@@ -1452,6 +1770,8 @@ async function main(): Promise<void> {
       navigateToType,
       navigateToElement,
       navigateToArrowEndpoint,
+      revealCallArrow,
+      panToFitArrow,
       resetAll,
       focusMode: false,
       methodsHidden: false,
@@ -1511,20 +1831,30 @@ function pickFocusScreenPoint(
  *  caller and callee full paths (e.g. `crate::mod::Type::method`).
  *  Returns null if no such arrow is currently routed — happens when
  *  the callee couldn't be resolved (cross-crate, external) or the
- *  caller's row isn't in view. Caller decides what to do with null. */
+ *  caller's row isn't in view. Caller decides what to do with null.
+ *
+ *  Free functions are nested in `function_group` pseudo-types whose
+ *  ids end in `::__fn_*`, while the natural id used by the rest of
+ *  the system is the function's plain module path. Strip the
+ *  pseudo-segment when an endpoint is a function row so the
+ *  comparison matches the natural form callers pass in. */
 function findCallArrow(
   layout: Layout | null,
   callerFullPath: string,
   calleeFullPath: string,
 ): Layout['arrows'][number] | null {
   if (layout === null) return null;
+  const stripFnGroup = (typeId: string): string =>
+    typeId.replace(/::__fn_[^:]+$/, '');
   for (const a of layout.arrows) {
     if (a.kind !== 'call') continue;
-    const caller = `${a.fromTypeId}::${a.fromFieldName}`;
+    const fromBase = a.fromRowKind === 'function' ? stripFnGroup(a.fromTypeId) : a.fromTypeId;
+    const caller = `${fromBase}::${a.fromFieldName}`;
     if (caller !== callerFullPath) continue;
+    const toBase = a.toRowKind === 'function' ? stripFnGroup(a.toTypeId) : a.toTypeId;
     if (a.toFieldName !== undefined) {
-      if (`${a.toTypeId}::${a.toFieldName}` === calleeFullPath) return a;
-    } else if (a.toTypeId === calleeFullPath) {
+      if (`${toBase}::${a.toFieldName}` === calleeFullPath) return a;
+    } else if (toBase === calleeFullPath) {
       return a;
     }
   }

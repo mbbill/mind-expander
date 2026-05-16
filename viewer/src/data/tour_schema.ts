@@ -9,7 +9,11 @@ export interface ResolvedRef {
 }
 
 /** What the bubble should point at on this stage. Set by the server
- *  during ingestion. */
+ *  during ingestion. The resolver guarantees:
+ *    - `none`    → refs is empty.
+ *    - `element` → refs has exactly 1 entry.
+ *    - `arrow`   → refs has exactly 2 entries, ordered [from, to]
+ *                  where the directed edge from→to exists in facts. */
 export type StepFocus = 'none' | 'element' | 'arrow';
 
 export interface ResolvedStep {

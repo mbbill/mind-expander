@@ -529,6 +529,22 @@
       #tree g.arrows path.visible.canonical.highlighted {
         stroke: #3b82f6;
       }
+      /* Tour focus on a specific arrow: gentle continuous pulse on the
+         matching <g class="arrow"> so the user can see the relationship
+         the bubble is talking about at a glance. Stroke jumps to a warm
+         amber that matches the bubble's body, and the width breathes
+         between 1.5 and 3.5 over a slow cycle. The hit path stays
+         untouched (still transparent and wide for click detection). */
+      @keyframes tour-arrow-pulse {
+        0%   { stroke-width: 1.5; opacity: 0.85; }
+        50%  { stroke-width: 3.5; opacity: 1; }
+        100% { stroke-width: 1.5; opacity: 0.85; }
+      }
+      #tree g.arrows g.arrow.tour-highlight path.visible {
+        stroke: #f59e0b;
+        marker-end: url(#sf-arrow-hover);
+        animation: tour-arrow-pulse 1.4s ease-in-out infinite;
+      }
       #tree text.field-row {
         cursor: pointer;
       }
@@ -1137,7 +1153,7 @@
         stroke-width: 1.75;
         stroke-dasharray: 3 2;
         filter: drop-shadow(0 0 3px rgba(147, 51, 234, 0.55))
-          drop-shadow(0 0 1px rgba(147, 51, 234, 0.85));
+          drop-shadow(0 0 1px rgba(147, 51, 234, 1));
       }
       /* Member selection: highlighter band across the selected row.
          Rect spans the full type-box width in the renderer; the
@@ -1190,30 +1206,58 @@
       }
       .tour-bar-title:hover { background: #f1f5f9; }
       .tour-bar-play {
-        background: #7e22ce;
+        /* Idle = "play": green button, white triangle. The is-playing
+           class flips to red so the button reads as "stop" without
+           the user having to inspect the glyph. */
+        background: #16a34a;
         color: #fff;
         border: none;
-        font-size: 12px;
-        line-height: 1;
         width: 26px;
         height: 26px;
         border-radius: 50%;
         cursor: pointer;
+        /* Flex-center the inline SVG icon. Unicode glyphs (▶ / ■)
+           have asymmetric sidebearings that made earlier versions
+           look off-centre in the circular button. */
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
       }
-      .tour-bar-play:hover { background: #6b21a8; }
-      .tour-bar-play.is-playing {
-        background: #475569;
+      .tour-bar-play:hover { background: #15803d; }
+      .tour-bar-play.is-playing { background: #dc2626; }
+      .tour-bar-play.is-playing:hover { background: #b91c1c; }
+      .tour-bar-play svg {
+        display: block;
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
       }
-      /* Rainbow halo for a freshly arrived tour. */
+      /* Halo for a freshly arrived tour.
+         Two box-shadow glows offset to the bar's left and right,
+         each a different colour. Keyframes cycle the pair through
+         the rainbow so the eye sees a left-to-right colour drift:
+         (red→orange), (orange→green), (green→blue), (blue→purple),
+         (purple→red), repeat. The bar's white background hides the
+         inside half of each shadow; only an outer glow remains.
+
+         Tight offsets (±50px) keep the halo hugging the bar instead
+         of bleeding across the page. Fully opaque colour and a
+         negative spread (-14px) make the alert read clearly without
+         washing out into the page background. */
       @keyframes tour-bar-halo {
-        0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55), 0 6px 18px rgba(15, 23, 42, 0.14); }
-        25%  { box-shadow: 0 0 0 6px rgba(234, 179, 8, 0.4), 0 6px 18px rgba(15, 23, 42, 0.14); }
-        50%  { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0.35), 0 6px 18px rgba(15, 23, 42, 0.14); }
-        75%  { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.4), 0 6px 18px rgba(15, 23, 42, 0.14); }
-        100% { box-shadow: 0 0 0 0 rgba(168, 85, 247, 0), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        0%   { box-shadow: -50px 0 28px -14px rgba(239,  68,  68, 1), 50px 0 28px -14px rgba(249, 115,  22, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        20%  { box-shadow: -50px 0 28px -14px rgba(249, 115,  22, 1), 50px 0 28px -14px rgba( 34, 197,  94, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        40%  { box-shadow: -50px 0 28px -14px rgba( 34, 197,  94, 1), 50px 0 28px -14px rgba( 59, 130, 246, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        60%  { box-shadow: -50px 0 28px -14px rgba( 59, 130, 246, 1), 50px 0 28px -14px rgba(168,  85, 247, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        80%  { box-shadow: -50px 0 28px -14px rgba(168,  85, 247, 1), 50px 0 28px -14px rgba(239,  68,  68, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
+        100% { box-shadow: -50px 0 28px -14px rgba(239,  68,  68, 1), 50px 0 28px -14px rgba(249, 115,  22, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
       }
       #tour-bar.is-new {
-        animation: tour-bar-halo 3.6s ease-in-out 1;
+        /* Linear timing so each colour pair takes the same wall-clock
+           time; ease-in-out would make the middle pairs feel faster.
+           10s = brisk enough to feel alive without being frantic. */
+        animation: tour-bar-halo 10s linear infinite;
       }
       .tour-bar-menu {
         position: fixed;

@@ -19,6 +19,10 @@ export interface PlayerHooks {
   /** Player has fully stopped (last step + next, or user clicked
    *  Stop). The caller flips its UI back to "not playing". */
   readonly onStop: () => void;
+  /** Returns a rect the bubble should avoid covering (e.g. the
+   *  open code panel). Optional — when omitted, the bubble only
+   *  considers the window edges. */
+  readonly getAvoidRect?: () => DOMRect | null;
 }
 
 export interface TourPlayer {
@@ -42,6 +46,7 @@ export function createTourPlayer(hooks: PlayerHooks): TourPlayer {
         else goto(stepIndex + 1);
       },
       onStop: stop,
+      getAvoidRect: hooks.getAvoidRect,
     });
     return bubble;
   };
