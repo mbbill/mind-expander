@@ -22,6 +22,16 @@ import type { Layout } from '../analysis/layout_model.ts';
 // halo is sized small enough (see index.html) to stay inside its row.
 const STICKY_STEP = ROW_H;
 
+/** Viewport-y pixel where a module of `modDepth` sits when it's in the
+ *  sticky stack (just below its ancestors). The renderer uses this for
+ *  `header.style.top`; the scroll-to-module action targets it so a
+ *  clicked sticky module lands at exactly its sticky position — its
+ *  row just below the ancestor stack, its first child as the next
+ *  visible row. Both call sites must agree, hence one helper. */
+export function moduleStickyTopPx(modDepth: number, k: number): number {
+  return modDepth * STICKY_STEP * k;
+}
+
 export interface HtmlModuleTreeOptions {
   readonly onToggle: (id: string) => void;
   readonly onScrollToModule: (moduleId: string) => void;
@@ -241,7 +251,7 @@ function renderHeader(
   // ROW_H, and adjacent rows visually overlap (image #65). The text
   // becomes smaller when zoomed out — the user can zoom in to read —
   // but the layout never breaks.
-  header.style.top = `${m.modDepth * STICKY_STEP * k}px`;
+  header.style.top = `${moduleStickyTopPx(m.modDepth, k)}px`;
   header.style.height = `${ROW_H * k}px`;
   header.style.width = `${m.hitWidth * k}px`;
   // Shallower depth = higher z-index so a parent's sticky header paints

@@ -58,7 +58,8 @@ import {
   type TreeRenderOptions,
   renderTree,
 } from './view/tree.ts';
-import { renderHtmlModuleTree } from './view/html_tree.ts';
+import { moduleStickyTopPx, renderHtmlModuleTree } from './view/html_tree.ts';
+import { playTreeFlip, snapshotTreeState } from './view/html_tree_anim.ts';
 import {
   ancestorModuleIds,
   callableBucketIdsForType,
@@ -1056,6 +1057,13 @@ async function main(): Promise<void> {
           // sideways when its layout tier gets wider.
           const before = lookupPoint(lastLayout, id);
           const wasExpanded = state.isExpanded(id);
+          // FLIP snapshot of the HTML module column so the post-draw
+          // animation can slide rows to their new positions. Snapshot
+          // is captured before any state mutation so the recorded
+          // rects reflect the pre-toggle layout. No-ops cheaply for
+          // toggles that don't change the module set (e.g. type/bucket
+          // toggles produce identical rects).
+          const treeSnap = snapshotTreeState(htmlModules);
           state.toggle(id);
           if (!wasExpanded && typeIdSet.has(id)) {
             for (const moduleId of forwardRoutedTargetModulesFor(
@@ -1076,6 +1084,10 @@ async function main(): Promise<void> {
             // under the cursor for the entire animation.
             layers.translateBy(delta.dx, delta.dy, true);
           }
+          // Run the FLIP after the browser commits the post-draw
+          // layout. Reading rects inside rAF guarantees we see the
+          // rebuilt DOM's final positions, not stale values.
+          requestAnimationFrame(() => playTreeFlip(htmlModules, treeSnap));
         },
         onToggleTypeMembers: (typePath) => {
           const before = lookupPoint(lastLayout, typePath);
@@ -1202,11 +1214,13 @@ async function main(): Promise<void> {
         onScrollToModule: (moduleId: string) => {
           const m = lastLayout?.modules.find((x) => x.id === moduleId);
           if (!m || !lastLayout) return;
-          // Place the clicked module's row at the top of the viewport,
-          // just below whatever sticky rows still apply above it. Animated
-          // so the user sees the canvas scrolling back rather than
-          // teleporting.
-          layers.panYToTop(m.y, 0, true);
+          // Land the clicked module's row at exactly its sticky-stack
+          // position (modDepth rows below the top). With viewport-y = 0
+          // the row would be hidden by the ancestor sticky headers that
+          // paint above it (higher z-index for shallower depth), and the
+          // first visible child would be off-by-one — see image #163.
+          const targetPx = moduleStickyTopPx(m.modDepth, lastDrawnK);
+          layers.panYToTop(m.y, targetPx, true);
         },
         onShowCode: (id, kind) => openCodeFor(id, kind),
       };
