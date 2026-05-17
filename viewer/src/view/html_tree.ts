@@ -32,6 +32,24 @@ export function moduleStickyTopPx(modDepth: number, k: number): number {
   return modDepth * STICKY_STEP * k;
 }
 
+/** A header is "stuck" — pinned to the sticky stack instead of sitting
+ *  at its natural y — when its natural content-y is above the sticky
+ *  threshold for its depth. `naturalTopInContent` is the row's natural
+ *  top in `scrollEl`-content coords. Depth matters: a depth-2 row
+ *  sticks two rows earlier than a depth-0 row, so the threshold has
+ *  to include `moduleStickyTopPx(modDepth, k)`, not just `scrollTop`.
+ *  Without this, a row in the narrow window where it's just entered
+ *  the sticky stack would be treated as un-stuck and a click would
+ *  toggle instead of scroll-back (image #167). */
+export function isModuleStuck(
+  naturalTopInContent: number,
+  scrollTop: number,
+  modDepth: number,
+  k: number,
+): boolean {
+  return naturalTopInContent < scrollTop + moduleStickyTopPx(modDepth, k);
+}
+
 export interface HtmlModuleTreeOptions {
   readonly onToggle: (id: string) => void;
   readonly onScrollToModule: (moduleId: string) => void;
@@ -308,13 +326,15 @@ function renderHeader(
       return;
     }
     // Module's natural top in canvas-content coords is offset by
-    // scrollEl.clientHeight (the TOP_PADDING). If scrollTop is past
-    // that point, the module has scrolled into the sticky stack
-    // (its row is no longer at its natural position) and a click
-    // means "scroll back to it"; otherwise the click toggles
-    // expansion as usual.
+    // scrollEl.clientHeight (the TOP_PADDING). If the row is in the
+    // sticky stack (depth-aware threshold via isModuleStuck), a click
+    // means "scroll back to it"; otherwise it toggles expansion. The
+    // depth in the threshold matters — a depth-2 row sticks two rows
+    // earlier than a depth-0 row, so a flat `< scrollTop` check
+    // misfires in the narrow window where the row has just entered
+    // the stack (image #167).
     const naturalTopInContent = scrollEl.clientHeight + m.y * k;
-    if (naturalTopInContent < scrollEl.scrollTop) {
+    if (isModuleStuck(naturalTopInContent, scrollEl.scrollTop, m.modDepth, k)) {
       opts.onScrollToModule(m.id);
     } else {
       opts.onToggle(m.id);
