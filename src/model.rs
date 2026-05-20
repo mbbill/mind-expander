@@ -4,6 +4,29 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Which snapshot an entity belongs to in the union-diff view.
+/// `Head` is the default for single-snapshot extraction; the union
+/// pipeline (`unified_facts::build_unified`) replaces it with `Base`
+/// or `Both` for merged facts. Default = Head so single-snapshot
+/// construction sites don't need to mention it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    /// Present only in base (removed in head). Renderer paints red.
+    Base,
+    /// Present only in head (added) — or single-snapshot mode.
+    Head,
+    /// Present in both snapshots. Renderer is neutral unless
+    /// `body_modified` is set, in which case orange.
+    Both,
+}
+
+impl Default for Side {
+    fn default() -> Self {
+        Side::Head
+    }
+}
+
 /// Source-file span for an item. 1-indexed inclusive line range so the
 /// viewer's code panel can scroll to and highlight the lines that
 /// define the item. `file` is an absolute path; the viewer's dev
@@ -36,6 +59,9 @@ pub struct CrateFacts {
     pub root: String,
     /// Modules indexed by full path inside the crate (e.g. "vm::wasm").
     pub modules: BTreeMap<String, ModuleFacts>,
+    /// Union-diff side. Defaults to Head for single-snapshot mode.
+    #[serde(default)]
+    pub side: Side,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -54,6 +80,9 @@ pub struct ModuleFacts {
     pub re_exports: Vec<ReExport>,
     /// Count of `unsafe { ... }` blocks textually inside this module's items.
     pub unsafe_blocks: u32,
+    /// Union-diff side. Defaults to Head for single-snapshot mode.
+    #[serde(default)]
+    pub side: Side,
 }
 
 /// A `pub use` re-export — a publicly-exposed alias for an item declared
@@ -116,9 +145,17 @@ pub struct TypeFacts {
     /// file's first line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    /// Union-diff side.
+    #[serde(default)]
+    pub side: Side,
+    /// True for `side=Both` types whose head-side span overlaps a
+    /// diff hunk. Drives the orange "modified" marker. Always false
+    /// for Base/Head-only entities (they have their own colors).
+    #[serde(default)]
+    pub body_modified: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum TypeKind {
     Struct,
@@ -146,6 +183,9 @@ pub struct FieldFacts {
     /// multi-line for complex enum variant payloads).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    /// Union-diff side.
+    #[serde(default)]
+    pub side: Side,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +214,13 @@ pub struct FnFacts {
     /// of the body (or just the signature for trait/extern fns).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    /// Union-diff side.
+    #[serde(default)]
+    pub side: Side,
+    /// True for `side=Both` functions whose body changed between
+    /// snapshots (per intersection of diff hunks with the head span).
+    #[serde(default)]
+    pub body_modified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

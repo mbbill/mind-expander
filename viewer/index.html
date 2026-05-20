@@ -251,21 +251,84 @@
         background: #ffffff;
         color: #1e293b;
         cursor: default;
+        /* Containing block for the absolutely-positioned focus
+           frame overlay. */
+        position: relative;
       }
       .code-panel-line {
         display: flex;
-        gap: 12px;
-        padding: 0 12px;
+        gap: 8px;
+        padding: 0 8px 0 0;
+        /* 4px transparent border on the left becomes the diff bar.
+           Per-kind borders override the color below; context rows
+           keep the transparent border so widths stay aligned across
+           the whole file. */
+        border-left: 4px solid transparent;
         white-space: pre;
       }
       .code-panel-line:hover {
         background: #f1f5f9;
       }
-      .code-panel-line.highlight {
-        background: #e3edfd; /* shallow blue */
+      /* Focused entity is communicated by a wrapping purple dashed
+         frame (rendered as an absolute overlay) rather than a
+         per-row background, so the focus indicator composes cleanly
+         with diff-mode `add`/`del` row backgrounds. Same visual
+         language as the SVG type-box selection ring — including the
+         soft halo glow that makes the ring read at a glance. The
+         frame's left edge sits past the diff bar (4px) so the bar
+         is never covered. */
+      .code-panel-entity-frame {
+        position: absolute;
+        /* Sit between the diff bar (4px border-left) and the line
+           numbers — far enough right that the bar reads as part of
+           the line, not part of the frame, and close enough to the
+           gutter that the frame visually "hugs" the entity. */
+        left: 10px;
+        right: 8px;
+        border: 2px dashed #a855f7;
+        border-radius: 4px;
+        pointer-events: none;
+        z-index: 2;
+        box-shadow:
+          0 0 0 1px rgba(168, 85, 247, 0.15),
+          0 0 8px rgba(168, 85, 247, 0.45);
       }
-      .code-panel-line.highlight:hover {
-        background: #d1e0fb;
+      /* Diff-mode line layout. The 4px left border is the "vertical
+         bar"; the full-row tint comes from the macaron palette. The
+         add/del bg sits below `.entity-row` so the entity accent
+         wins when both apply. */
+      .code-panel-line[data-kind='add'] {
+        background: rgba(86, 194, 113, 0.15);
+        border-left-color: #56C271;
+      }
+      .code-panel-line[data-kind='del'] {
+        background: rgba(255, 107, 107, 0.15);
+        border-left-color: #FF6B6B;
+      }
+      .code-panel-line[data-kind='add']:hover {
+        background: rgba(86, 194, 113, 0.25);
+      }
+      .code-panel-line[data-kind='del']:hover {
+        background: rgba(255, 107, 107, 0.25);
+      }
+      /* `.entity-row` marker — no per-row styling; the wrapping
+         dashed purple frame (`.code-panel-entity-frame`) handles
+         the focus visual. We still keep the class so JS can find
+         the entity rows when computing the frame's position. */
+      .code-panel-collapse {
+        padding: 4px 12px;
+        color: #94a3b8;
+        font-style: italic;
+        user-select: none;
+        text-align: center;
+        border-top: 1px dashed #e2e8f0;
+        border-bottom: 1px dashed #e2e8f0;
+        background: #fafbfc;
+        cursor: pointer;
+      }
+      .code-panel-collapse:hover {
+        background: #eef2f7;
+        color: #475569;
       }
       .code-panel-gutter {
         flex: 0 0 auto;
@@ -273,6 +336,15 @@
         text-align: right;
         color: #94a3b8;
         user-select: none;
+        font-variant-numeric: tabular-nums;
+      }
+      /* In diff mode each row has TWO gutters (old line / new
+         line). Trim their width so the pair takes about the same
+         horizontal real estate as the original single 3em gutter. */
+      .code-panel-gutter.old,
+      .code-panel-gutter.new {
+        width: 2.3em;
+        padding-right: 4px;
       }
       .code-panel-text {
         flex: 1 1 auto;
@@ -352,6 +424,112 @@
       #html-modules .module-group {
         position: absolute;
         left: 0;
+      }
+      /* Union-diff side indicators on module groups. A 3px vertical
+         color bar paints to the left of the entire group (header + all
+         descendants under it) so removed/added modules are scannable
+         at a glance. Composes with the existing selection background
+         on rows because it's a `::after` overlay outside the row's flow. */
+      /* Module-level side coloring lives only in the chip + the
+         label color. We don't add a left-edge bar on module-group
+         rows — the chip already carries the rollup `+N -M`, and
+         adding a bar makes the same fact compete with itself. */
+      #html-modules .module-group.side-base .module-header {
+        color: #D14545;
+        text-decoration: line-through;
+      }
+      #html-modules .module-group.side-head .module-header {
+        color: #1B8B40;
+      }
+      /* Rollup badge — solid color chip next to a module's leaf
+         label, communicating subtree churn at a glance. Green half
+         for +N, red half for −M, white text on both. When only one
+         side has changes the chip is a single pill; when both are
+         present the two halves sit flush so the chip reads as a
+         single rounded unit, green-left red-right. */
+      #html-modules .module-header .rollup-badge {
+        /* `.module-header` is a flex container, so this chip is a
+           flex item. The default `flex-shrink: 1` combined with the
+           `overflow: hidden` (needed to clip the two-half background
+           to the rounded corners) collapses the chip to width 0 when
+           the row is even slightly narrower than its natural size.
+           `flex-shrink: 0` keeps the chip at its content width.
+           `text-shadow: none` overrides the white halo the header
+           applies to every descendant — the chip's white digits on
+           a solid color already have all the contrast they need. */
+        display: inline-block;
+        flex-shrink: 0;
+        font-size: 10px;
+        font-weight: 700;
+        margin-left: 6px;
+        border-radius: 3px;
+        overflow: hidden;
+        vertical-align: middle;
+        white-space: nowrap;
+        line-height: 1.4;
+        text-shadow: none;
+        letter-spacing: 0.01em;
+      }
+      #html-modules .module-header .rollup-badge .rb-add,
+      #html-modules .module-header .rollup-badge .rb-del {
+        display: inline-block;
+        padding: 0 5px;
+        color: #ffffff;
+      }
+      #html-modules .module-header .rollup-badge .rb-add {
+        background: #56C271; /* pistachio green */
+      }
+      #html-modules .module-header .rollup-badge .rb-del {
+        background: #FF6B6B; /* strawberry red */
+      }
+      /* SVG diagram side markers. Type-box bars are driven by the
+         renderer via `data-side` = add/del/split (heights and fills
+         set per-rect in tree.ts) so there's nothing to declare here
+         for `rect.side-bar-top` / `rect.side-bar-bot`. Field/method
+         rows use `data-side` = head/base for the 4px tab and the
+         faint full-row tint; `both` (whether body-modified or not)
+         gets no marker at all because the bar language is reserved
+         for structural delta. */
+      g.field-row-g[data-side='base'] rect.row-side-bar {
+        fill: #FF6B6B;
+      }
+      g.field-row-g[data-side='head'] rect.row-side-bar {
+        fill: #56C271;
+      }
+      g.field-row-g:not([data-side]) rect.row-side-bar,
+      g.field-row-g:not([data-side]) rect.row-side-bg {
+        display: none;
+      }
+      g.field-row-g[data-side='base'] rect.row-side-bg {
+        fill: rgba(255, 107, 107, 0.15);
+      }
+      g.field-row-g[data-side='head'] rect.row-side-bg {
+        fill: rgba(86, 194, 113, 0.15);
+      }
+      #tree g.field-row-g[data-side='base'] text.field-row {
+        fill: #D14545;
+        text-decoration: line-through;
+        /* Strikethrough fights the white text halo on member rows,
+           so we drop the halo specifically on removed rows. Needs
+           the `#tree` prefix to outrank `#tree text { stroke: white }`
+           further down. */
+        stroke: none;
+      }
+      #tree g.field-row-g[data-side='head'] text.field-row {
+        fill: #1B8B40;
+      }
+      /* Type-box header label color is driven by the type's own side
+         (not the bar state, which is a rollup). The renderer writes
+         data-element-id; we look that up via the side map. Today
+         only `head` and `base` types color their label; `both` types
+         stay neutral so the bar carries the rollup story by itself. */
+      #tree g.type-box.side-head text.header-label {
+        fill: #1B8B40;
+      }
+      #tree g.type-box.side-base text.header-label {
+        fill: #D14545;
+        text-decoration: line-through;
+        stroke: none;
       }
       /* Indent guide for expanded modules: a thin vertical line that
          drops from the chevron through the entire descendant block,

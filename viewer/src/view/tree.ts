@@ -19,6 +19,7 @@ import {
   BASE_FONT_SIZE,
   DRIFT_DOT_OFFSET,
   DRIFT_DOT_RADIUS,
+  FIELD_ROW_H,
   HIT_MIN_W,
   INCOMING_CALL_MARKER_OFFSET,
   KIND_MARKER_FONT_SIZE,
@@ -328,6 +329,21 @@ export interface TreeRenderOptions {
    *  `specificCallArrowKey(caller, callee)`. The picker bolds rows
    *  whose key is in this set so the user sees current state. */
   readonly specificCallArrowsShown: ReadonlySet<string>;
+  /** Union-diff side per element id, populated only in unified mode.
+   *  Keys mirror `data-element-id` written by the renderer:
+   *  method/function `functionFullPath`,
+   *  `${typeFullPath}::${fieldName}` for struct fields. Used to
+   *  paint the left-edge color bar + row tint on field-row-g
+   *  groups. Only `head`/`base` are stored; `both` (regardless of
+   *  body edits) is never marked — member-row bars carry structural
+   *  delta only. */
+  readonly sideByElementId?: ReadonlyMap<string, 'base' | 'head'>;
+  /** Per-type bar state, populated only in unified mode. Keyed by
+   *  type fullPath (real types) or function-group synthetic id
+   *  `${moduleId}::__fn_${bucket}`. Drives the type-box's vertical
+   *  bar: `add` = green full-height, `del` = red full-height,
+   *  `split` = green top half + red bottom half. Absent = no bar. */
+  readonly typeBarStateById?: ReadonlyMap<string, 'add' | 'del' | 'split'>;
   /** Set of "typePath::fieldName" keys currently selected. */
   readonly selectedFields: ReadonlySet<string>;
   readonly incomingCallTargetsShown: ReadonlySet<string>;
@@ -1493,6 +1509,30 @@ function renderTypes(
     .attr('fill', 'none')
     .attr('pointer-events', 'none');
 
+  // Union-diff bar — two stacked rects on the type-box's left edge
+  // (flush with the obstacle border, extending into the box). Their
+  // heights are set on the merged pass from `typeBarStateById`:
+  //   • `add`   → top rect = green full-height, bot = 0.
+  //   • `del`   → top rect = red full-height, bot = 0.
+  //   • `split` → top = green half, bot = red half (joined).
+  // The bar reflects the type's *structural rollup*: any member that
+  // was added or removed contributes; a Both type with only body
+  // edits gets no bar at all. Function-group pseudo-types use the
+  // same state by their synthetic id.
+  enter
+    .append('rect')
+    .attr('class', 'side-bar-top')
+    .attr('y', 0)
+    .attr('width', 4)
+    .attr('fill', '#56C271')
+    .attr('pointer-events', 'none');
+  enter
+    .append('rect')
+    .attr('class', 'side-bar-bot')
+    .attr('width', 4)
+    .attr('fill', '#FF6B6B')
+    .attr('pointer-events', 'none');
+
   enter
     .append('text')
     .attr('class', 'header-label name')
@@ -1577,6 +1617,68 @@ function renderTypes(
     .attr('y', (d) => d.boxY - headerTopFor(d) - SELECTION_PAD)
     .attr('width', (d) => Math.max(0, d.boxWidth + SELECTION_PAD * 2))
     .attr('height', (d) => Math.max(0, d.boxHeight + SELECTION_PAD * 2));
+
+  // Union-diff side bar on the type box. Span the FULL height of the
+  // box (header + expanded fields if any) so the bar is unmistakable
+  // at the type level. The CSS rule keys off the `data-side` attribute
+  // on `.type-box`, so we just set the attribute and size the rect
+  // here; CSS owns the color and visibility.
+  // Type's own side (head/base) drives label color via `.side-*`
+  // class. Separate from the rollup bar state on `data-side`, which
+  // reflects what's *inside* the type. A `Both` type carries
+  // neither class — its label stays neutral and the bar (if any)
+  // tells the story.
+  merged
+    .classed('side-head', (d) => opts.sideByElementId?.get(d.fullPath) === 'head')
+    .classed('side-base', (d) => opts.sideByElementId?.get(d.fullPath) === 'base');
+
+  // Drive the two stacked side-bar rects from `typeBarStateById`.
+  // For `add`/`del`/`split` we set heights and y on each rect; for
+  // anything else (no entry) we set heights to 0 so the rects
+  // vanish without a CSS hide rule.
+  merged
+    .attr('data-side', (d) => opts.typeBarStateById?.get(d.fullPath) ?? null)
+    .each(function (d) {
+      const state = opts.typeBarStateById?.get(d.fullPath);
+      // Bar lives only at the type-box header (ROW_H tall), not
+      // spanning expanded member rows. Reasons:
+      //   • Unchanged members shouldn't look flagged just because
+      //     they happen to live inside a type whose siblings changed.
+      //   • Changed members already carry their own row-side-bar +
+      //     row-side-bg, so the rollup is communicated at the type
+      //     header without competing with per-row signal below.
+      //   • Split bars stay readable at a fixed 24px (12/12 split),
+      //     instead of becoming a tiny-red-under-big-green smear on
+      //     tall expanded types.
+      const barH = ROW_H;
+      const x = d.boxX - d.x;
+      const top = d.boxY - headerTopFor(d);
+      const topRect = this.querySelector<SVGRectElement>('rect.side-bar-top');
+      const botRect = this.querySelector<SVGRectElement>('rect.side-bar-bot');
+      if (!topRect || !botRect) return;
+      topRect.setAttribute('x', String(x));
+      botRect.setAttribute('x', String(x));
+      if (state === 'add') {
+        topRect.setAttribute('y', String(top));
+        topRect.setAttribute('height', String(barH));
+        botRect.setAttribute('height', '0');
+      } else if (state === 'del') {
+        topRect.setAttribute('height', '0');
+        botRect.setAttribute('y', String(top));
+        botRect.setAttribute('height', String(barH));
+        botRect.setAttribute('fill', '#FF6B6B');
+      } else if (state === 'split') {
+        const half = Math.round(barH / 2);
+        topRect.setAttribute('y', String(top));
+        topRect.setAttribute('height', String(half));
+        botRect.setAttribute('y', String(top + half));
+        botRect.setAttribute('height', String(barH - half));
+        botRect.setAttribute('fill', '#FF6B6B');
+      } else {
+        topRect.setAttribute('height', '0');
+        botRect.setAttribute('height', '0');
+      }
+    });
 
   // Tween group position (carries fields along inside).
   merged
@@ -1795,6 +1897,28 @@ function renderFieldsForType(
     .attr('fill', 'transparent')
     .style('pointer-events', 'none');
 
+  // Union-diff side markers on each method/field row. Two layers:
+  //   • `row-side-bg` paints a faint full-row tint behind everything
+  //     else so changes are scannable inside a long type body.
+  //   • `row-side-bar` paints a wider left-edge tab (4px) so the
+  //     change-side is unmistakable even when the row's label color
+  //     blends with surrounding text.
+  // Both rects exist on every row; CSS controls visibility via the
+  // group's `data-side` attribute, so a row with no side ships them
+  // hidden.
+  enter
+    .append('rect')
+    .attr('class', 'row-side-bg')
+    .attr('pointer-events', 'none');
+  enter
+    .append('rect')
+    .attr('class', 'row-side-bar')
+    .attr('width', 4)
+    .attr('height', FIELD_ROW_H)
+    .attr('rx', 2)
+    .attr('ry', 2)
+    .attr('pointer-events', 'none');
+
   // Append the field name + the (hidden by default) type-text hint once on
   // enter. Crucially, x/y are also set HERE synchronously (in addition
   // to the merged-pass transition below) so that any synchronous
@@ -1857,6 +1981,36 @@ function renderFieldsForType(
   merged.classed('selected-member', (f) =>
     selId !== null && selKind !== null && rowMatchesSelection(d, f, selId, selKind),
   );
+
+  // Union-diff side markers per row. Tag the group's data-side from
+  // the sideByElementId lookup; CSS paints both the left-edge bar and
+  // the full-row tint via the rects appended on enter. Same lookup
+  // keys the renderer wrote into data-element-id above (so the row's
+  // identity for selection and for diff side match).
+  merged.attr('data-side', (f) => {
+    const elemId =
+      f.kind === 'method' || f.kind === 'function'
+        ? f.functionFullPath ?? `${d.fullPath}::${f.name}`
+        : `${d.fullPath}::${f.name}`;
+    const s = opts.sideByElementId?.get(elemId);
+    return s === 'base' || s === 'head' ? s : null;
+  });
+  merged
+    .select<SVGRectElement>('rect.row-side-bar')
+    // Flush with the obstacle border, matching the type-box side-bar
+    // above for a continuous left edge.
+    .attr('x', d.boxX - d.x)
+    .attr('y', (f) => f.y - groupTopY - ROW_H / 2 + 2);
+  // The row-side-bg uses the type-box's obstacle width so the tint
+  // spans the same horizontal extent as the member-bg (selection
+  // background). That keeps the two layers consistent on a row that
+  // is BOTH side-tagged AND selected.
+  merged
+    .select<SVGRectElement>('rect.row-side-bg')
+    .attr('x', d.boxX - d.x)
+    .attr('y', (f) => f.y - groupTopY - ROW_H / 2 + 1)
+    .attr('width', d.boxWidth)
+    .attr('height', Math.max(0, ROW_H - 2));
   // Highlighter band spanning the type's full obstacle width (same
   // extent the selection ring uses). Vertical bounds are inset from
   // ROW_H so the brush stroke hugs the row's text instead of bleeding

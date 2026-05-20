@@ -47,6 +47,11 @@ export interface CodePanelShowArgs {
   readonly file: string;
   readonly startLine: number;
   readonly endLine: number;
+  /** Union-diff side of the entity being shown. When `'base'`, the
+   *  panel fetches the file from the base snapshot via
+   *  `/api/source?side=base` (so removed modules / types can still
+   *  be inspected). Default behaviour is head-side reads. */
+  readonly side?: 'base' | 'head' | 'both';
 }
 
 export interface CodePanelOptions {
@@ -54,6 +59,10 @@ export interface CodePanelOptions {
    *  resolves which element defines that line and navigates the
    *  diagram. Skipped if the user is just selecting text. */
   readonly onLineNavigate: (file: string, line: number) => void;
+  /** When true, the panel tries `/api/diff` before `/api/source` and
+   *  paints additions/deletions with coloured backgrounds. Set from
+   *  `/api/health`'s `diff_enabled` at startup. */
+  readonly diffEnabled?: boolean;
   /** Fired when the user closes the panel (X button or hide() call
    *  from outside). The host uses this to clear the diagram's
    *  selection so the two views stay in sync. */
@@ -181,6 +190,28 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     }
   });
 
+  // Focus frame — a purple dashed overlay that wraps the rows of
+  // the clicked entity. Same visual language as the SVG type-box
+  // selection ring; composes cleanly with diff-mode row backgrounds
+  // because it's a separate absolutely-positioned layer instead of
+  // a per-row background. Call after every body re-render or
+  // .entity-row class change.
+  const drawFocusFrame = (): void => {
+    const old = bodyEl.querySelector<HTMLElement>('.code-panel-entity-frame');
+    if (old !== null) old.remove();
+    const rows = bodyEl.querySelectorAll<HTMLElement>('.code-panel-line.entity-row');
+    if (rows.length === 0) return;
+    const first = rows[0]!;
+    const last = rows[rows.length - 1]!;
+    const top = first.offsetTop - 2;
+    const height = last.offsetTop + last.offsetHeight - first.offsetTop + 4;
+    const frame = document.createElement('div');
+    frame.className = 'code-panel-entity-frame';
+    frame.style.top = `${top}px`;
+    frame.style.height = `${height}px`;
+    bodyEl.appendChild(frame);
+  };
+
   const render = (text: string, startLine: number, endLine: number): void => {
     // Highlight the whole file once with Prism (Rust grammar), then
     // split the resulting HTML on \n. Splitting after highlighting is
@@ -199,7 +230,7 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       lineEl.className = 'code-panel-line';
       lineEl.dataset.line = String(lineNum);
       if (lineNum >= startLine && lineNum <= endLine) {
-        lineEl.classList.add('highlight');
+        lineEl.classList.add('entity-row');
       }
       const gutter = document.createElement('span');
       gutter.className = 'code-panel-gutter';
@@ -212,29 +243,200 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       frag.appendChild(lineEl);
     }
     bodyEl.replaceChildren(frag);
-    const target = bodyEl.querySelector<HTMLElement>('.code-panel-line.highlight');
+    const target = bodyEl.querySelector<HTMLElement>('.code-panel-line.entity-row');
     if (target !== null) {
-      // Position the highlight ~25% from the top of the panel body so
+      // Position the focus ~25% from the top of the panel body so
       // there's breathing room above for the surrounding context.
       const offsetTop = target.offsetTop - bodyEl.clientHeight * 0.25;
       bodyEl.scrollTop = Math.max(0, offsetTop);
     } else {
       bodyEl.scrollTop = 0;
     }
+    drawFocusFrame();
   };
 
-  const fetchSource = async (file: string, signal: AbortSignal): Promise<string> => {
-    const res = await fetch(`/api/source?path=${encodeURIComponent(file)}`, { signal });
+  const fetchSource = async (
+    file: string,
+    signal: AbortSignal,
+    side?: 'base' | 'head' | 'both',
+  ): Promise<string> => {
+    // Base-side fetches go through `git show <base_sha>:<path>` on the
+    // server — bypasses the head workspace's filesystem entirely so
+    // removed entities (which don't exist in head) still render.
+    const sideParam = side === 'base' ? '&side=base' : '';
+    const res = await fetch(
+      `/api/source?path=${encodeURIComponent(file)}${sideParam}`,
+      { signal },
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     return await res.text();
+  };
+
+  // Diff fetch returns one of:
+  //   - { ok: true, diff: DiffPayload } — server returned 200 with hunks
+  //   - { ok: false, unchanged: true } — server returned 204 (file is
+  //       unchanged in this diff); caller falls back to source mode
+  //   - { ok: false, unchanged: false } — server returned 404 or 5xx;
+  //       caller falls back to source mode (e.g., diff endpoint missing
+  //       in older server, or file outside repo).
+  type DiffLineKind = 'context' | 'add' | 'del';
+  interface DiffLine {
+    readonly kind: DiffLineKind;
+    readonly text: string;
+    readonly old?: number;
+    readonly new?: number;
+  }
+  interface DiffHunk {
+    readonly old_start: number;
+    readonly old_count: number;
+    readonly new_start: number;
+    readonly new_count: number;
+    readonly lines: readonly DiffLine[];
+  }
+  interface DiffPayload {
+    readonly file_old: string | null;
+    readonly file_new: string | null;
+    readonly hunks: readonly DiffHunk[];
+  }
+  type DiffFetchResult =
+    | { ok: true; diff: DiffPayload }
+    | { ok: false; unchanged: boolean };
+
+  const fetchDiff = async (
+    file: string,
+    signal: AbortSignal,
+  ): Promise<DiffFetchResult> => {
+    const res = await fetch(`/api/diff?path=${encodeURIComponent(file)}`, { signal });
+    if (res.status === 204) return { ok: false, unchanged: true };
+    if (!res.ok) return { ok: false, unchanged: false };
+    const diff = (await res.json()) as DiffPayload;
+    return { ok: true, diff };
+  };
+
+  // Diff renderer — distinct from `render()` because the line stream is
+  // hunk-driven (not 1:1 with the file) and each line gets its own
+  // Prism pass (lines come from different snapshots — base for `-`,
+  // head for `+`/context — so a single whole-file highlight pass would
+  // mis-tokenize across the boundary).
+  // Inline-diff renderer. Each line:
+  //   [bar][old#][new#] content
+  // with a full-row tint matching the bar color. The bar lives on
+  // the row's left edge via CSS `border-left`; the old/new gutters
+  // are two narrow text columns; the content is syntax-highlighted
+  // per-line (lines come from different snapshots — base for `-`,
+  // head for `+`/context — so a single whole-file highlight would
+  // mis-tokenize across the boundary).
+  //
+  // `entityStart`/`entityEnd` (when provided) describe the entity
+  // the user clicked, in HEAD line numbers. Rows that fall inside
+  // this range get an `entity-row` class so CSS can paint a soft
+  // accent + the row is the scroll target.
+  const renderDiff = (
+    diff: DiffPayload,
+    entityStart?: number,
+    entityEnd?: number,
+    entityIsBaseSide?: boolean,
+    expandHandler?: (
+      marker: HTMLElement,
+      gapStart: number,
+      gapEnd: number,
+    ) => void,
+  ): void => {
+    const grammar = Prism.languages.rust;
+    const highlightOne = (text: string): string =>
+      grammar !== undefined ? Prism.highlight(text, grammar, 'rust') : escapeHtml(text);
+    const frag = document.createDocumentFragment();
+    const mkCollapse = (n: number, gapStart: number, gapEnd: number, suffix: string): HTMLElement => {
+      const c = document.createElement('div');
+      c.className = 'code-panel-collapse';
+      c.dataset.gapStart = String(gapStart);
+      c.dataset.gapEnd = String(gapEnd);
+      c.title = 'Click to expand';
+      // `canonicalText` stays stable across loading/error transitions
+      // so the expand handler can always reset the marker to its
+      // original phrasing — otherwise an "(failed to load — click to
+      // retry)" suffix would accumulate on every retry.
+      const canonical = `… ${n} unchanged line${n === 1 ? '' : 's'}${suffix} — click to expand …`;
+      c.dataset.canonicalText = canonical;
+      c.textContent = canonical;
+      if (expandHandler !== undefined) {
+        c.addEventListener('click', () => {
+          expandHandler(c, gapStart, gapEnd);
+        });
+      }
+      return c;
+    };
+    for (let hi = 0; hi < diff.hunks.length; hi++) {
+      const hunk = diff.hunks[hi]!;
+      // Collapse marker between non-adjacent hunks. The first hunk
+      // also gets one if it doesn't start at line 1.
+      const prev = hi === 0 ? null : diff.hunks[hi - 1]!;
+      const gapStart = prev !== null ? prev.new_start + prev.new_count : 1;
+      const gapEnd = hunk.new_start;
+      if (gapEnd > gapStart) {
+        frag.appendChild(mkCollapse(gapEnd - gapStart, gapStart, gapEnd, ''));
+      } else if (hi === 0 && hunk.new_start > 1) {
+        frag.appendChild(mkCollapse(hunk.new_start - 1, 1, hunk.new_start, ' above'));
+      }
+      for (const line of hunk.lines) {
+        const lineEl = document.createElement('div');
+        lineEl.className = 'code-panel-line';
+        lineEl.dataset.kind = line.kind;
+        // dataset.line drives click-to-navigate: prefer the head
+        // (new) number so a clicked diff line jumps to the current
+        // code; fall back to old for pure deletions.
+        const navLine = line.new ?? line.old ?? 0;
+        if (navLine > 0) lineEl.dataset.line = String(navLine);
+        // Mark this row as belonging to the clicked entity. Match
+        // by the line side the entity lives on (head for normal/
+        // added/modified, base for removed entities).
+        if (entityStart !== undefined && entityEnd !== undefined) {
+          const ref = entityIsBaseSide ? line.old : line.new;
+          if (ref !== undefined && ref >= entityStart && ref <= entityEnd) {
+            lineEl.classList.add('entity-row');
+          }
+        }
+        const oldGutter = document.createElement('span');
+        oldGutter.className = 'code-panel-gutter old';
+        oldGutter.textContent = line.old !== undefined ? String(line.old) : '';
+        const newGutter = document.createElement('span');
+        newGutter.className = 'code-panel-gutter new';
+        newGutter.textContent = line.new !== undefined ? String(line.new) : '';
+        const code = document.createElement('span');
+        code.className = 'code-panel-text';
+        code.innerHTML = highlightOne(line.text);
+        lineEl.appendChild(oldGutter);
+        lineEl.appendChild(newGutter);
+        lineEl.appendChild(code);
+        frag.appendChild(lineEl);
+      }
+    }
+    bodyEl.replaceChildren(frag);
+    // Scroll-to-entity: pin the first row of the entity ~25% from
+    // the top, mirroring source-mode behaviour. Fall back to the
+    // first diff line if the entity isn't in view (e.g. the diff is
+    // entirely outside its span — shouldn't happen for changed
+    // entities but be defensive).
+    const target =
+      bodyEl.querySelector<HTMLElement>('.code-panel-line.entity-row') ??
+      bodyEl.querySelector<HTMLElement>('.code-panel-line[data-kind="add"], .code-panel-line[data-kind="del"]');
+    if (target !== null) {
+      const offsetTop = target.offsetTop - bodyEl.clientHeight * 0.25;
+      bodyEl.scrollTop = Math.max(0, offsetTop);
+    } else {
+      bodyEl.scrollTop = 0;
+    }
+    drawFocusFrame();
   };
 
   const show = (args: CodePanelShowArgs): void => {
     root.hidden = false;
     renderTitle(args.file);
-    // Reuse cached text if same file — common when the user clicks
-    // multiple items in the same module.
-    if (currentFile === args.file && currentFileText !== null) {
+    // Source-mode reuse: same-file clicks just re-highlight. Diff mode
+    // doesn't share this cache because the line stream is hunk-driven,
+    // not file-driven; re-fetch is cheap (entity-scoped) so we skip
+    // the optimization for now.
+    if (!opts.diffEnabled && currentFile === args.file && currentFileText !== null) {
       render(currentFileText, args.startLine, args.endLine);
       return;
     }
@@ -247,22 +449,116 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     inflight?.abort();
     inflight = new AbortController();
     const signal = inflight.signal;
-    fetchSource(args.file, signal)
-      .then((text) => {
+
+    // Always try diff first in diff mode, regardless of entity side.
+    // Files newly added in head come back as an all-`+` diff; files
+    // deleted in head come back as all-`-`. Both render as their
+    // respective tints — the user always sees the diff. Fall back to
+    // source only on 204 (file genuinely unchanged) or 404 (file
+    // outside the git repo, etc.) — the rare cases where there's no
+    // diff signal to show.
+    const loadAndRender = async (): Promise<void> => {
+      if (opts.diffEnabled) {
+        const dr = await fetchDiff(args.file, signal);
         if (signal.aborted) return;
-        currentFile = args.file;
-        currentFileText = text;
-        render(text, args.startLine, args.endLine);
-      })
-      .catch((err) => {
-        if (signal.aborted) return;
-        bodyEl.replaceChildren(
-          Object.assign(document.createElement('div'), {
-            className: 'code-panel-error',
-            textContent: `Failed to load ${args.file}: ${(err as Error).message}`,
-          }),
-        );
-      });
+        if (dr.ok) {
+          // Also fetch the head source so the user can expand
+          // collapse markers and see the unchanged context lines
+          // inline. We do this in parallel (already past the diff
+          // fetch) and cache it; the expand handler reads it.
+          let sourceLines: string[] | null = null;
+          const ensureSource = async (): Promise<string[] | null> => {
+            if (sourceLines !== null) return sourceLines;
+            try {
+              const text = await fetchSource(args.file, signal);
+              if (signal.aborted) return null;
+              sourceLines = text.split('\n');
+              return sourceLines;
+            } catch {
+              return null;
+            }
+          };
+          const grammar = Prism.languages.rust;
+          const highlightOne = (text: string): string =>
+            grammar !== undefined
+              ? Prism.highlight(text, grammar, 'rust')
+              : escapeHtml(text);
+          const expand = async (
+            marker: HTMLElement,
+            gapStart: number,
+            gapEnd: number,
+          ): Promise<void> => {
+            // Render visible feedback so the click never feels
+            // silently swallowed. We read the canonical text from
+            // the marker's data attr (not its current textContent)
+            // so retries reset to the original phrasing instead of
+            // accumulating "(failed to load — click to retry)"
+            // suffixes on every click.
+            const canonical = marker.dataset.canonicalText ?? marker.textContent ?? '';
+            marker.textContent = `… loading ${gapEnd - gapStart} lines …`;
+            let lines: string[] | null = null;
+            try {
+              lines = await ensureSource();
+            } catch (err) {
+              console.error('[code-panel] expand fetch threw', err);
+            }
+            if (lines === null) {
+              marker.textContent = `${canonical} (failed to load — click to retry)`;
+              return;
+            }
+            const frag = document.createDocumentFragment();
+            // Source lines are 0-indexed; gap line numbers are
+            // 1-indexed head-side. Slice the inclusive range.
+            for (let n = gapStart; n < gapEnd; n++) {
+              const text = lines[n - 1] ?? '';
+              const lineEl = document.createElement('div');
+              lineEl.className = 'code-panel-line';
+              lineEl.dataset.kind = 'context';
+              lineEl.dataset.line = String(n);
+              const oldGutter = document.createElement('span');
+              oldGutter.className = 'code-panel-gutter old';
+              oldGutter.textContent = String(n);
+              const newGutter = document.createElement('span');
+              newGutter.className = 'code-panel-gutter new';
+              newGutter.textContent = String(n);
+              const code = document.createElement('span');
+              code.className = 'code-panel-text';
+              code.innerHTML = highlightOne(text);
+              lineEl.appendChild(oldGutter);
+              lineEl.appendChild(newGutter);
+              lineEl.appendChild(code);
+              frag.appendChild(lineEl);
+            }
+            marker.replaceWith(frag);
+          };
+          currentFile = args.file;
+          currentFileText = null; // invalidate source cache
+          renderDiff(
+            dr.diff,
+            args.startLine,
+            args.endLine,
+            args.side === 'base',
+            expand,
+          );
+          return;
+        }
+      }
+      const text = await fetchSource(args.file, signal, args.side);
+      if (signal.aborted) return;
+      currentFile = args.file;
+      currentFileText = text;
+      render(text, args.startLine, args.endLine);
+    };
+
+    loadAndRender().catch((err) => {
+      if (signal.aborted) return;
+      bodyEl.replaceChildren(
+        Object.assign(document.createElement('div'), {
+          className: 'code-panel-error',
+          textContent: `Failed to load ${args.file}: ${(err as Error).message}`,
+        }),
+      );
+    });
   };
 
   // Open the split with no file loaded. If a file was previously
@@ -417,7 +713,17 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       titleEl.title = filePath;
       return;
     }
-    const segments = displaySegmentsFor(opts.fileTree, filePath);
+    // In unified-diff mode the file tree's display root is the
+    // parent of both worktree-sha dirs (since both base and head
+    // share that prefix). That leaves the SHA as the first
+    // breadcrumb segment, which is both ugly and meaningless —
+    // we're showing a diff, not a fixed snapshot. Filter out any
+    // 40-char hex segment so the breadcrumb starts at the crate
+    // name (`sf-nano-core > src > ...`).
+    const isSha = (s: string): boolean => /^[0-9a-f]{40}$/.test(s);
+    const segments = displaySegmentsFor(opts.fileTree, filePath).filter(
+      (s) => !isSha(s.name),
+    );
     titleEl.replaceChildren();
     titleEl.title = filePath;
     for (let i = 0; i < segments.length; i++) {
@@ -447,15 +753,19 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   };
 
   const setHighlight = (startLine: number, endLine: number): void => {
+    // Toggle the entity-row class to update which lines belong to
+    // the focused entity, then redraw the wrapping purple dashed
+    // frame to match the new bounds.
     const lines = bodyEl.querySelectorAll<HTMLElement>('.code-panel-line');
     lines.forEach((el) => {
       const n = Number(el.dataset.line);
       if (Number.isFinite(n) && n >= startLine && n <= endLine) {
-        el.classList.add('highlight');
+        el.classList.add('entity-row');
       } else {
-        el.classList.remove('highlight');
+        el.classList.remove('entity-row');
       }
     });
+    drawFocusFrame();
   };
 
   const getScreenRect = (): DOMRect | null =>

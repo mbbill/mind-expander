@@ -35,11 +35,18 @@ export type Ownership =
   | 'primitive'
   | 'other';
 
+/** Which snapshot an entity belongs to in union-diff view.
+ *  Defaults to `'head'` for single-snapshot output (the server omits
+ *  the field in non-diff mode so the viewer treats everything as
+ *  head; absent === 'head' in TypeScript consumers). */
+export type Side = 'base' | 'head' | 'both';
+
 export interface FieldFacts {
   readonly name: string;
   readonly ty_text: string;
   readonly ownership: Ownership;
   readonly span?: Span;
+  readonly side?: Side;
 }
 
 export interface TypeFacts {
@@ -56,6 +63,8 @@ export interface TypeFacts {
    *  the viewer treats the type as having no method visualisation. */
   readonly methods?: readonly FnFacts[];
   readonly span?: Span;
+  readonly side?: Side;
+  readonly body_modified?: boolean;
 }
 
 export interface FnFacts {
@@ -78,6 +87,8 @@ export interface FnFacts {
   readonly is_const?: boolean;
   readonly is_async?: boolean;
   readonly span?: Span;
+  readonly side?: Side;
+  readonly body_modified?: boolean;
 }
 
 /**
@@ -115,11 +126,13 @@ export interface ModuleFacts {
    *  files without re-export tracking just have no entries, and the
    *  re-export-rendering feature stays inert. */
   readonly re_exports?: readonly ReExport[];
+  readonly side?: Side;
 }
 
 export interface CrateFacts {
   readonly name: string;
   readonly modules: Readonly<Record<string, ModuleFacts>>;
+  readonly side?: Side;
 }
 
 export type EdgeKind =

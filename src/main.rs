@@ -6,7 +6,9 @@
 
 mod architecture;
 mod callgraph;
+mod diff;
 mod extract;
+mod git_view;
 mod model;
 mod ownership;
 mod print;
@@ -16,6 +18,7 @@ mod survey;
 mod tour;
 mod tour_client;
 mod unified;
+mod unified_facts;
 
 use std::path::PathBuf;
 
@@ -111,6 +114,14 @@ enum Cmd {
         /// Workspace root to extract and visualize. Defaults to the
         /// global `--root` if omitted.
         workspace: Option<PathBuf>,
+        /// Revision (or revision range) to view and diff against.
+        /// Uses git range syntax: `<ref>` to view that revision,
+        /// `<base>..<head>` to view <head> with the code panel
+        /// showing diffs against <base>. Empty side = working tree
+        /// (e.g. `main..` diffs working tree vs main). Default:
+        /// working tree, no diff.
+        #[arg(long)]
+        at: Option<String>,
         /// Port to bind the local server to.
         #[arg(long, default_value_t = 5180)]
         port: u16,
@@ -216,11 +227,16 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::View {
             workspace,
+            at,
             port,
             no_open,
         } => {
             let path = workspace.unwrap_or(cli.root);
-            server::run(&path, port, !no_open)?;
+            let revspec = match at {
+                Some(s) => git_view::parse_revspec(&s)?,
+                None => git_view::RevSpec::working_tree(),
+            };
+            server::run(&path, revspec, port, !no_open)?;
         }
         Cmd::Tour { file, host } => {
             tour_client::send(&file, &host)?;

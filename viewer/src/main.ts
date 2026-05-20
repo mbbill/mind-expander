@@ -10,7 +10,10 @@ import {
   type TreeNode,
   WORKSPACE_ROOT_ID,
   buildWorkspaceTree,
+  hasTestsSegment,
+  idForModule,
 } from './analysis/module_tree.ts';
+import { classifyVisibility, isRealVisibility } from './analysis/visibility.ts';
 import {
   type OwnershipIndex,
   buildOwnershipIndex,
@@ -461,6 +464,151 @@ async function main(): Promise<void> {
   const facts = await tryLoadFacts();
   if (!facts) return;
 
+  // Read /api/health once at startup. Tells us whether the server was
+  // launched with `--at <base>..<head>` (diff mode). The code panel
+  // uses this to decide whether to try /api/diff before /api/source.
+  // Defaults to false on any error so a missing endpoint just keeps
+  // the panel in plain source mode.
+  let diffEnabled = false;
+  let unifiedMode = false;
+  try {
+    const res = await fetch('/api/health');
+    if (res.ok) {
+      const body = (await res.json()) as {
+        diff_enabled?: boolean;
+        unified_mode?: boolean;
+      };
+      diffEnabled = body.diff_enabled === true;
+      unifiedMode = body.unified_mode === true;
+    }
+  } catch {
+    /* keep default */
+  }
+
+  // Side lookups for union-diff rendering:
+  //   - sideByModule: keyed by module id (crate or `crate::path`).
+  //     Drives the HTML left tree row's `side-*` class.
+  //   - sideByElementId: keyed by type fullPath, method/function
+  //     fullPath, or `${typeFullPath}::${fieldName}`. Drives the
+  //     row-level treatment (green/red bar+tint on members). Only
+  //     `head` and `base` are stored; `both` (regardless of body
+  //     edits) is NOT marked — bars carry structural delta only.
+  //   - rollupByModule: per-module subtree counts so a collapsed
+  //     parent shows `+N -M` next to its label.
+  //   - typeBarStateById: per-type rollup of member sides. Keyed by
+  //     type fullPath (real types) or function-group synthetic id
+  //     `${moduleId}::__fn_${bucket}`. Values: 'add' (only members
+  //     added), 'del' (only removed), 'split' (both adds and dels).
+  //     Drives the vertical bar on the SVG type-box.
+  // All maps stay empty in single-snapshot mode → byte-identical
+  // rendering to before this feature landed.
+  type Side = import('./data/schema.ts').Side;
+  type TypeBarState = 'add' | 'del' | 'split';
+  const sideByModule = new Map<string, Side>();
+  const sideByElementId = new Map<string, Side>();
+  const rollupByModule = new Map<string, { add: number; del: number }>();
+  const typeBarStateById = new Map<string, TypeBarState>();
+  if (unifiedMode) {
+    const bumpRollup = (id: string, side: Side): void => {
+      if (side !== 'base' && side !== 'head') return;
+      const cur = rollupByModule.get(id) ?? { add: 0, del: 0 };
+      if (side === 'head') cur.add++;
+      else cur.del++;
+      rollupByModule.set(id, cur);
+    };
+    const ancestorIds = (modId: string): string[] => {
+      // "crate::a::b" → ["crate", "crate::a", "crate::a::b"].
+      const parts = modId.split('::');
+      const acc: string[] = [];
+      for (let i = 1; i <= parts.length; i++) acc.push(parts.slice(0, i).join('::'));
+      return acc;
+    };
+    const barStateFor = (adds: number, dels: number): TypeBarState | null =>
+      adds > 0 && dels > 0
+        ? 'split'
+        : adds > 0
+          ? 'add'
+          : dels > 0
+            ? 'del'
+            : null;
+    for (const [crateName, crate] of Object.entries(facts.crates)) {
+      if (crate.side === 'base' || crate.side === 'head') {
+        sideByModule.set(crateName, crate.side);
+        bumpRollup(crateName, crate.side);
+      }
+      for (const [modPath, mod] of Object.entries(crate.modules)) {
+        // Stay consistent with the rendered tree: buildModuleTree
+        // drops every `::tests::` module, so the rollup walk must do
+        // the same. Otherwise the badge count can lead the user to a
+        // parent module whose cited changes live in a hidden tests
+        // child that the diagram never reveals.
+        if (hasTestsSegment(modPath)) continue;
+        const modId = modPath === '' ? crateName : `${crateName}::${modPath}`;
+        if (mod.side === 'base' || mod.side === 'head') {
+          sideByModule.set(modId, mod.side);
+          for (const a of ancestorIds(modId)) bumpRollup(a, mod.side);
+        }
+        // Tally free functions by visibility bucket so the per-bucket
+        // function-group pseudo-type carries the right rollup bar.
+        // Buckets mirror `synthesiseFunctionGroups`.
+        const fnBucketCounts = new Map<string, { add: number; del: number }>();
+        for (const t of mod.types ?? []) {
+          if (t.side === 'base' || t.side === 'head') {
+            sideByElementId.set(t.full_path, t.side);
+            for (const a of ancestorIds(modId)) bumpRollup(a, t.side);
+          }
+          // Per-type bar state: count this type's own contribution
+          // plus every member that's either added or removed.
+          let tAdds = 0;
+          let tDels = 0;
+          if (t.side === 'head') tAdds++;
+          else if (t.side === 'base') tDels++;
+          for (const f of t.fields ?? []) {
+            if (f.side === 'base' || f.side === 'head') {
+              sideByElementId.set(`${t.full_path}::${f.name}`, f.side);
+              for (const a of ancestorIds(modId)) bumpRollup(a, f.side);
+              if (f.side === 'head') tAdds++;
+              else tDels++;
+            }
+          }
+          for (const m of t.methods ?? []) {
+            if (m.side === 'base' || m.side === 'head') {
+              sideByElementId.set(`${t.full_path}::${m.name}`, m.side);
+              for (const a of ancestorIds(modId)) bumpRollup(a, m.side);
+              if (m.side === 'head') tAdds++;
+              else tDels++;
+            }
+          }
+          const st = barStateFor(tAdds, tDels);
+          if (st !== null) typeBarStateById.set(t.full_path, st);
+        }
+        for (const fn of mod.functions ?? []) {
+          const fnId =
+            modPath === ''
+              ? `${crateName}::${fn.name}`
+              : `${crateName}::${modPath}::${fn.name}`;
+          if (fn.side === 'base' || fn.side === 'head') {
+            sideByElementId.set(fnId, fn.side);
+            for (const a of ancestorIds(modId)) bumpRollup(a, fn.side);
+          }
+          // Per-bucket function-group rollup, keyed by the same
+          // synthetic id `synthesiseFunctionGroups` produces.
+          if (!isRealVisibility(fn.visibility)) continue;
+          const bucket = classifyVisibility(fn.visibility);
+          const groupId = `${idForModule(crateName, modPath)}::__fn_${bucket}`;
+          const cur = fnBucketCounts.get(groupId) ?? { add: 0, del: 0 };
+          if (fn.side === 'head') cur.add++;
+          else if (fn.side === 'base') cur.del++;
+          fnBucketCounts.set(groupId, cur);
+        }
+        for (const [groupId, c] of fnBucketCounts) {
+          const st = barStateFor(c.add, c.del);
+          if (st !== null) typeBarStateById.set(groupId, st);
+        }
+      }
+    }
+  }
+
   const svg = document.querySelector<SVGSVGElement>('#tree');
   const canvasScroll = document.querySelector<HTMLElement>('#canvas-scroll');
   const canvasContent = document.querySelector<HTMLElement>('#canvas-content');
@@ -531,6 +679,7 @@ async function main(): Promise<void> {
     currentCtx?.draw();
   };
   const codePanel = createCodePanel({
+    diffEnabled,
     onLineNavigate: (file, line) => {
       const hit = findElementAtLine(spanIndex, file, line);
       if (hit === null) return;
@@ -568,7 +717,22 @@ async function main(): Promise<void> {
     const span = lookupSpan(spanIndex, id, kind);
     if (span === null) return;
     setDiagramSelection(id, kind);
-    codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
+    // In unified-diff mode the entity's side determines how the
+    // code panel resolves its source (head fs vs `git show <base>`)
+    // and how it interprets the entity span (base line numbers vs
+    // head line numbers) when positioning the focus frame in the
+    // diff. Look up side for ALL kinds, not just modules — a
+    // base-only type/method/field needs the same treatment.
+    const side =
+      kind === 'module'
+        ? sideByModule.get(id)
+        : sideByElementId.get(id);
+    codePanel.show({
+      file: span.file,
+      startLine: span.start_line,
+      endLine: span.end_line,
+      side,
+    });
     updateCodeIndicator(true);
   };
   /** Same diagram selection + navigation as `openCodeFor`, but the code
@@ -685,7 +849,10 @@ async function main(): Promise<void> {
     });
   }
   const inputController = installInputControls(svg, canvasScroll, layers);
-  if (minimapRoot) minimap = createMinimap(minimapRoot, canvasScroll, layers);
+  if (minimapRoot)
+    minimap = createMinimap(minimapRoot, canvasScroll, layers, {
+      typeBarStateById,
+    });
   updateScaleIndicator(1);
 
   // Cursor tracking + overview-toggle state. Space presses cycle between
@@ -1051,6 +1218,8 @@ async function main(): Promise<void> {
         ownership,
         selectedElementId,
         selectedElementKind,
+        sideByElementId,
+        typeBarStateById,
         onToggle: (id) => {
           // Anchor the clicked item in both axes: expansion can change a
           // type's physical group, so preserving only y lets the target drift
@@ -1253,6 +1422,8 @@ async function main(): Promise<void> {
         // Cmd+click on a module label in the left tree → open the
         // module's source file via the span index's `'module'` kind.
         onShowCode: (id) => openCodeFor(id, 'module'),
+        sideByModule,
+        rollupByModule,
       };
       renderHtmlModuleTree(htmlModules, lastLayout, k, canvasScroll, htmlTreeOpts);
       minimap?.update(lastLayout);

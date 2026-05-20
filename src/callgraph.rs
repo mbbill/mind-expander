@@ -762,6 +762,8 @@ mod tests {
             unsafe_blocks: 0,
             doc_first_line: None,
             span: None,
+            side: crate::model::Side::default(),
+            body_modified: false,
         }
     }
 
@@ -785,6 +787,8 @@ mod tests {
             unsafe_blocks: 0,
             doc_first_line: None,
             span: None,
+            side: crate::model::Side::default(),
+            body_modified: false,
         }
     }
 
@@ -800,6 +804,7 @@ mod tests {
             functions: functions.iter().map(|f| fn_facts(f)).collect(),
             re_exports: vec![],
             unsafe_blocks: 0,
+            side: crate::model::Side::default(),
         }
     }
 
@@ -815,6 +820,7 @@ mod tests {
                     name: "c".to_string(),
                     root: "src".to_string(),
                     modules: modules.into_iter().map(|m| (m.path.clone(), m)).collect(),
+                    side: crate::model::Side::default(),
                 },
             )]),
             edges: vec![],

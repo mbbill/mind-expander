@@ -14,6 +14,7 @@
 
 import { INDENT_PX, ROW_H, moduleLeafLabel } from '../analysis/layout_metrics.ts';
 import type { Layout } from '../analysis/layout_model.ts';
+import type { Side } from '../data/schema.ts';
 
 // Sticky rows stack flush — same vertical spacing as natural-flow
 // rows. A previous version added a gap here to keep the text halo
@@ -56,6 +57,17 @@ export interface HtmlModuleTreeOptions {
   /** Cmd/Ctrl+click on a module label → open its source file in the
    *  code panel. The host looks the file up in the span index. */
   readonly onShowCode: (id: string) => void;
+  /** When in union-diff mode, maps a module's full id (crate-prefixed
+   *  path used as `m.id` in the layout) to the side it lives on. The
+   *  renderer applies a `side-base|side-head|side-both` class to the
+   *  module-group so CSS can paint a left-edge color bar. Omitted /
+   *  empty map → no styling, single-snapshot behaviour. */
+  readonly sideByModule?: ReadonlyMap<string, Side>;
+  /** Per-module subtree rollup. Renderer paints `+N -M` next to the
+   *  module's leaf label whenever counts are non-zero — lets the user
+   *  see "there are changes in here" without expanding. Omitted /
+   *  empty → no badges. */
+  readonly rollupByModule?: ReadonlyMap<string, { readonly add: number; readonly del: number }>;
 }
 
 /** Render the module tree as nested HTML inside `container`. `k` is the
@@ -96,6 +108,16 @@ export function renderHtmlModuleTree(
     const group = document.createElement('div');
     group.className = 'module-group';
     group.dataset.id = m.id;
+    // Union-diff side coloring. When the host provides a sideByModule
+    // map (only in unified mode), tag the group's element so CSS can
+    // paint a left-edge bar. Skip `both` for v1 because we don't yet
+    // distinguish body-modified Both from unchanged Both (that gates
+    // on diff-hunk intersection, deferred to a follow-up). So only
+    // `base` (removed) and `head` (added) modules get a bar.
+    const side = opts.sideByModule?.get(m.id);
+    if (side === 'base' || side === 'head') {
+      group.classList.add(`side-${side}`);
+    }
     // Vertical position relative to the parent group; height covers
     // this module's full y-range so its sticky header has somewhere to
     // slide out into when the user scrolls past the descendant content.
@@ -318,6 +340,31 @@ function renderHeader(
   // back later, restore the background via CSS rather than JS so
   // styling stays in one file.
   header.appendChild(chip);
+
+  // Union-diff rollup badge: shows the subtree's add/del totals.
+  // Without this, a collapsed crate communicates nothing about its
+  // descendants' changes — which is the #1 reason "diff mode looks
+  // identical to normal mode" on first load (every top-level row is
+  // `both` and most paths to changes are several modules deep).
+  const rollup = opts.rollupByModule?.get(m.id);
+  if (rollup !== undefined && (rollup.add > 0 || rollup.del > 0)) {
+    const badge = document.createElement('span');
+    badge.className = 'rollup-badge';
+    badge.style.fontSize = `${10 * k}px`;
+    if (rollup.add > 0) {
+      const add = document.createElement('span');
+      add.className = 'rb-add';
+      add.textContent = `+${rollup.add}`;
+      badge.appendChild(add);
+    }
+    if (rollup.del > 0) {
+      const del = document.createElement('span');
+      del.className = 'rb-del';
+      del.textContent = `−${rollup.del}`;
+      badge.appendChild(del);
+    }
+    header.appendChild(badge);
+  }
 
   header.addEventListener('click', (event) => {
     event.stopPropagation();

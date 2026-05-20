@@ -162,6 +162,7 @@ fn extract_crate(
         name: name.to_string(),
         root: src_root.display().to_string(),
         modules: BTreeMap::new(),
+        side: crate::model::Side::default(),
     };
     for entry in WalkDir::new(src_root).into_iter().filter_map(|e| e.ok()) {
         if entry.file_type().is_file()
@@ -385,6 +386,8 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span,
+            side: crate::model::Side::default(),
+            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -413,6 +416,7 @@ impl Ctx {
                     cardinality: vec![],
                     lifetimes: vec![],
                     span: var_span,
+                    side: crate::model::Side::default(),
                 });
             } else {
                 for f in inner {
@@ -439,6 +443,8 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span,
+            side: crate::model::Side::default(),
+            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -473,6 +479,8 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span,
+            side: crate::model::Side::default(),
+            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -513,6 +521,8 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span,
+            side: crate::model::Side::default(),
+            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -536,6 +546,7 @@ impl Ctx {
             cardinality,
             lifetimes,
             span: item_span.clone(),
+            side: crate::model::Side::default(),
         }];
         let facts = TypeFacts {
             name,
@@ -551,6 +562,8 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span: item_span,
+            side: crate::model::Side::default(),
+            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -626,6 +639,8 @@ impl Ctx {
             unsafe_blocks,
             doc_first_line: None,
             span: None,
+            side: crate::model::Side::default(),
+            body_modified: false,
         };
         let module_path_owned = module_path;
         self.ensure_module(&module_path_owned).types.push(stub);
@@ -712,6 +727,7 @@ fn fields_from_struct(fields: &syn::Fields, file: &str) -> Vec<FieldFacts> {
                     cardinality,
                     lifetimes,
                     span: Some(span_of(file, f.span())),
+                    side: crate::model::Side::default(),
                 }
             })
             .collect(),
@@ -735,6 +751,7 @@ fn field_from_named(f: &syn::Field, file: &str) -> FieldFacts {
         cardinality,
         lifetimes,
         span: Some(span_of(file, f.span())),
+        side: crate::model::Side::default(),
     }
 }
 
@@ -855,6 +872,8 @@ fn build_fn_facts(
         unsafe_blocks,
         doc_first_line: doc_first_line(attrs),
         span,
+        side: crate::model::Side::default(),
+        body_modified: false,
     }
 }
 

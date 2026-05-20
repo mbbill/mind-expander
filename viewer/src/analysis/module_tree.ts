@@ -324,11 +324,19 @@ function synthesiseTypeReExportGhosts(
   return out;
 }
 
-function hasTestsSegment(path: string): boolean {
+/** Module paths whose layout is dropped by the default `buildModuleTree`
+ *  options. Exported so external consumers (e.g. the rollup walk that
+ *  derives `+N -M` badges from raw facts) can apply the same filter and
+ *  stay consistent with the rendered tree. */
+export function hasTestsSegment(path: string): boolean {
   return path.split('::').includes('tests');
 }
 
-function idForModule(crateName: string, path: string): string {
+/** Module id used as the stable key for the layout's module rows and
+ *  as a prefix for function-group pseudo-types. Exported so callers
+ *  building rollups outside the layout pipeline can derive the same
+ *  id without duplicating the rule. */
+export function idForModule(crateName: string, path: string): string {
   return path === '' ? crateName : `${crateName}::${path}`;
 }
 

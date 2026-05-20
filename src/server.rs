@@ -6,6 +6,9 @@
 //!   - `/api/facts` — JSON of facts extracted from the workspace
 //!   - `/api/source?path=<abs>` — source-file streaming, sandboxed to
 //!     the workspace root so the viewer can render the code panel.
+//!   - `/api/diff?path=<rel>` — structured per-file unified diff
+//!     (base→head); only available when `--at` enabled diff mode.
+//!     The panel falls back to `/api/source` on 204 (unchanged).
 //!   - `/api/tour` (POST) — accept a tour JSON, validate + resolve it
 //!     against the span index, and push the resolved form onto the
 //!     in-memory queue (consumed later by the viewer's SSE channel).
@@ -37,7 +40,12 @@ use include_dir::{Dir, include_dir};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
+use crate::diff::{DiffOutcome, diff_file};
+use crate::git_view::{
+    RevSpec, find_repo_root, materialize_head, prune_worktrees, resolve_sha, show_blob,
+};
 use crate::tour::{IngestErr, IngestOk, ResolveError, SpanIndex, Tour, TourQueue, ingest};
+use crate::unified_facts::{build_unified, mark_body_modified};
 
 // Embed the built viewer at compile time. `build.rs` checks that
 // `viewer/dist/index.html` exists and fails the build with a helpful
@@ -46,7 +54,29 @@ static VIEWER_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/viewer/dist");
 
 struct AppState {
     facts_json: String,
+    /// The directory the extractor parsed for head. When `--at`
+    /// selects a head ref, this is the materialized worktree under
+    /// the cache dir; otherwise the user's workspace path. The
+    /// `/api/source` sandbox is anchored here for head-side reads.
     workspace_root: PathBuf,
+    /// Materialized base worktree, present iff `base_sha` is also
+    /// present. Held so we know diff mode is fully wired; actual
+    /// base-side source reads go through `git show` against
+    /// `base_sha` (no filesystem access required), so we only need
+    /// this path for diagnostics / future use.
+    #[allow(dead_code)]
+    base_workspace_root: Option<PathBuf>,
+    /// `git -C` toplevel that contains `workspace_root`. Only set when
+    /// `--at` enables diff mode (we need it to invoke `git diff`).
+    repo_root: Option<PathBuf>,
+    /// Diff sides resolved to shas. `head_sha = None` with
+    /// `diff_enabled = true` means "head is the working tree."
+    /// `base_sha = None` with `diff_enabled = true` means "base is
+    /// the working tree" (the `..ref` form). When `diff_enabled` is
+    /// false there is no diff at all.
+    diff_enabled: bool,
+    base_sha: Option<String>,
+    head_sha: Option<String>,
     /// Pre-built index used by `/api/tour` to resolve `{file, line}`
     /// refs in a tour to canonical `(elementId, kind)` pairs. Built
     /// once at startup so per-tour validation stays cheap.
@@ -58,12 +88,73 @@ struct AppState {
     tour_tx: broadcast::Sender<crate::tour::ResolvedTour>,
 }
 
-pub fn run(workspace: &Path, port: u16, open_browser: bool) -> Result<()> {
-    let workspace_root = std::fs::canonicalize(workspace)
+pub fn run(workspace: &Path, revspec: RevSpec, port: u16, open_browser: bool) -> Result<()> {
+    let user_workspace = std::fs::canonicalize(workspace)
         .with_context(|| format!("workspace path not found: {}", workspace.display()))?;
 
+    // Resolve `--at` into the snapshot we'll actually parse and the
+    // shas we'll pass to `git diff`. Layered so the no-flag path
+    // bypasses every git invocation: a workspace that isn't a git
+    // repo still works fine when --at is absent.
+    let (workspace_root, repo_root, base_sha, head_sha) =
+        if revspec.head.is_none() && revspec.base.is_none() && !revspec.diff_enabled {
+            (user_workspace.clone(), None, None, None)
+        } else {
+            let repo = find_repo_root(&user_workspace)?;
+            // Hygiene first: drop stale worktree entries from prior crashes.
+            prune_worktrees(&repo)?;
+            let base_sha = match &revspec.base {
+                Some(r) => Some(resolve_sha(&repo, r)?),
+                None => None,
+            };
+            let head_sha = match &revspec.head {
+                Some(r) => Some(resolve_sha(&repo, r)?),
+                None => None,
+            };
+            let parsed_path = match &head_sha {
+                Some(sha) => {
+                    eprintln!("Materializing worktree at {sha} ...");
+                    materialize_head(&repo, sha)?
+                }
+                None => user_workspace.clone(),
+            };
+            (parsed_path, Some(repo), base_sha, head_sha)
+        };
+
     eprintln!("Extracting facts from {} ...", workspace_root.display());
-    let facts = crate::extract::extract_workspace(&workspace_root)?;
+    let head_facts = crate::extract::extract_workspace(&workspace_root)?;
+
+    // When diff mode is on AND a base sha is set, materialize the
+    // base worktree too and parse it as a separate snapshot. We then
+    // merge both into the union facts the viewer renders. The base
+    // worktree path is held in AppState so /api/source?side=base can
+    // service files via `git show` (no need to read from the
+    // worktree once parsed).
+    let (facts, base_workspace_root) = if let (Some(repo), Some(bsha)) =
+        (repo_root.as_deref(), base_sha.as_deref())
+    {
+        eprintln!("Materializing base worktree at {bsha} ...");
+        let base_path = materialize_head(repo, bsha)?;
+        eprintln!("Extracting base facts from {} ...", base_path.display());
+        let base_facts = crate::extract::extract_workspace(&base_path)?;
+        eprintln!("Merging base + head into union facts ...");
+        let mut unified = build_unified(base_facts, head_facts);
+        // Mark Both entities whose body changed (per diff-hunk
+        // intersection with the head span). This turns the renderer's
+        // orange treatment on for modified-Both types/methods/free
+        // functions — the third state the visual language carries,
+        // distinct from base (removed) and head (added).
+        eprintln!("Marking body-modified entities ...");
+        if let Err(err) =
+            mark_body_modified(&mut unified, repo, bsha, head_sha.as_deref(), &workspace_root)
+        {
+            eprintln!("(warning) body_modified pass failed: {err}");
+        }
+        (unified, Some(base_path))
+    } else {
+        (head_facts, None)
+    };
+
     let type_count: usize = facts
         .crates
         .values()
@@ -83,9 +174,15 @@ pub fn run(workspace: &Path, port: u16, open_browser: bool) -> Result<()> {
     // a Lagged error which we drop silently (viewer can re-request
     // the latest tour later).
     let (tour_tx, _) = broadcast::channel::<crate::tour::ResolvedTour>(16);
+    let diff_enabled = revspec.diff_enabled;
     let state = Arc::new(AppState {
         facts_json,
         workspace_root,
+        base_workspace_root,
+        repo_root,
+        diff_enabled,
+        base_sha,
+        head_sha,
         span_index,
         tours: TourQueue::default(),
         tour_tx,
@@ -95,6 +192,7 @@ pub fn run(workspace: &Path, port: u16, open_browser: bool) -> Result<()> {
         .route("/api/health", get(get_health))
         .route("/api/facts", get(get_facts))
         .route("/api/source", get(get_source))
+        .route("/api/diff", get(get_diff))
         .route("/api/tour", post(post_tour))
         .route("/api/tour-events", get(get_tour_events))
         .fallback(get(serve_static))
@@ -133,12 +231,29 @@ async fn get_facts(State(state): State<Arc<AppState>>) -> Response {
 struct HealthBody<'a> {
     status: &'a str,
     workspace_root: &'a str,
+    /// True when the user passed a `--at` with a `..` separator. The
+    /// viewer code panel checks this once at startup and switches its
+    /// fetch path to `/api/diff` when set.
+    diff_enabled: bool,
+    /// True when the diagram reflects the live working tree (i.e.
+    /// `--at` was empty, or the `<base>..` form was used). Future
+    /// "refresh on file change" features key off this; harmless to
+    /// expose now.
+    head_is_working_tree: bool,
+    /// True when the facts shipped by `/api/facts` contain a merged
+    /// union of base + head (every entity carries a real `side`).
+    /// Viewer uses this to branch its renderer between the
+    /// single-snapshot view and the side-aware union renderer.
+    unified_mode: bool,
 }
 
 async fn get_health(State(state): State<Arc<AppState>>) -> Response {
     Json(HealthBody {
         status: "ok",
         workspace_root: state.workspace_root.to_string_lossy().as_ref(),
+        diff_enabled: state.diff_enabled,
+        head_is_working_tree: state.head_sha.is_none(),
+        unified_mode: state.base_sha.is_some(),
     })
     .into_response()
 }
@@ -196,21 +311,125 @@ async fn post_tour(
 #[derive(Deserialize)]
 struct SourceQuery {
     path: String,
+    /// "base" → fetch from `base_sha` via `git show`. Anything else
+    /// (including omitted) → read from `workspace_root` (head).
+    #[serde(default)]
+    side: Option<String>,
 }
 
 async fn get_source(
     State(state): State<Arc<AppState>>,
     Query(q): Query<SourceQuery>,
 ) -> Response {
-    // Accept absolute paths as-is; resolve relative paths against the
-    // workspace root. Either way, canonicalize and verify the result
-    // stays inside the workspace before reading. This is the same
-    // sandbox shape the Vite plugin used to implement.
-    let candidate = if Path::new(&q.path).is_absolute() {
-        PathBuf::from(&q.path)
+    // Base-side fetch: bypass the filesystem sandbox entirely and
+    // ask git for the blob at the base sha. Path must be inside the
+    // repo (we derive a repo-relative form from the workspace path
+    // the same way `/api/diff` does).
+    if q.side.as_deref() == Some("base") {
+        let Some(repo_root) = state.repo_root.as_deref() else {
+            return (StatusCode::NOT_FOUND, "no repo root").into_response();
+        };
+        let Some(base_sha) = state.base_sha.as_deref() else {
+            return (StatusCode::NOT_FOUND, "no base sha").into_response();
+        };
+        // Derive a repo-relative path. The incoming `path` can be:
+        //   - already repo-relative (e.g., `src/foo.rs`),
+        //   - absolute under head's workspace (e.g., the head worktree
+        //     for shared files between snapshots),
+        //   - absolute under the base worktree (base-only entity span).
+        // Try each prefix in turn; the first that matches wins. This
+        // lets the viewer pass whatever the extractor recorded as
+        // `span.file` without having to know which worktree it
+        // belongs to.
+        let rel = if Path::new(&q.path).is_absolute() {
+            let canon =
+                std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
+            let mut prefixes: Vec<PathBuf> = Vec::new();
+            if let Some(base) = state.base_workspace_root.as_deref() {
+                prefixes.push(
+                    std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()),
+                );
+            }
+            prefixes.push(
+                std::fs::canonicalize(&state.workspace_root)
+                    .unwrap_or_else(|_| state.workspace_root.clone()),
+            );
+            prefixes.push(
+                std::fs::canonicalize(repo_root)
+                    .unwrap_or_else(|_| repo_root.to_owned()),
+            );
+            let mut rel_opt: Option<String> = None;
+            for p in &prefixes {
+                if let Ok(r) = canon.strip_prefix(p) {
+                    rel_opt = Some(r.to_string_lossy().into_owned());
+                    break;
+                }
+            }
+            match rel_opt {
+                Some(r) => r,
+                None => {
+                    return (StatusCode::BAD_REQUEST, "path outside repo").into_response();
+                }
+            }
+        } else {
+            q.path.clone()
+        };
+        return match show_blob(repo_root, base_sha, &rel) {
+            Ok(bytes) => (
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                bytes,
+            )
+                .into_response(),
+            Err(_) => (StatusCode::NOT_FOUND, "not in base snapshot").into_response(),
+        };
+    }
+
+    // Head-side (default). The incoming `path` can be:
+    //   - already repo-relative (`src/foo.rs`)
+    //   - absolute under head's workspace_root
+    //   - absolute under the base worktree (in unified mode the
+    //     diff renderer asks for unchanged context lines using
+    //     whatever span.file the entity records, which for a
+    //     base-side entity is the BASE worktree path)
+    //   - absolute under repo_root
+    // Strip whichever prefix matches, then resolve the resulting
+    // repo-relative path against head's workspace_root and read.
+    // This way the head endpoint serves the head version of any
+    // file the viewer has a path to, regardless of which snapshot
+    // recorded that path.
+    let rel: String = if Path::new(&q.path).is_absolute() {
+        let canon =
+            std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
+        let mut prefixes: Vec<PathBuf> = Vec::new();
+        prefixes.push(
+            std::fs::canonicalize(&state.workspace_root)
+                .unwrap_or_else(|_| state.workspace_root.clone()),
+        );
+        if let Some(base) = state.base_workspace_root.as_deref() {
+            prefixes.push(
+                std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()),
+            );
+        }
+        if let Some(repo) = state.repo_root.as_deref() {
+            prefixes.push(
+                std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned()),
+            );
+        }
+        let mut found: Option<String> = None;
+        for p in &prefixes {
+            if let Ok(r) = canon.strip_prefix(p) {
+                found = Some(r.to_string_lossy().into_owned());
+                break;
+            }
+        }
+        match found {
+            Some(r) => r,
+            None => return (StatusCode::FORBIDDEN, "outside workspace").into_response(),
+        }
     } else {
-        state.workspace_root.join(&q.path)
+        q.path.clone()
     };
+    let candidate = state.workspace_root.join(&rel);
     let real = match std::fs::canonicalize(&candidate) {
         Ok(p) => p,
         Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
@@ -234,6 +453,94 @@ async fn get_source(
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("read error: {err}"),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DiffQuery {
+    path: String,
+}
+
+async fn get_diff(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<DiffQuery>,
+) -> Response {
+    // The endpoint only exists logically when diff mode is on. We
+    // still register the route unconditionally so the viewer doesn't
+    // need to special-case URL construction; we just 404 here when
+    // there is no diff to serve. The panel's fetch path treats 404
+    // and 204 differently — 404 means "diff disabled," 204 means
+    // "this file is unchanged." Both lead to source-mode fallback.
+    if !state.diff_enabled {
+        return (StatusCode::NOT_FOUND, "diff mode not enabled").into_response();
+    }
+    let Some(repo_root) = state.repo_root.as_deref() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "no repo root").into_response();
+    };
+
+    // Derive a repo-relative path. The incoming `path` can be:
+    //   - already repo-relative (e.g. `src/foo.rs`)
+    //   - absolute under head's workspace_root (the materialized
+    //     worktree the parser walked, or the user's workspace)
+    //   - absolute under the base worktree
+    //   - absolute under repo_root itself
+    // Try each prefix in turn; the first that matches wins. This is
+    // the same strip ladder `/api/source?side=base` uses, lifted up
+    // so /api/diff also accepts entity span paths regardless of which
+    // worktree the extractor recorded them in.
+    let repo_canon =
+        std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_owned());
+    let rel = if Path::new(&q.path).is_absolute() {
+        let canon =
+            std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
+        let mut prefixes: Vec<PathBuf> = Vec::new();
+        prefixes.push(
+            std::fs::canonicalize(&state.workspace_root)
+                .unwrap_or_else(|_| state.workspace_root.clone()),
+        );
+        if let Some(base) = state.base_workspace_root.as_deref() {
+            prefixes.push(
+                std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()),
+            );
+        }
+        prefixes.push(repo_canon.clone());
+        let mut found: Option<String> = None;
+        for p in &prefixes {
+            if let Ok(r) = canon.strip_prefix(p) {
+                found = Some(r.to_string_lossy().into_owned());
+                break;
+            }
+        }
+        match found {
+            Some(r) => r,
+            None => return (StatusCode::BAD_REQUEST, "path outside repo").into_response(),
+        }
+    } else {
+        q.path.clone()
+    };
+
+    let Some(base) = state.base_sha.as_deref() else {
+        // `..ref` form: base is the working tree. v1 doesn't support
+        // this direction (the worktree is on `head`'s sha, not on
+        // the working tree's sha). Surface a clear error rather than
+        // silently producing a backwards diff.
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "diff base = working tree is not yet supported",
+        )
+            .into_response();
+    };
+    match diff_file(&repo_canon, base, state.head_sha.as_deref(), &rel) {
+        Ok(DiffOutcome::Empty) => StatusCode::NO_CONTENT.into_response(),
+        Ok(DiffOutcome::Changed(result)) => {
+            ([(header::CONTENT_TYPE, "application/json")], Json(result))
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("diff failed: {err}"),
         )
             .into_response(),
     }
