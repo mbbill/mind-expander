@@ -7,6 +7,11 @@ const KNOWN_KINDS: readonly string[] = [
   'union',
   'trait',
   'type_alias',
+  // TypeScript frontend kinds — added when the project gained TS
+  // support. Must stay in sync with the TypeKind union in schema.ts
+  // and the Rust enum in src/model.rs.
+  'class',
+  'interface',
 ];
 
 export class FactsLoadError extends Error {

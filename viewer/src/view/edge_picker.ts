@@ -47,6 +47,13 @@ export interface EdgeEntry {
    *  row so the user sees current state at the moment the picker
    *  opens. */
   readonly active: boolean;
+  /** True when the host couldn't resolve the other endpoint to a
+   *  known row in the workspace (e.g. heuristic call into an
+   *  external symbol). The picker renders these rows as
+   *  informational — italic + faded, no hover affordance, no
+   *  active-bold state, click is a no-op. They still appear so the
+   *  count badge matches the picker contents. */
+  readonly unresolved?: boolean;
 }
 
 export interface EdgePickerShowArgs {
@@ -182,9 +189,17 @@ export function createEdgePicker(): EdgePicker {
     for (const entry of args.entries) {
       const row = document.createElement('div');
       row.className = 'edge-picker-row';
-      row.tabIndex = 0;
-      row.setAttribute('role', 'button');
-      if (entry.active) row.classList.add('active');
+      // Unresolved entries are informational only: no keyboard focus,
+      // no role=button, no hover affordance, no active-bold (even if
+      // the host accidentally passed active:true — they shouldn't, but
+      // be defensive). The class drives the visual cue in CSS.
+      if (entry.unresolved) {
+        row.classList.add('unresolved');
+      } else {
+        row.tabIndex = 0;
+        row.setAttribute('role', 'button');
+        if (entry.active) row.classList.add('active');
+      }
 
       if (entry.crateName !== undefined && entry.crateName !== '') {
         // Cross-crate entries lead with the crate name in purple so the
@@ -207,20 +222,22 @@ export function createEdgePicker(): EdgePicker {
       main.textContent = entry.label;
       row.appendChild(main);
 
-      const onActivate = (clickAnchor: { x: number; y: number }): void => {
-        args.onPick(entry, clickAnchor);
-        hide();
-      };
-      row.addEventListener('click', (e) => {
-        onActivate({ x: e.clientX, y: e.clientY });
-      });
-      row.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          onActivate({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
-        }
-      });
+      if (!entry.unresolved) {
+        const onActivate = (clickAnchor: { x: number; y: number }): void => {
+          args.onPick(entry, clickAnchor);
+          hide();
+        };
+        row.addEventListener('click', (e) => {
+          onActivate({ x: e.clientX, y: e.clientY });
+        });
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            onActivate({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+          }
+        });
+      }
       panel.appendChild(row);
     }
 

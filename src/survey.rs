@@ -113,6 +113,11 @@ fn module_line(crate_name: &str, m: &ModuleFacts) -> ModuleLine {
             TypeKind::Trait => traits += 1,
             TypeKind::Union => unions += 1,
             TypeKind::TypeAlias => aliases += 1,
+            // TS-only kinds are absent from the S/E/T/U/A column —
+            // the per-module table header is Rust-flavored. The total
+            // type count (`types`) still includes them, so they don't
+            // disappear, just don't bucket.
+            TypeKind::Class | TypeKind::Interface => {}
         }
         type_unsafe += t.unsafe_blocks;
         if !t.lifetime_params.is_empty() {
@@ -177,6 +182,9 @@ fn print_global_counters(types: &[&TypeFacts], fns: &[(String, &FnFacts)], edges
             TypeKind::Trait => k_trait += 1,
             TypeKind::Union => k_union += 1,
             TypeKind::TypeAlias => k_alias += 1,
+            // Same rationale as `module_line`: keep Rust-survey columns
+            // intact; TS types still appear in the total.
+            TypeKind::Class | TypeKind::Interface => {}
         }
         if !t.lifetime_params.is_empty() {
             types_with_lt += 1;
@@ -339,6 +347,8 @@ fn print_type_table(types: &[&TypeFacts], profiles: &BTreeMap<String, EdgeProfil
             TypeKind::Trait => "trait",
             TypeKind::Union => "union",
             TypeKind::TypeAlias => "alias",
+            TypeKind::Class => "class",
+            TypeKind::Interface => "iface",
         };
         let lt = t.lifetime_params.len();
         let derives = if t.derives.is_empty() {
@@ -464,6 +474,8 @@ fn print_isolated_types(types: &[&TypeFacts], profiles: &BTreeMap<String, EdgePr
             TypeKind::Trait => "trait",
             TypeKind::Union => "union",
             TypeKind::TypeAlias => "alias",
+            TypeKind::Class => "class",
+            TypeKind::Interface => "iface",
         };
         let outbound: u32 = profiles
             .get(&t.full_path)

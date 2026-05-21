@@ -100,6 +100,11 @@ pub struct RunArgs<'a> {
     pub no_open: bool,
     /// User-supplied `--foreground`. Disables self-daemonize on ready.
     pub foreground: bool,
+    /// Frontend filter: `None` = run every registered frontend,
+    /// `Some(name)` = restrict to the named frontend (`"rust"` /
+    /// `"typescript"`). Passed straight through to
+    /// [`crate::frontend::dispatch_with`].
+    pub lang: Option<&'a str>,
 }
 
 pub fn run(args: RunArgs<'_>) -> Result<()> {
@@ -109,6 +114,7 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
         port,
         no_open,
         foreground,
+        lang,
     } = args;
     let user_workspace = std::fs::canonicalize(workspace)
         .with_context(|| format!("workspace path not found: {}", workspace.display()))?;
@@ -143,7 +149,7 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
         };
 
     eprintln!("Extracting facts from {} ...", workspace_root.display());
-    let head_facts = crate::extract::extract_workspace(&workspace_root)?;
+    let head_facts = crate::frontend::dispatch_with(&workspace_root, lang)?;
 
     // When diff mode is on AND a base sha is set, materialize the
     // base worktree too and parse it as a separate snapshot. We then
@@ -157,7 +163,7 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
         eprintln!("Materializing base worktree at {bsha} ...");
         let base_path = materialize_head(repo, bsha)?;
         eprintln!("Extracting base facts from {} ...", base_path.display());
-        let base_facts = crate::extract::extract_workspace(&base_path)?;
+        let base_facts = crate::frontend::dispatch_with(&base_path, lang)?;
         // Precompute base+head hunk ranges per file before the merge
         // so the union pass can decide split-vs-Both per entity in a
         // single sweep — no second post-pass needed. If hunk

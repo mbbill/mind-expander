@@ -304,35 +304,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     opts.onLineNavigate(currentFile, coords);
   });
 
-  // Focus frame — a purple dashed overlay that wraps the rows of
-  // the clicked entity. With line folding removed, the panel is a
-  // flat scrollable view, so the entity-rows form a single
-  // contiguous block in DOM order — one frame, from the first
-  // entity-row to the last.
-  const drawFocusFrame = (): void => {
-    bodyEl.querySelectorAll('.code-panel-entity-frame').forEach((el) => el.remove());
-    const children = Array.from(bodyEl.children) as HTMLElement[];
-    let first: HTMLElement | null = null;
-    let last: HTMLElement | null = null;
-    for (const ch of children) {
-      if (
-        ch.classList.contains('code-panel-line') &&
-        ch.classList.contains('entity-row')
-      ) {
-        if (first === null) first = ch;
-        last = ch;
-      }
-    }
-    if (first === null || last === null) return;
-    const top = first.offsetTop - 2;
-    const height = last.offsetTop + last.offsetHeight - first.offsetTop + 4;
-    const frame = document.createElement('div');
-    frame.className = 'code-panel-entity-frame';
-    frame.style.top = `${top}px`;
-    frame.style.height = `${height}px`;
-    bodyEl.appendChild(frame);
-  };
-
   const render = (text: string, startLine: number, endLine: number): void => {
     // Highlight the whole file once with Prism (Rust grammar), then
     // split the resulting HTML on \n. Splitting after highlighting is
@@ -373,7 +344,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     } else {
       bodyEl.scrollTop = 0;
     }
-    drawFocusFrame();
   };
 
   const fetchSource = async (
@@ -555,7 +525,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     } else {
       bodyEl.scrollTop = 0;
     }
-    drawFocusFrame();
   };
 
   const show = (args: CodePanelShowArgs): void => {
@@ -881,7 +850,6 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
         el.classList.remove('entity-row');
       }
     });
-    drawFocusFrame();
   };
 
   const getScreenRect = (): DOMRect | null =>

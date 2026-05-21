@@ -1204,6 +1204,10 @@ fn emit_edges_from_type(ty: &TypeFacts, reg: &Registry, out: &mut Vec<Edge>) {
         TypeKind::Union => Some(ViaKind::UnionField),
         TypeKind::Enum => Some(ViaKind::EnumVariantPayload),
         TypeKind::Trait | TypeKind::TypeAlias => None,
+        // TS-only kinds. The Rust extractor never produces these, but
+        // the match must stay exhaustive. Each frontend emits its own
+        // edges; TS edges flow through the TS-specific path.
+        TypeKind::Class | TypeKind::Interface => None,
     };
 
     if let Some(via) = field_via {

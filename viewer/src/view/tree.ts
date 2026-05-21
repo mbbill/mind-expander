@@ -116,7 +116,13 @@ const COLOR_CHEVRON = '#94a3b8';
 const COLOR_CHEVRON_EXPAND = '#22c55e'; // green-500
 const COLOR_CHEVRON_COLLAPSE = '#ef4444'; // red-500
 const COLOR_FIELD_NAME = '#334155';
-const COLOR_FIELD_TY = '#94a3b8'; // slate-400, grey for the on-hover type hint
+// slate-500 — the "secondary" text grey: type hints, return rows,
+// signature move-flavored types, locality `→` glyphs. Bumped up
+// from slate-400 (#94a3b8) which read too pale against the white
+// canvas, leaving the eye scanning for nothing. Still clearly
+// distinct from COLOR_FIELD_NAME (slate-700) so name vs hint
+// hierarchy reads at a glance.
+const COLOR_FIELD_TY = '#64748b';
 // Ownership-flavor palette for signature rows. Encodes how a parameter or
 // return crosses the function boundary. Moves are the common case in
 // idiomatic Rust signatures, so they render in the same neutral grey as
@@ -280,6 +286,10 @@ function kindMarker(d: Layout['types'][number]): string {
       return 'T';
     case 'type_alias':
       return 'A';
+    case 'class':
+      return 'C';
+    case 'interface':
+      return 'I';
     case 'function_group':
       return 'F';
   }
@@ -2229,7 +2239,16 @@ function renderFieldsForType(
       // the user can see how many incoming calls there are without
       // clicking. The badge is pointer-events: none so it never steals
       // hover from the marker itself.
-      const incomingCount = f.incomingCallRefs?.length ?? 0;
+      // Count DISTINCT callers, not raw call edges. A caller that
+      // calls this function from N sites generates N call refs in
+      // `incomingCallRefs` but appears as ONE picker row (collected
+      // via dedup-by-caller in `collectCallEdges`). Without
+      // distinct-counting, badge=(4) → picker=(1) for a hot caller —
+      // exactly the mismatch that frustrated users on the outgoing
+      // side.
+      const incomingCount = new Set(
+        (f.incomingCallRefs ?? []).map((r) => r.caller),
+      ).size;
       const fgSel = fg;
       incomingMarker
         .on('mouseenter', function () {
@@ -2313,7 +2332,15 @@ function renderFieldsForType(
       // Hover: grow + reveal outgoing-count badge. Anchored to the
       // glyph's right edge; placed past arrowSourceX (only visible while
       // hovering, so overlapping arrow-exit space is acceptable).
-      const outgoingCount = f.callRefs?.length ?? 0;
+      // Distinct callees (same rationale as the incoming-count
+      // comment above). A function that calls `foo()` twice and
+      // `bar()` twice has callRefs.length === 4 but the picker shows
+      // 2 rows (one per unique callee) after dedup in
+      // `collectCallEdges`. Counting distinct callees keeps the
+      // badge in sync with the picker contents.
+      const outgoingCount = new Set(
+        (f.callRefs ?? []).map((r) => r.callee),
+      ).size;
       const fgSel = fg;
       const glyphRight = (f.arrowSourceX ?? glyphX) - d.x;
       localityGlyph

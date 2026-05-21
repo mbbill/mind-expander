@@ -8,6 +8,7 @@ mod architecture;
 mod callgraph;
 mod diff;
 mod extract;
+mod frontend;
 mod git_view;
 mod model;
 mod ownership;
@@ -22,21 +23,37 @@ mod unified_facts;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "mind-expander",
     version,
-    about = "Extract ownership facts from a Rust workspace"
+    about = "Extract ownership facts from a workspace (Rust by default; TypeScript with --features typescript)"
 )]
 struct Cli {
     /// Workspace root (defaults to current directory).
     #[arg(long, default_value = ".")]
     root: PathBuf,
 
+    /// Restrict extraction to a single language frontend. Omit the
+    /// flag (the default) to run every frontend compiled into this
+    /// build and merge results — so a polyglot repo (Cargo.toml +
+    /// tsconfig.json) automatically extracts both. Pass `--lang
+    /// rust` or `--lang typescript` to filter in a polyglot repo
+    /// when you only want one language's facts, or in CI for
+    /// deterministic output.
+    #[arg(long, value_enum, global = true)]
+    lang: Option<LangSelector>,
+
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum LangSelector {
+    Rust,
+    Typescript,
 }
 
 #[derive(Subcommand, Debug)]
@@ -186,9 +203,14 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let lang_filter: Option<&'static str> = cli.lang.map(|l| match l {
+        LangSelector::Rust => "rust",
+        LangSelector::Typescript => "typescript",
+    });
+    let extract = |root: &std::path::Path| frontend::dispatch_with(root, lang_filter);
     match cli.cmd {
         Cmd::Extract { out } => {
-            let facts = extract::extract_workspace(&cli.root)?;
+            let facts = extract(&cli.root)?;
             let json = serde_json::to_string_pretty(&facts)?;
             if let Some(path) = out {
                 std::fs::write(path, json)?;
@@ -201,7 +223,7 @@ fn main() -> anyhow::Result<()> {
                 let s = std::fs::read_to_string(path)?;
                 serde_json::from_str(&s)?
             } else {
-                extract::extract_workspace(&cli.root)?
+                extract(&cli.root)?
             };
             print::digest(&facts, &module);
         }
@@ -216,7 +238,7 @@ fn main() -> anyhow::Result<()> {
                 let s = std::fs::read_to_string(path)?;
                 serde_json::from_str(&s)?
             } else {
-                extract::extract_workspace(&cli.root)?
+                extract(&cli.root)?
             };
             let policy = unified::Policy {
                 max_below_lca,
@@ -229,7 +251,7 @@ fn main() -> anyhow::Result<()> {
                 let s = std::fs::read_to_string(path)?;
                 serde_json::from_str(&s)?
             } else {
-                extract::extract_workspace(&cli.root)?
+                extract(&cli.root)?
             };
             architecture::print(&facts, krate.as_deref());
         }
@@ -242,7 +264,7 @@ fn main() -> anyhow::Result<()> {
                 let s = std::fs::read_to_string(path)?;
                 serde_json::from_str(&s)?
             } else {
-                extract::extract_workspace(&cli.root)?
+                extract(&cli.root)?
             };
             ownership::print_tree(&facts, krate.as_deref(), include_variants);
         }
@@ -264,6 +286,7 @@ fn main() -> anyhow::Result<()> {
                 port,
                 no_open,
                 foreground,
+                lang: lang_filter,
             })?;
         }
         Cmd::List => {
@@ -282,7 +305,7 @@ fn main() -> anyhow::Result<()> {
                 let s = std::fs::read_to_string(path)?;
                 serde_json::from_str(&s)?
             } else {
-                extract::extract_workspace(&cli.root)?
+                extract(&cli.root)?
             };
             survey::survey(&facts, krate.as_deref(), top, types);
         }

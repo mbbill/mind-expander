@@ -1578,22 +1578,38 @@ async function main(): Promise<void> {
     ): void => {
       const edges = collectCallEdges(direction, anchorFullPath, calls);
       if (edges.length === 0) return;
-      if (edges.length === 1 && edges[0] !== undefined) {
+      // An entry is "unresolved" when its other endpoint isn't a row
+      // in the workspace's function index — typically a heuristic
+      // call into an external symbol the extractor couldn't pin
+      // down. Surfacing them with a dimmed informational style keeps
+      // the picker count matching the `(N)` badge.
+      const isUnresolved = (otherFullPath: string): boolean =>
+        !calls.rowByFunction.has(otherFullPath);
+      // Auto-toggle short-circuit only when the single edge is
+      // resolvable. A lone unresolved edge means "you have one call,
+      // but we don't know where it goes" — show the picker so the
+      // user sees the unresolvable entry instead of silently
+      // toggling a no-op visibility key.
+      if (edges.length === 1 && edges[0] !== undefined && !isUnresolved(edges[0].otherFullPath)) {
         toggleSpecificEdge(direction, anchorFullPath, edges[0].otherFullPath, anchor);
         return;
       }
       // Bold currently-active edges so the user can see state on open.
-      const entries: EdgeEntry[] = edges.map((edge) => ({
-        otherFullPath: edge.otherFullPath,
-        label: edge.label,
-        ...(edge.prefix !== undefined ? { prefix: edge.prefix } : {}),
-        ...(edge.crateName !== undefined ? { crateName: edge.crateName } : {}),
-        active: specificCallArrowsShown.has(
-          direction === 'outgoing'
-            ? specificCallArrowKey(anchorFullPath, edge.otherFullPath)
-            : specificCallArrowKey(edge.otherFullPath, anchorFullPath),
-        ),
-      }));
+      const entries: EdgeEntry[] = edges.map((edge) => {
+        const unresolved = isUnresolved(edge.otherFullPath);
+        return {
+          otherFullPath: edge.otherFullPath,
+          label: edge.label,
+          ...(edge.prefix !== undefined ? { prefix: edge.prefix } : {}),
+          ...(edge.crateName !== undefined ? { crateName: edge.crateName } : {}),
+          active: !unresolved && specificCallArrowsShown.has(
+            direction === 'outgoing'
+              ? specificCallArrowKey(anchorFullPath, edge.otherFullPath)
+              : specificCallArrowKey(edge.otherFullPath, anchorFullPath),
+          ),
+          ...(unresolved ? { unresolved: true } : {}),
+        };
+      });
       edgePicker.show({
         entries,
         anchorX: anchor.x,
@@ -1615,6 +1631,10 @@ async function main(): Promise<void> {
         onShowAll: () => {
           withAnchorPin(anchorFullPath, () => {
             for (const edge of edges) {
+              // Unresolved edges have no target row to draw an arrow
+              // to — flipping their visibility key would be a no-op
+              // that just clutters internal state.
+              if (isUnresolved(edge.otherFullPath)) continue;
               const key =
                 direction === 'outgoing'
                   ? specificCallArrowKey(anchorFullPath, edge.otherFullPath)
@@ -1634,6 +1654,7 @@ async function main(): Promise<void> {
         onHideAll: () => {
           withAnchorPin(anchorFullPath, () => {
             for (const edge of edges) {
+              if (isUnresolved(edge.otherFullPath)) continue;
               const key =
                 direction === 'outgoing'
                   ? specificCallArrowKey(anchorFullPath, edge.otherFullPath)
@@ -2361,8 +2382,23 @@ function collectCallEdges(
 ): readonly CallEdgeRow[] {
   const anchorCrate = cratePrefixOf(anchorFullPath);
   if (direction === 'outgoing') {
-    const targets = calls.callTargetsByFunction.get(anchorFullPath) ?? [];
-    return targets.map((target) => callEdgeLabelParts(target.functionFullPath, anchorCrate));
+    // Read from `callsByFunction` (every edge regardless of
+    // resolution) rather than `callTargetsByFunction` (resolved-only).
+    // The hover count badge on the `→` glyph uses `callRefs.length`
+    // which is the all-inclusive count, so if we filtered out
+    // unresolved targets here, badge=(N) but picker=∅ for any row
+    // whose calls are all unresolved — silently dropping the click.
+    // Dedupe by callee text so a function that calls the same name
+    // twice still gets one picker row.
+    const all = calls.callsByFunction.get(anchorFullPath) ?? [];
+    const seen = new Set<string>();
+    const out: CallEdgeRow[] = [];
+    for (const ref of all) {
+      if (seen.has(ref.callee)) continue;
+      seen.add(ref.callee);
+      out.push(callEdgeLabelParts(ref.callee, anchorCrate));
+    }
+    return out;
   }
   const incoming = calls.incomingCallsByFunction.get(anchorFullPath) ?? [];
   const seen = new Set<string>();

@@ -48,7 +48,7 @@ import {
 import type { OwnershipIndex } from '../analysis/ownership.ts';
 import { BUCKET_LABEL, type VisibilityBucket } from '../analysis/visibility.ts';
 import { methodId } from '../data/ids.ts';
-import type { FnFacts, Ownership, Side } from '../data/schema.ts';
+import type { FnFacts, Ownership, Side, TypeKind } from '../data/schema.ts';
 import type { ViewState } from '../state/view_state.ts';
 import {
   type BandLayoutGridItem,
@@ -756,7 +756,7 @@ function buildRowSpecs(
 
   for (const mb of t.methodBuckets) {
     const bucketId = methodBucketId(t.fullPath, mb.bucket);
-    const headerName = bucketHeaderText(mb);
+    const headerName = bucketHeaderText(mb, t.typeKind);
     rows.push({
       name: headerName,
       tyText: '',
@@ -1067,11 +1067,32 @@ function hasDetailRows(t: TypeNode): boolean {
   return t.fields.length > 0 || t.functions.length > 0 || t.methodBuckets.length > 0;
 }
 
-function bucketHeaderText(mb: {
-  readonly bucket: VisibilityBucket;
-  readonly methods: readonly unknown[];
-}): string {
-  return `${BUCKET_LABEL[mb.bucket]} (${mb.methods.length})`;
+// TS-flavored bucket labels for class / interface members. The
+// default `BUCKET_LABEL` table is Rust-flavored ("pub fn",
+// "pub(super) fn", "local fn") and reads as Rust leakage on a
+// TypeScript class. `pub_crate` and `pub_in_path` never appear on
+// a TS member (the TS frontend doesn't emit those visibility
+// tokens), so the fallback to the Rust label is dead-but-defensive.
+const TS_BUCKET_LABEL: Readonly<Record<VisibilityBucket, string>> = {
+  pub: 'methods',
+  pub_super: 'protected methods',
+  private: 'private methods',
+  pub_crate: 'pub(crate) fn',
+  pub_in_path: 'pub(in path) fn',
+};
+
+function bucketHeaderText(
+  mb: {
+    readonly bucket: VisibilityBucket;
+    readonly methods: readonly unknown[];
+  },
+  parentKind: TypeKind,
+): string {
+  const table =
+    parentKind === 'class' || parentKind === 'interface'
+      ? TS_BUCKET_LABEL
+      : BUCKET_LABEL;
+  return `${table[mb.bucket]} (${mb.methods.length})`;
 }
 
 /** Callable rows need the same signature tail wherever Rust declared them.

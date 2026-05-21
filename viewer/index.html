@@ -269,44 +269,20 @@
       .code-panel-line:hover {
         background: #f1f5f9;
       }
-      /* Focused entity is communicated by a wrapping purple dashed
-         frame (rendered as an absolute overlay) rather than a
-         per-row background, so the focus indicator composes cleanly
-         with diff-mode `add`/`del` row backgrounds. Same visual
-         language as the SVG type-box selection ring — including the
-         soft halo glow that makes the ring read at a glance. The
-         frame's left edge sits past the diff bar (4px) so the bar
-         is never covered. */
-      .code-panel-entity-frame {
-        position: absolute;
-        /* Frame's left edge sits between the line-number gutters and
-           the code text. Computed from the row layout:
-             4px diff bar + 8px gap + 2.3em old gutter
-             + 8px gap + 2.3em new gutter + 8px gap = 28px + 4.6em.
-           Keeps the gutter columns out of the frame entirely so the
-           focus ring wraps the code, not the line numbers. Right edge
-           keeps 8px padding from the panel edge. */
-        left: calc(4.6em + 20px);
-        right: 8px;
-        border: 2px dashed #a855f7;
-        border-radius: 4px;
-        pointer-events: none;
-        z-index: 2;
-        box-shadow:
-          0 0 0 1px rgba(168, 85, 247, 0.15),
-          0 0 8px rgba(168, 85, 247, 0.45);
-      }
-      /* Diff-mode line layout. The 4px left border is the "vertical
-         bar"; the full-row tint comes from the macaron palette. The
-         add/del bg sits below `.entity-row` so the entity accent
-         wins when both apply. */
+      /* Focused entity is communicated by a solid purple bar in the
+         4px left column of every row in `[span.start_line..end_line]`.
+         The column is the same one previously used for the per-line
+         diff bar; the diff signal now lives entirely in the row
+         background tint, so the two never compete for that column. */
+      /* Diff-mode line layout. The full-row tint communicates `add`
+         / `del` on its own; the previously-duplicate left-edge color
+         bar has been removed so the 4px left column is free for the
+         focus indicator below. */
       .code-panel-line[data-kind='add'] {
         background: rgba(86, 194, 113, 0.15);
-        border-left-color: #56C271;
       }
       .code-panel-line[data-kind='del'] {
         background: rgba(255, 107, 107, 0.15);
-        border-left-color: #FF6B6B;
       }
       .code-panel-line[data-kind='add']:hover {
         background: rgba(86, 194, 113, 0.25);
@@ -314,10 +290,16 @@
       .code-panel-line[data-kind='del']:hover {
         background: rgba(255, 107, 107, 0.25);
       }
-      /* `.entity-row` marker — no per-row styling; the wrapping
-         dashed purple frame (`.code-panel-entity-frame`) handles
-         the focus visual. We still keep the class so JS can find
-         the entity rows when computing the frame's position. */
+      /* Focused entity rows — paint the reserved 4px left column
+         purple. The base `.code-panel-line` rule reserves the 4px
+         column via `border-left: 4px solid transparent`, so this
+         only changes the color (no layout shift). The selector
+         needs higher specificity than `[data-kind='add'|'del']`,
+         which it already has by virtue of the class+attribute
+         combo on the same element. */
+      .code-panel-line.entity-row {
+        border-left-color: #a855f7;
+      }
       .code-panel-collapse {
         padding: 4px 12px;
         color: #94a3b8;
@@ -1117,6 +1099,23 @@
         background: #f1f5f9;
         outline: none;
       }
+      /* Unresolved rows are informational — the call exists in the
+         source but the callee couldn't be located in the workspace
+         (e.g. heuristic call into an external symbol). Show them so
+         the user knows they're there, but make it visually obvious
+         that nothing happens on click: italic + faded + default
+         cursor; suppress :hover background so they don't look
+         interactive. */
+      .edge-picker-panel .edge-picker-row.unresolved {
+        cursor: default;
+        opacity: 0.55;
+        font-style: italic;
+        font-weight: 400;
+      }
+      .edge-picker-panel .edge-picker-row.unresolved:hover,
+      .edge-picker-panel .edge-picker-row.unresolved:focus {
+        background: transparent;
+      }
       .edge-picker-panel .edge-picker-prefix {
         font-size: 11px;
         opacity: 0.7;
@@ -1357,11 +1356,15 @@
         transition: stroke 120ms ease, filter 120ms ease;
       }
       .type-box.selected .selection-ring {
-        stroke: #9333ea;
+        /* purple-500 (#a855f7) to match the code-panel focus left
+           bar — same purple for "what's selected" across both
+           surfaces. Previously purple-600 (#9333ea) which read as
+           too saturated against the diagram background. */
+        stroke: #a855f7;
         stroke-width: 1.75;
         stroke-dasharray: 3 2;
-        filter: drop-shadow(0 0 3px rgba(147, 51, 234, 0.55))
-          drop-shadow(0 0 1px rgba(147, 51, 234, 1));
+        filter: drop-shadow(0 0 3px rgba(168, 85, 247, 0.55))
+          drop-shadow(0 0 1px rgba(168, 85, 247, 1));
       }
       /* Member selection: highlighter band across the selected row.
          Rect spans the full type-box width in the renderer; the

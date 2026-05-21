@@ -5,19 +5,27 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Which snapshot an entity belongs to in the union-diff view.
-/// `Head` is the default for single-snapshot extraction; the union
-/// pipeline (`unified_facts::build_unified`) replaces it with `Base`,
-/// `Both`, or `Modified` for merged facts. Default = Head so
-/// single-snapshot construction sites don't need to mention it.
+/// Default = `Both` so single-snapshot construction sites get the
+/// "no diff applies" / "unchanged" semantics for free: in normal
+/// (non-diff) mode every entity stays `Both`, and the renderer's
+/// data-driven rules then naturally produce a clean unmarked view.
+/// In diff mode the `unified_facts::build_unified` pipeline
+/// explicitly tags entities `Base`, `Head`, `Both`, or `Modified`
+/// based on which snapshot(s) they appear in.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
-    /// Present only in base (removed in head). Renderer paints red.
+    /// Diff mode only: present only in base (removed in head).
+    /// Renderer paints red.
     Base,
-    /// Present only in head (added) — or single-snapshot mode.
+    /// Diff mode only: present only in head (added). Renderer paints
+    /// green. NOT used in single-snapshot mode — see `Both`.
     Head,
     /// Present in both snapshots AND truly identical (no diff hunk
-    /// overlaps the entity's span on either side).
+    /// overlaps the entity's span on either side). Also the default
+    /// for single-snapshot / non-diff extraction: there is no "other
+    /// side" to differ from, so every entity is conceptually
+    /// unchanged. Renderer leaves these unmarked.
     Both,
     /// Present in both snapshots but the body falls in a diff hunk.
     /// One canonical record per entity carries `span` = head location
@@ -43,7 +51,7 @@ pub enum ChangeKind {
 
 impl Default for Side {
     fn default() -> Self {
-        Side::Head
+        Side::Both
     }
 }
 
@@ -187,6 +195,15 @@ pub enum TypeKind {
     Union,
     Trait,
     TypeAlias,
+    /// TypeScript `class` declaration. Distinguished from `Struct` so
+    /// the viewer can render a class-specific icon and so analyses
+    /// that walk Rust-only kinds (e.g. union-diff Rust hunk logic)
+    /// can ignore it cleanly.
+    Class,
+    /// TypeScript `interface` declaration. Trait-shaped (methods +
+    /// property signatures) but not a Rust trait — kept distinct so
+    /// the viewer can label and shape-code it separately.
+    Interface,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,7 +379,12 @@ pub enum EdgeKind {
     /// Raw pointer or ownership-breaking indirection: `*const T`, `NonNull<T>`.
     Indirection,
     /// `impl Trait for Type` — the source type implements the target trait.
+    /// Also used for TypeScript `class C implements I`.
     TraitImpl,
+    /// TypeScript `class Child extends Parent` — single-inheritance.
+    /// Distinct from `TraitImpl` so the viewer can render inheritance
+    /// with a different arrow style than interface implementation.
+    Extends,
 }
 
 /// *Where* the edge was declared. Independent of the relation kind.

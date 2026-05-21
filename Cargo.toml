@@ -10,6 +10,14 @@ license = "MIT/Apache-2.0"
 name = "mind-expander"
 path = "src/main.rs"
 
+[features]
+# TypeScript frontend (swc_core-based). Gated by a feature so the
+# default build stays lean — swc pulls in a large dependency tree
+# and meaningfully extends compile time. Default builds remain
+# Rust-only; opt in with `cargo build --features typescript`.
+default = []
+typescript = ["dep:swc_common", "dep:swc_ecma_ast", "dep:swc_ecma_parser", "dep:swc_ecma_visit"]
+
 [dependencies]
 syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit"] }
 walkdir = "2"
@@ -19,6 +27,14 @@ clap = { version = "4", features = ["derive"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 anyhow = "1"
+# TypeScript frontend (feature-gated). swc_* crates are vendored
+# individually because swc_core's umbrella crate has unstable
+# re-exports across releases. Versions pinned to the latest stable
+# swc as of writing.
+swc_common = { version = "21", optional = true }
+swc_ecma_ast = { version = "23", optional = true }
+swc_ecma_parser = { version = "39", optional = true, features = ["typescript"] }
+swc_ecma_visit = { version = "23", optional = true }
 # Local preview/dev server used by the `view` subcommand. Serves the
 # embedded viewer bundle plus `/api/facts` and `/api/source` over HTTP.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }

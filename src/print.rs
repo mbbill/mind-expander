@@ -81,6 +81,8 @@ fn print_type(ty: &TypeFacts, profiles: &BTreeMap<String, EdgeProfile>) {
         TypeKind::Union => "union",
         TypeKind::Trait => "trait",
         TypeKind::TypeAlias => "type",
+        TypeKind::Class => "class",
+        TypeKind::Interface => "interface",
     };
     let lifetimes = if ty.lifetime_params.is_empty() {
         "0".to_string()

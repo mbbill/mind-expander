@@ -98,17 +98,18 @@ export function createMinimap(
       .attr('width', (d) => Math.max(MIN_TYPE_W, d.width * scale))
       .attr('height', (d) => Math.max(MIN_TYPE_H, d.height * scale))
       .attr('fill', (d) => {
-        // In unified-diff mode, the minimap's job is to surface
-        // where the diff is, not to reproduce the LCA color palette
-        // (which carries no signal in diff mode and only competes
-        // with the green/red). Diff-tagged entities get the bright
-        // diff colors; `split` uses the half-green/half-red gradient
-        // so it doesn't read as "just added". Unchanged is a single
-        // neutral grey. In single-snapshot mode (no
-        // typeBarStateById), the LCA palette is the right signal
-        // and we keep it as before.
-        if (opts.typeBarStateById !== undefined) {
-          const s = opts.typeBarStateById.get(d.fullPath);
+        // In unified-diff mode the minimap surfaces WHERE THE DIFF
+        // IS — bright add/del/split colors; unchanged stays a quiet
+        // slate-300. In single-snapshot mode we fall through to the
+        // visibility palette (same colors as the diagram's type
+        // dots) so the minimap encodes pub/private regions at a
+        // glance. `typeBarStateById` is always passed in, so the
+        // check has to test for non-empty content rather than just
+        // "is it defined"; an empty map = normal mode, not diff
+        // mode with all-unchanged entities.
+        const inDiffMode = (opts.typeBarStateById?.size ?? 0) > 0;
+        if (inDiffMode) {
+          const s = opts.typeBarStateById?.get(d.fullPath);
           if (s === 'add') return DIFF_ADD;
           if (s === 'del') return DIFF_DEL;
           if (s === 'split') return 'url(#minimap-split)';

@@ -11,6 +11,12 @@ export type TypeKind =
   | 'union'
   | 'trait'
   | 'type_alias'
+  /** TypeScript `class`. Kept distinct from `struct` so the renderer
+   *  can paint a class-specific icon. */
+  | 'class'
+  /** TypeScript `interface`. Trait-shaped contract but not a Rust
+   *  trait; kept distinct for icon and labeling. */
+  | 'interface'
   /** Synthetic kind used for visibility-grouped function "pseudo-types"
    *  inserted by `module_tree.ts`. The extractor never emits this. */
   | 'function_group';
@@ -169,7 +175,11 @@ export type EdgeKind =
   | 'borrows_immut'
   | 'borrows_mut'
   | 'indirection'
-  | 'trait_impl';
+  | 'trait_impl'
+  /** TypeScript `class Child extends Parent` — single inheritance.
+   *  Distinct from `trait_impl` so the renderer can use a different
+   *  arrow style (dashed) for inheritance vs interface implementation. */
+  | 'extends';
 
 export type ViaKind =
   | 'struct_field'
