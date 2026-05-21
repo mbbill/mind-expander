@@ -1190,23 +1190,35 @@ async function main(): Promise<void> {
   });
 
   // C → toggle the code panel. Closes it if open; otherwise opens it
-  // pointed at the most recently selected type element (mirrors what
-  // a Cmd-click on that element does). With no selection we still
-  // open the split with a placeholder body so the user can dock /
-  // resize the pane before there's anything to load — clicking a
-  // diagram element later replaces the placeholder with real source.
+  // pointed at whatever is currently selected, whether that's a
+  // type, a field, a method, or a free function. Falls back through
+  // the explicit selection first (`selectedElementId` is set by
+  // every click and tour step) and only then to the
+  // most-recently-expanded type. With nothing at all to open we
+  // still pop the split with a placeholder so the user can dock /
+  // resize the pane in anticipation of the next click.
   const toggleCodePanel = (): void => {
     if (codePanel.isOpen()) {
       codePanel.hide();
       return;
     }
-    const id = currentCtx !== null ? mostRecentSelection(currentCtx) : null;
-    if (id !== null) {
-      openCodeFor(id, 'type');
-    } else {
-      codePanel.openEmpty();
-      updateCodeIndicator(true);
+    // Tier 1: the explicit current selection (any kind).
+    if (selectedElementId !== null && selectedElementKind !== null) {
+      openCodeFor(selectedElementId, selectedElementKind);
+      return;
     }
+    // Tier 2: fall back to the most recently expanded type — keeps
+    // the historical behavior when nothing has been clicked but a
+    // type-box is open from a prior session.
+    const fallbackTypeId =
+      currentCtx !== null ? mostRecentSelection(currentCtx) : null;
+    if (fallbackTypeId !== null) {
+      openCodeFor(fallbackTypeId, 'type');
+      return;
+    }
+    // Tier 3: nothing to anchor to — open empty.
+    codePanel.openEmpty();
+    updateCodeIndicator(true);
   };
 
   // Corner keyboard-emoji button → toggle the shortcut chip list
