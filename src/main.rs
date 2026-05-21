@@ -110,6 +110,16 @@ enum Cmd {
     /// One-stop command for end users: no separate extract step, no
     /// Node toolchain needed. Workspace path is the same `--root` as
     /// other subcommands, but accepted positionally here for ergonomics.
+    ///
+    /// Server lifecycle (Unix): after extraction finishes and the
+    /// server has bound its port, a machine-readable ready block is
+    /// printed to stdout and the process forks itself into the
+    /// background. The foreground command exits 0 so an agent can
+    /// run this synchronously without trailing `&`. Stop the
+    /// background server with `kill <pid>` (the pid is printed in
+    /// the ready block; `mind-expander list` enumerates running
+    /// instances). Pass `--foreground` to disable daemonization
+    /// (useful for `cargo run`, CI, and interactive debugging).
     View {
         /// Workspace root to extract and visualize. Defaults to the
         /// global `--root` if omitted.
@@ -122,13 +132,24 @@ enum Cmd {
         /// working tree, no diff.
         #[arg(long)]
         at: Option<String>,
-        /// Port to bind the local server to.
-        #[arg(long, default_value_t = 5180)]
-        port: u16,
-        /// Don't try to open the browser automatically.
+        /// Port to bind the local server to. Omit to auto-pick a free
+        /// port (recommended for agents running multiple sessions).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Don't try to open the browser automatically. By default the
+        /// browser is opened when stdout is a TTY (interactive use)
+        /// and suppressed when stdout is piped (agent / scripted use).
         #[arg(long)]
         no_open: bool,
+        /// Stay in the foreground instead of self-daemonizing on ready.
+        /// Useful for `cargo run`, CI, and debugging.
+        #[arg(long)]
+        foreground: bool,
     },
+    /// List background `mind-expander view` instances currently
+    /// running on this machine. Reads `~/.cache/mind-expander/run/*.json`
+    /// and prunes stale entries whose pid is no longer alive.
+    List,
     /// Send a tour JSON to a running `mind-expander view` server.
     /// `file` is a path; `-` reads JSON from stdin. The server
     /// validates the schema, resolves every `{file, line}` reference
@@ -230,13 +251,23 @@ fn main() -> anyhow::Result<()> {
             at,
             port,
             no_open,
+            foreground,
         } => {
             let path = workspace.unwrap_or(cli.root);
             let revspec = match at {
                 Some(s) => git_view::parse_revspec(&s)?,
                 None => git_view::RevSpec::working_tree(),
             };
-            server::run(&path, revspec, port, !no_open)?;
+            server::run(server::RunArgs {
+                workspace: &path,
+                revspec,
+                port,
+                no_open,
+                foreground,
+            })?;
+        }
+        Cmd::List => {
+            server::list_instances()?;
         }
         Cmd::Tour { file, host } => {
             tour_client::send(&file, &host)?;

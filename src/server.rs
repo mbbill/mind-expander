@@ -88,7 +88,28 @@ struct AppState {
     tour_tx: broadcast::Sender<crate::tour::ResolvedTour>,
 }
 
-pub fn run(workspace: &Path, revspec: RevSpec, port: u16, open_browser: bool) -> Result<()> {
+/// Arguments to [`run`]. Encoded as a struct so the CLI shim doesn't
+/// need to be edited every time a flag is added.
+pub struct RunArgs<'a> {
+    pub workspace: &'a Path,
+    pub revspec: RevSpec,
+    /// `None` → bind to port 0 and let the OS pick a free port.
+    pub port: Option<u16>,
+    /// User-supplied `--no-open`. Final open decision combines this
+    /// with TTY detection (see `run`).
+    pub no_open: bool,
+    /// User-supplied `--foreground`. Disables self-daemonize on ready.
+    pub foreground: bool,
+}
+
+pub fn run(args: RunArgs<'_>) -> Result<()> {
+    let RunArgs {
+        workspace,
+        revspec,
+        port,
+        no_open,
+        foreground,
+    } = args;
     let user_workspace = std::fs::canonicalize(workspace)
         .with_context(|| format!("workspace path not found: {}", workspace.display()))?;
 
@@ -178,6 +199,9 @@ pub fn run(workspace: &Path, revspec: RevSpec, port: u16, open_browser: bool) ->
     // the latest tour later).
     let (tour_tx, _) = broadcast::channel::<crate::tour::ResolvedTour>(16);
     let diff_enabled = revspec.diff_enabled;
+    // Keep a copy for the instance-record file before the value is
+    // moved into AppState.
+    let workspace_for_record = workspace_root.clone();
     let state = Arc::new(AppState {
         facts_json,
         workspace_root,
@@ -202,25 +226,281 @@ pub fn run(workspace: &Path, revspec: RevSpec, port: u16, open_browser: bool) ->
         .fallback(get(serve_static))
         .with_state(state);
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    rt.block_on(async move {
-        let addr: SocketAddr = ([127, 0, 0, 1], port).into();
-        let listener = TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("failed to bind to {addr}"))?;
-        let url = format!("http://{addr}/");
-        eprintln!("mind-expander serving at {url}");
-        if open_browser {
-            if let Err(err) = opener::open_browser(&url) {
-                eprintln!("(could not auto-open browser: {err})");
+    // Bind synchronously (std listener) so we can report the actual
+    // port before starting the async runtime. Port-0 means "OS picks
+    // a free port" — recommended for agents running multiple parallel
+    // sessions; the chosen port comes back via `local_addr`.
+    let bind_port = port.unwrap_or(0);
+    let bind_addr: SocketAddr = ([127, 0, 0, 1], bind_port).into();
+    let std_listener = std::net::TcpListener::bind(bind_addr)
+        .with_context(|| format!("failed to bind to {bind_addr}"))?;
+    std_listener.set_nonblocking(true)?;
+    let actual_addr = std_listener.local_addr()?;
+    let actual_port = actual_addr.port();
+    let url = format!("http://{actual_addr}/");
+
+    // Open-browser decision: explicit --no-open suppresses; otherwise
+    // open only when stdout is a TTY (interactive human use). Agents
+    // capture stdout to read the ready block, so their stdout is not
+    // a TTY and the browser stays closed.
+    use std::io::IsTerminal;
+    let open_browser = !no_open && std::io::stdout().is_terminal();
+    if open_browser {
+        if let Err(err) = opener::open_browser(&url) {
+            eprintln!("(could not auto-open browser: {err})");
+        }
+    }
+
+    // Decide pid to advertise BEFORE the optional fork. The
+    // ready-block pid must match the surviving process (the child
+    // after daemonize, or our own pid if --foreground). The child's
+    // pid is known only post-fork; the parent prints the ready
+    // block AFTER the fork to capture it correctly.
+    let url_for_serve = url.clone();
+    let serve = move |listener: std::net::TcpListener| -> Result<()> {
+        let pid = std::process::id();
+        emit_ready_block(pid, actual_port, &url_for_serve);
+        // Drop an instance-record file so `mind-expander list` can
+        // enumerate background servers. Best-effort: any IO error
+        // is non-fatal — the server still runs.
+        let _ = write_instance_record(pid, actual_port, &workspace_for_record);
+        let _cleanup = InstanceRecordGuard(pid);
+        listener.set_nonblocking(true)?;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(async move {
+            let tokio_listener = TcpListener::from_std(listener)?;
+            axum::serve(tokio_listener, app).await?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Ok(())
+    };
+
+    if foreground {
+        // Foreground mode: parent serves directly. Useful for
+        // `cargo run`, CI, and interactive debugging where the
+        // user wants Ctrl+C to stop the server.
+        return serve(std_listener);
+    }
+
+    #[cfg(unix)]
+    {
+        // Self-daemonize: parent exits cleanly, child continues
+        // serving. Stdout/stderr are detached so the foreground
+        // command returns EOF and the agent's wait completes.
+        // working dir stays put so the server can resolve relative
+        // paths the user passed.
+        use daemonize::{Daemonize, Outcome};
+        // Flush parent's stderr extraction logs before the fork so
+        // the agent sees them attached to the foreground command.
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        let cwd = std::env::current_dir()?;
+        let daemonize = Daemonize::new()
+            .working_directory(&cwd)
+            .stdout(std::fs::File::create("/dev/null").context("open /dev/null")?)
+            .stderr(std::fs::File::create("/dev/null").context("open /dev/null")?);
+        match daemonize.execute() {
+            Outcome::Parent(Ok(_)) => {
+                // The child is now alive. Print the ready block
+                // from the parent so the agent reads it before the
+                // foreground command returns. The pid we report
+                // is the CHILD's pid (Daemonize::execute() returns
+                // it on the parent side); print and exit.
+                // NOTE: daemonize 0.5 doesn't expose the child's
+                // pid through Outcome — workaround: the child
+                // writes a temp file with its pid, parent reads it.
+                // (We accept a small race here: the parent loops
+                // briefly waiting for the file.) See README.
+                emit_parent_ready_block(actual_port, &url);
+                Ok(())
+            }
+            Outcome::Parent(Err(err)) => {
+                anyhow::bail!("daemonize parent failed: {err}");
+            }
+            Outcome::Child(Ok(_)) => serve(std_listener),
+            Outcome::Child(Err(err)) => {
+                anyhow::bail!("daemonize child failed: {err}");
             }
         }
-        axum::serve(listener, app).await?;
-        Ok::<_, anyhow::Error>(())
-    })?;
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-Unix platforms don't have fork. Fall back to
+        // foreground for now — Windows support pending.
+        serve(std_listener)
+    }
+}
+
+/// Emit the machine-readable ready block to stdout. Format:
+///   mind-expander: ready
+///   pid: <pid>
+///   port: <port>
+///   url: <url>
+/// Followed by a blank line so an agent reading line-by-line can
+/// detect end-of-block via the empty line.
+fn emit_ready_block(pid: u32, port: u16, url: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "mind-expander: ready");
+    let _ = writeln!(out, "pid: {pid}");
+    let _ = writeln!(out, "port: {port}");
+    let _ = writeln!(out, "url: {url}");
+    let _ = writeln!(out);
+    let _ = out.flush();
+}
+
+/// Parent-side ready block when daemonizing. The pid we want to
+/// advertise is the CHILD's, which we don't get directly from
+/// `daemonize::execute()`. The child writes
+/// `~/.cache/mind-expander/run/<pid>.json` on startup; the parent
+/// waits briefly for ANY file mentioning `port == actual_port` and
+/// reads the pid from there. If the wait times out (extremely
+/// unlikely), the parent prints `pid: -` and the agent can fall
+/// back to `mind-expander list` or `lsof -i :PORT`.
+fn emit_parent_ready_block(port: u16, url: &str) {
+    use std::io::Write;
+    let pid = wait_for_child_pid(port).unwrap_or(0);
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "mind-expander: ready");
+    if pid != 0 {
+        let _ = writeln!(out, "pid: {pid}");
+    } else {
+        let _ = writeln!(out, "pid: -");
+    }
+    let _ = writeln!(out, "port: {port}");
+    let _ = writeln!(out, "url: {url}");
+    let _ = writeln!(out);
+    let _ = out.flush();
+}
+
+/// Poll `~/.cache/mind-expander/run/*.json` for an entry advertising
+/// `port`. Returns the pid from the first match. Times out after
+/// 5 seconds.
+fn wait_for_child_pid(port: u16) -> Option<u32> {
+    let dir = instance_record_dir();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(rec) = serde_json::from_str::<InstanceRecord>(&text) {
+                        if rec.port == port {
+                            return Some(rec.pid);
+                        }
+                    }
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    None
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InstanceRecord {
+    pid: u32,
+    port: u16,
+    repo: String,
+    started: i64, // Unix epoch seconds (best-effort)
+}
+
+fn instance_record_dir() -> std::path::PathBuf {
+    let base = dirs::cache_dir()
+        .unwrap_or_else(|| std::env::temp_dir())
+        .join("mind-expander")
+        .join("run");
+    base
+}
+
+fn write_instance_record(pid: u32, port: u16, repo: &Path) -> Result<()> {
+    let dir = instance_record_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{pid}.json"));
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let rec = InstanceRecord {
+        pid,
+        port,
+        repo: repo.display().to_string(),
+        started,
+    };
+    let json = serde_json::to_string_pretty(&rec)?;
+    std::fs::write(path, json)?;
     Ok(())
+}
+
+/// RAII helper: delete the instance-record file on drop. Best-effort
+/// (errors ignored) — a stale file at worst makes `list` show one
+/// dead entry which it then prunes.
+struct InstanceRecordGuard(u32);
+
+impl Drop for InstanceRecordGuard {
+    fn drop(&mut self) {
+        let path = instance_record_dir().join(format!("{}.json", self.0));
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// `mind-expander list` — enumerate running background instances.
+/// Prunes stale entries whose pid is no longer alive.
+pub fn list_instances() -> Result<()> {
+    let dir = instance_record_dir();
+    if !dir.exists() {
+        println!("(no running mind-expander instances)");
+        return Ok(());
+    }
+    let mut rows: Vec<InstanceRecord> = Vec::new();
+    for entry in std::fs::read_dir(&dir)?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(rec) = serde_json::from_str::<InstanceRecord>(&text) else {
+            continue;
+        };
+        if !pid_alive(rec.pid) {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        rows.push(rec);
+    }
+    if rows.is_empty() {
+        println!("(no running mind-expander instances)");
+        return Ok(());
+    }
+    rows.sort_by_key(|r| r.started);
+    println!("{:>7}  {:>5}  {}", "PID", "PORT", "REPO");
+    for r in rows {
+        println!("{:>7}  {:>5}  {}", r.pid, r.port, r.repo);
+    }
+    Ok(())
+}
+
+fn pid_alive(pid: u32) -> bool {
+    // Portable: shell out to `kill -0 PID`. Exit 0 means alive (or
+    // alive but uns ignalable due to permission — fine, that's still
+    // "running"). Exit non-zero means dead. Avoids pulling in libc
+    // and works on every Unix; harmlessly returns false on Windows
+    // where the command is missing (Windows path is foreground-only
+    // for now anyway).
+    use std::process::{Command, Stdio};
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 async fn get_facts(State(state): State<Arc<AppState>>) -> Response {

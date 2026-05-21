@@ -33,3 +33,14 @@ ureq = { version = "2", default-features = false, features = ["json"] }
 # Adapter from broadcast::Receiver to a Stream for axum SSE.
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
+# Cross-platform user-cache resolution for the instance-record file
+# at `~/.cache/mind-expander/run/<pid>.json`.
+dirs = "5"
+
+# Agentic UX: self-daemonize after the server is ready so an LLM
+# agent can run `mind-expander view ...` synchronously and detect
+# completion via stdout EOF, while the server keeps running in the
+# background. Unix only — Windows path will be added later via a
+# different mechanism (CreateProcess + DETACHED_PROCESS).
+[target.'cfg(unix)'.dependencies]
+daemonize = "0.5"
