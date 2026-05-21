@@ -250,7 +250,11 @@ async function main(): Promise<void> {
       //    transitions — only the final transform sticks. We pass
       //    panOnlyIfOffscreen here too so the intermediate pans
       //    don't kick off animations we'll immediately cancel.
-      setDiagramSelection(from.id, from.kind);
+      // Defer the selection's draw — the navigateToElement calls
+      // below redraw anyway, and each draw is hundreds of ms on a
+      // workspace this size. Lets the arrow-step transition commit
+      // its state mutations in one paint cycle rather than four.
+      setDiagramSelection(from.id, from.kind, { defer: true });
       currentCtx?.navigateToElement(to.id, to.kind, tourFocusScreenPoint(), true);
       currentCtx?.navigateToElement(from.id, from.kind, tourFocusScreenPoint(), true);
       // 2. Reveal the call arrow on the diagram. Call edges need the
@@ -272,7 +276,10 @@ async function main(): Promise<void> {
     const head = step.refs[0];
     if (head === undefined) return Promise.resolve();
     // 1. Selection state (purple ring + member band) + container expand.
-    setDiagramSelection(head.id, head.kind);
+    //    Defer the draw — `navigateToElement` below also mutates state
+    //    (expands ancestor modules) and draws; collapsing the two
+    //    into one draw keeps each tour step transition smooth.
+    setDiagramSelection(head.id, head.kind, { defer: true });
     // 2. Expand ancestor modules and pan to the element ONLY if it
     //    isn't already on-screen. Skipping the pan when the target
     //    is visible keeps the canvas still between consecutive
@@ -764,6 +771,7 @@ async function main(): Promise<void> {
   const setDiagramSelection = (
     elementId: string | null,
     kind: ElementKind | null,
+    options?: { readonly defer?: boolean },
   ): void => {
     selectedElementId = elementId;
     selectedElementKind = kind;
@@ -787,7 +795,15 @@ async function main(): Promise<void> {
         }
       }
     }
-    currentCtx?.draw();
+    // `defer: true` skips this draw — the caller is responsible for
+    // triggering one shortly. Used by the tour player so a step's
+    // selection + navigation collapse into a single draw rather than
+    // running back-to-back D3 re-joins (each ~hundreds of ms for a
+    // workspace this size; the second one would commit on top of the
+    // first, doubling the visible lag).
+    if (options?.defer !== true) {
+      currentCtx?.draw();
+    }
   };
   const codePanel = createCodePanel({
     diffEnabled,
