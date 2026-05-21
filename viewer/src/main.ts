@@ -32,6 +32,7 @@ import {
 import { buildFileTree } from './data/file_tree.ts';
 import { createCodePanel } from './view/code_panel.ts';
 import { createTourBar } from './view/tour_bar.ts';
+import { createTourPanel } from './view/tour_panel.ts';
 import { createTourPlayer } from './view/tour_player.ts';
 import type { ResolvedRef, ResolvedStep, ResolvedTour } from './data/tour_schema.ts';
 import { signatureExpansionId } from './layout/geometry.ts';
@@ -180,30 +181,72 @@ let currentCtx: RenderCtx | null = null;
 void main();
 
 async function main(): Promise<void> {
-  // Tour bar (top-center) + player wiring. The bar holds the list
-  // of received tours and the play/stop toggle; the player drives
-  // step lifecycle and owns the floating bubble. The `applyStep` and
-  // `anchorFor` callbacks reference variables declared further down
-  // (selectAndSyncCode, currentCtx, codePanel) — that's fine since
-  // they fire on user action, well after main() finishes setup.
+  // Tour UI = three pieces:
+  //  - `tourBar`: a tiny "new tour" pill at the top, hidden until a
+  //    tour arrives. Click → opens the panel + starts the newest.
+  //  - `tourPanel`: floating, resizable step-list panel. Toggled
+  //    via the `t` key. Click a row to jump steps; current step is
+  //    highlighted via `onStepChange`.
+  //  - `tourPlayer`: drives step lifecycle, owns the floating
+  //    bubble.
+  // Shared `receivedTours` array is the single source of truth for
+  // which tours both the bar's "newest" pointer and the panel's
+  // dropdown read.
+  const receivedTours: ResolvedTour[] = [];
+  const onNewTour = (tour: ResolvedTour): void => {
+    receivedTours.push(tour);
+    tourBar.addTour(tour);
+    tourPanel.setReceivedTours(receivedTours);
+  };
   const tourBar = createTourBar({
-    onPlay: (tour) => {
+    onActivate: (tour) => {
+      tourPanel.open();
       tourPlayer.start(tour);
-      tourBar.setPlaying(true);
     },
-    onStop: () => {
-      tourPlayer.stop();
+  });
+  const tourPanel = createTourPanel({
+    onToggle: (open) => updateTourIndicator(open),
+    onPickStep: (i) => {
+      // The panel can display a tour without it being the one
+      // currently playing — e.g. after a refresh that replays
+      // tours but doesn't auto-start. In that case a row click
+      // should START the displayed tour at the clicked step
+      // rather than no-op (gotoStep no-ops when there's no
+      // active tour in the player).
+      const displayed = tourPanel.currentTour();
+      const active = tourPlayer.activeTour();
+      if (displayed === null) return;
+      if (active === null || active.tour_id !== displayed.tour_id) {
+        tourPlayer.start(displayed, i);
+      } else {
+        tourPlayer.gotoStep(i);
+      }
     },
+    onPickTour: (tour) => tourPlayer.start(tour),
   });
   const tourPlayer = createTourPlayer({
     applyStep: (step) => applyTourStep(step),
     anchorFor: (step) => anchorForStep(step),
     onStop: () => {
-      tourBar.setPlaying(false);
+      // Clear the highlight in the panel — the tour is no longer
+      // "at" any step. Panel stays open if the user had it open.
+      tourPanel.setCurrentStep(-1);
       // Drop any sticky arrow highlight from the last arrow step so
       // the diagram returns to its normal idle styling when playback
       // ends or the user hits Stop.
       setTourArrowHighlight(null, null);
+    },
+    // Panel watches step transitions to keep its row highlight in
+    // sync with the bubble. Fires on start, Next, Prev, and the
+    // panel's own row-click (gotoStep).
+    onStepChange: (i) => {
+      // Whenever the player switches tours (e.g. user picked a new
+      // tour from the panel's dropdown), the panel's `activeTour`
+      // may be stale. Pull the freshest from the player on every
+      // step change — cheap, keeps the two ends consistent.
+      const tour = tourPlayer.activeTour();
+      tourPanel.setActiveTour(tour);
+      tourPanel.setCurrentStep(i);
     },
     // Bubble queries this per-frame to avoid landing under the code
     // panel when it's open. Re-evaluates on each rAF tick so opening
@@ -218,7 +261,7 @@ async function main(): Promise<void> {
   fetch('/api/tours')
     .then((r) => (r.ok ? r.json() : []))
     .then((tours: ResolvedTour[]) => {
-      for (const t of tours) tourBar.addTour(t);
+      for (const t of tours) onNewTour(t);
     })
     .catch((err) => console.warn('[tour] could not replay /api/tours:', err));
 
@@ -227,7 +270,7 @@ async function main(): Promise<void> {
     try {
       const tour = JSON.parse((e as MessageEvent).data) as ResolvedTour;
       console.log('[tour received]', tour);
-      tourBar.addTour(tour);
+      onNewTour(tour);
     } catch (err) {
       console.error('[tour] failed to parse SSE payload', err);
     }
@@ -1186,6 +1229,7 @@ async function main(): Promise<void> {
     else if (e.key === 'c') toggleCodePanel();
     else if (e.key === 's') layers.resetScale(true);
     else if (e.key === 'r') currentCtx?.resetAll();
+    else if (e.key === 't') tourPanel.toggle();
     else if (e.key === '?') toggleKeyhints?.();
   });
 
@@ -2580,6 +2624,15 @@ function updateMethodsIndicator(hidden: boolean): void {
 // close it. Driven from openCodeFor / toggleCodePanel / codePanel.onClose.
 function updateCodeIndicator(open: boolean): void {
   const el = document.querySelector<HTMLElement>('#hint-code');
+  if (!el) return;
+  el.classList.toggle('active', open);
+}
+
+// Tour-panel toggle indicator. The "T" chip lights up while the
+// floating tour-steps panel is visible — mirrors the code-panel
+// chip's "lit = open" convention.
+function updateTourIndicator(open: boolean): void {
+  const el = document.querySelector<HTMLElement>('#hint-tour');
   if (!el) return;
   el.classList.toggle('active', open);
 }

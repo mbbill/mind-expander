@@ -1601,80 +1601,35 @@
       /* Top-center tour bar: shows the active tour's title with a
          dropdown chevron + play/stop. Halo animation runs briefly
          when a fresh tour arrives via SSE. */
+      /* "New tour" pill button — top-center. Hidden until a tour
+         arrives; clicking opens the tour-steps panel and starts the
+         newest tour. The rainbow halo (below) re-triggers on each
+         arrival as an attention cue. */
       #tour-bar {
         position: fixed;
         top: 12px;
         left: 50%;
         transform: translateX(-50%);
         z-index: 30;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 4px 6px 4px 10px;
+        padding: 6px 14px;
         background: #ffffff;
         border: 1px solid #cbd5e1;
         border-radius: 999px;
         box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 12px;
+        font: 600 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         color: #1e293b;
-        max-width: 60vw;
-      }
-      #tour-bar[hidden] { display: none; }
-      .tour-bar-title {
-        background: transparent;
-        border: none;
-        font: inherit;
-        color: inherit;
         cursor: pointer;
-        padding: 4px 8px;
-        max-width: 50vw;
+        max-width: 60vw;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        border-radius: 999px;
       }
-      .tour-bar-title:hover { background: #f1f5f9; }
-      .tour-bar-play {
-        /* Idle = "play": green button, white triangle. The is-playing
-           class flips to red so the button reads as "stop" without
-           the user having to inspect the glyph. */
-        background: #16a34a;
-        color: #fff;
-        border: none;
-        width: 26px;
-        height: 26px;
-        border-radius: 50%;
-        cursor: pointer;
-        /* Flex-center the inline SVG icon. Unicode glyphs (▶ / ■)
-           have asymmetric sidebearings that made earlier versions
-           look off-centre in the circular button. */
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0;
-      }
-      .tour-bar-play:hover { background: #15803d; }
-      .tour-bar-play.is-playing { background: #dc2626; }
-      .tour-bar-play.is-playing:hover { background: #b91c1c; }
-      .tour-bar-play svg {
-        display: block;
-        width: 16px;
-        height: 16px;
-        fill: currentColor;
-      }
-      /* Halo for a freshly arrived tour.
-         Two box-shadow glows offset to the bar's left and right,
-         each a different colour. Keyframes cycle the pair through
-         the rainbow so the eye sees a left-to-right colour drift:
-         (red→orange), (orange→green), (green→blue), (blue→purple),
-         (purple→red), repeat. The bar's white background hides the
-         inside half of each shadow; only an outer glow remains.
-
-         Tight offsets (±50px) keep the halo hugging the bar instead
-         of bleeding across the page. Fully opaque colour and a
-         negative spread (-14px) make the alert read clearly without
-         washing out into the page background. */
+      #tour-bar[hidden] { display: none; }
+      #tour-bar:hover { background: #f8fafc; }
+      /* Halo for a freshly arrived tour — unchanged from the old
+         bar; just retargeted at the new pill. Two box-shadow glows
+         offset left/right, keyframes cycle the pair through the
+         rainbow so the eye sees a left-to-right colour drift. */
       @keyframes tour-bar-halo {
         0%   { box-shadow: -50px 0 28px -14px rgba(239,  68,  68, 1), 50px 0 28px -14px rgba(249, 115,  22, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
         20%  { box-shadow: -50px 0 28px -14px rgba(249, 115,  22, 1), 50px 0 28px -14px rgba( 34, 197,  94, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
@@ -1684,12 +1639,145 @@
         100% { box-shadow: -50px 0 28px -14px rgba(239,  68,  68, 1), 50px 0 28px -14px rgba(249, 115,  22, 1), 0 6px 18px rgba(15, 23, 42, 0.14); }
       }
       #tour-bar.is-new {
-        /* Linear timing so each colour pair takes the same wall-clock
-           time; ease-in-out would make the middle pairs feel faster.
-           10s = brisk enough to feel alive without being frantic. */
         animation: tour-bar-halo 10s linear infinite;
       }
-      .tour-bar-menu {
+
+      /* Tour-steps panel. Floating, draggable, resizable from edges
+         and corners. Opened by the `t` key or by the "new tour"
+         button above. Body is a scrollable list of every step in
+         the active tour; the current step is highlighted with a
+         purple left-edge bar matching the code panel focus
+         indicator. */
+      .tour-panel {
+        position: fixed;
+        z-index: 29;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color: #1e293b;
+        min-width: 240px;
+        min-height: 200px;
+      }
+      .tour-panel[hidden] { display: none; }
+      .tour-panel-header {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        background: #f8fafc;
+        border-bottom: 1px solid #e2e8f0;
+        cursor: move;
+        user-select: none;
+      }
+      .tour-panel-header.is-dragging { cursor: grabbing; }
+      .tour-panel-title {
+        /* `0 1 auto` = don't grow to fill header, but shrink if the
+           title is longer than the available space. Leaves the
+           remaining header area as a drag handle — the previous
+           `flex: 1 1 auto` made the entire header a button and
+           there was no way to drag the panel. */
+        flex: 0 1 auto;
+        max-width: calc(100% - 16px);
+        background: transparent;
+        border: none;
+        font: 600 12px inherit;
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+        padding: 4px 8px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border-radius: 4px;
+      }
+      .tour-panel-title:hover { background: #eef2f7; }
+      .tour-panel-title.is-empty { color: #94a3b8; font-weight: 400; }
+      .tour-panel-close {
+        flex: 0 0 auto;
+        /* Push to the far right — header has `display: flex` so the
+           default justify-content packs children at the start;
+           `margin-left: auto` is the standard flex idiom to send a
+           single child to the opposite edge. The empty space the
+           auto-margin creates becomes drag area. */
+        margin-left: auto;
+        background: transparent;
+        border: 0;
+        font-size: 18px;
+        line-height: 1;
+        color: #64748b;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: 4px;
+      }
+      .tour-panel-close:hover {
+        background: #e2e8f0;
+        color: #1e293b;
+      }
+      .tour-panel-body {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        background: #ffffff;
+      }
+      .tour-panel-empty {
+        padding: 16px;
+        font-size: 12px;
+        color: #94a3b8;
+        text-align: center;
+      }
+      .tour-panel-steps {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .tour-panel-step {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 8px 10px 8px 6px;
+        border-left: 4px solid transparent;
+        border-bottom: 1px solid #f1f5f9;
+        cursor: pointer;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .tour-panel-step:hover { background: #f8fafc; }
+      .tour-panel-step.is-current {
+        background: rgba(168, 85, 247, 0.08);
+        border-left-color: #a855f7;
+      }
+      .tour-panel-step-num {
+        flex: 0 0 auto;
+        min-width: 22px;
+        text-align: right;
+        color: #94a3b8;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+      .tour-panel-step.is-current .tour-panel-step-num { color: #7c3aed; }
+      .tour-panel-step-text {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: #1e293b;
+        /* Three-line clamp with ellipsis. -webkit-line-clamp is the
+           portable property across modern browsers; line-clamp (no
+           prefix) is the standardised name once support catches up. */
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        word-break: break-word;
+      }
+      /* Dropdown menu — opens off the title when clicked. Mirrors
+         the lineage of the original tour-bar-menu styling. */
+      .tour-panel-menu {
         position: fixed;
         z-index: 31;
         min-width: 240px;
@@ -1702,14 +1790,31 @@
         padding: 4px 0;
         font: 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       }
-      .tour-bar-menu-row {
+      .tour-panel-menu-row {
         padding: 6px 12px;
         cursor: pointer;
         white-space: nowrap;
         color: #1e293b;
       }
-      .tour-bar-menu-row:hover { background: #f1f5f9; }
-      .tour-bar-menu-row.is-active { background: #ede9fe; font-weight: 600; }
+      .tour-panel-menu-row:hover { background: #f1f5f9; }
+      .tour-panel-menu-row.is-active { background: #ede9fe; font-weight: 600; }
+      /* 8 resize handles — 4 edges, 4 corners. Each is a thin
+         absolutely-positioned div with a directional cursor. The
+         shared `.tour-panel-resize` rule sets common state; per-
+         direction rules below give each its position + cursor. */
+      .tour-panel-resize {
+        position: absolute;
+        z-index: 1;
+        background: transparent;
+      }
+      .tour-panel-resize-n  { top: -3px;    left: 8px;   right: 8px;  height: 6px; cursor: ns-resize; }
+      .tour-panel-resize-s  { bottom: -3px; left: 8px;   right: 8px;  height: 6px; cursor: ns-resize; }
+      .tour-panel-resize-e  { right: -3px;  top: 8px;    bottom: 8px; width: 6px;  cursor: ew-resize; }
+      .tour-panel-resize-w  { left: -3px;   top: 8px;    bottom: 8px; width: 6px;  cursor: ew-resize; }
+      .tour-panel-resize-ne { top: -3px;    right: -3px; width: 14px; height: 14px; cursor: nesw-resize; }
+      .tour-panel-resize-nw { top: -3px;    left: -3px;  width: 14px; height: 14px; cursor: nwse-resize; }
+      .tour-panel-resize-se { bottom: -3px; right: -3px; width: 14px; height: 14px; cursor: nwse-resize; }
+      .tour-panel-resize-sw { bottom: -3px; left: -3px;  width: 14px; height: 14px; cursor: nesw-resize; }
 
       /* Yellow sticky-note tour bubble. Position is fixed so the
          note floats above the canvas, with a CSS triangle "pointer"
@@ -1907,6 +2012,7 @@
               <div class="row" id="hint-focus"><kbd>F</kbd><span>focus</span></div>
               <div class="row" id="hint-methods" title="Show or hide the per-type method buckets"><kbd>M</kbd><span>methods</span></div>
               <div class="row" id="hint-code" title="Show or hide the source code panel"><kbd>C</kbd><span>code</span></div>
+              <div class="row" id="hint-tour" title="Show or hide the tour steps panel"><kbd>T</kbd><span>tour</span></div>
               <div class="row" id="hint-scale" title="Reset zoom to 100%"><kbd>S</kbd><span>scale</span><span id="scale-value">100%</span></div>
               <div class="row" id="hint-reset" title="Reset everything"><kbd>R</kbd><span>reset</span></div>
               <div class="row" id="hint-overview" title="Toggle fit-all overview / 100% at cursor"><kbd>Space</kbd><span>overview</span></div>
@@ -2083,6 +2189,7 @@
                 <div class="legend-grid-row"><kbd>S</kbd><div class="legend-grid-text"><strong>scale</strong><span class="legend-grid-desc">reset zoom to 100%.</span></div></div>
                 <div class="legend-grid-row"><kbd>R</kbd><div class="legend-grid-text"><strong>reset</strong><span class="legend-grid-desc">reset everything — selections, expansion, focus, methods, zoom/pan.</span></div></div>
                 <div class="legend-grid-row"><kbd>Space</kbd><div class="legend-grid-text"><strong>overview</strong><span class="legend-grid-desc">toggle fit-all overview vs. 100% at the cursor.</span></div></div>
+                <div class="legend-grid-row"><kbd>T</kbd><div class="legend-grid-text"><strong>tour panel</strong><span class="legend-grid-desc">toggle the floating tour-steps panel. Click any row in the panel to jump the bubble to that step. Toggling the panel off does not stop the tour.</span></div></div>
                 <div class="legend-grid-row"><kbd>?</kbd><div class="legend-grid-text"><strong>legend</strong><span class="legend-grid-desc">open or close this dialog.</span></div></div>
                 <div class="legend-grid-row"><kbd>Esc</kbd><div class="legend-grid-text"><strong>dismiss</strong><span class="legend-grid-desc">close this dialog or any open picker / popup.</span></div></div>
                 <div class="legend-grid-row legend-grid-row--combo"><span class="legend-key-combo"><kbd>⌘</kbd><span class="legend-key-plus">+</span><kbd>Click</kbd></span><div class="legend-grid-text"><strong>show code</strong><span class="legend-grid-desc">Cmd-click (or Ctrl-click on Windows / Linux) any name in the diagram to open its source in the right-hand code panel.</span></div></div>

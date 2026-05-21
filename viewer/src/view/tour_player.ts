@@ -23,12 +23,31 @@ export interface PlayerHooks {
    *  open code panel). Optional — when omitted, the bubble only
    *  considers the window edges. */
   readonly getAvoidRect?: () => DOMRect | null;
+  /** Fires after a step transition finishes — both the diagram
+   *  side-effects in `applyStep` AND the bubble render are
+   *  scheduled. The tour-steps panel uses this to update which
+   *  row is highlighted as "current". Fires on start (step 0),
+   *  every Next / Prev / gotoStep, and is silent on stop (the
+   *  panel watches `onStop` for that). */
+  readonly onStepChange?: (index: number) => void;
 }
 
 export interface TourPlayer {
-  start(tour: ResolvedTour): void;
+  /** Start (or restart) the given tour. `startStep` defaults to 0;
+   *  pass a non-zero value to begin at a specific step — used by
+   *  the panel when a user clicks a row in a tour that wasn't
+   *  already playing. */
+  start(tour: ResolvedTour, startStep?: number): void;
   stop(): void;
   isPlaying(): boolean;
+  /** Jump to step `i` (0-based). No-op outside `[0, steps.length)`
+   *  or when no tour is active. Same code path as Next / Prev —
+   *  the panel's row-click handler calls this. */
+  gotoStep(i: number): void;
+  /** Active tour, or null when nothing is playing. */
+  activeTour(): ResolvedTour | null;
+  /** Current 0-based step index, or -1 when nothing is playing. */
+  currentStepIndex(): number;
 }
 
 export function createTourPlayer(hooks: PlayerHooks): TourPlayer {
@@ -83,12 +102,20 @@ export function createTourPlayer(hooks: PlayerHooks): TourPlayer {
       // the rendered state.
       requestAnimationFrame(renderBubble);
     }
+    // Notify subscribers synchronously — the panel's highlight
+    // doesn't need to wait for the bubble render, and reading
+    // `currentStepIndex()` from a step-change handler should
+    // return the new index immediately.
+    hooks.onStepChange?.(stepIndex);
   };
 
-  const start = (tour: ResolvedTour): void => {
+  const start = (tour: ResolvedTour, startStep = 0): void => {
     active = tour;
-    stepIndex = -1;
-    goto(0);
+    // Goto reads `active` and applies the step; no equality check
+    // on the prior stepIndex, so jumping straight to `startStep`
+    // works (the panel uses this when a user clicks an arbitrary
+    // row in a tour that isn't currently playing).
+    goto(startStep);
   };
 
   const stop = (): void => {
@@ -100,6 +127,9 @@ export function createTourPlayer(hooks: PlayerHooks): TourPlayer {
   };
 
   const isPlaying = (): boolean => active !== null;
+  const gotoStep = (i: number): void => goto(i);
+  const activeTour = (): ResolvedTour | null => active;
+  const currentStepIndex = (): number => (active === null ? -1 : stepIndex);
 
-  return { start, stop, isPlaying };
+  return { start, stop, isPlaying, gotoStep, activeTour, currentStepIndex };
 }
