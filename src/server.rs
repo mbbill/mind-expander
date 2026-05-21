@@ -45,7 +45,7 @@ use crate::git_view::{
     RevSpec, find_repo_root, materialize_head, prune_worktrees, resolve_sha, show_blob,
 };
 use crate::tour::{IngestErr, IngestOk, ResolveError, SpanIndex, Tour, TourQueue, ingest};
-use crate::unified_facts::{build_unified, mark_body_modified};
+use crate::unified_facts::{Hunks, build_unified};
 
 // Embed the built viewer at compile time. `build.rs` checks that
 // `viewer/dist/index.html` exists and fails the build with a helpful
@@ -137,19 +137,22 @@ pub fn run(workspace: &Path, revspec: RevSpec, port: u16, open_browser: bool) ->
         let base_path = materialize_head(repo, bsha)?;
         eprintln!("Extracting base facts from {} ...", base_path.display());
         let base_facts = crate::extract::extract_workspace(&base_path)?;
+        // Precompute base+head hunk ranges per file before the merge
+        // so the union pass can decide split-vs-Both per entity in a
+        // single sweep — no second post-pass needed. If hunk
+        // collection fails (transient git error), fall back to
+        // hunkless merge: same-name entities collapse into Both
+        // without split-on-change, which is the safer no-info default.
+        eprintln!("Collecting diff hunks for split-on-change ...");
+        let hunks = match Hunks::collect(repo, bsha, head_sha.as_deref(), &workspace_root, &base_path) {
+            Ok(h) => Some(h),
+            Err(err) => {
+                eprintln!("(warning) hunk collection failed; merging without split: {err}");
+                None
+            }
+        };
         eprintln!("Merging base + head into union facts ...");
-        let mut unified = build_unified(base_facts, head_facts);
-        // Mark Both entities whose body changed (per diff-hunk
-        // intersection with the head span). This turns the renderer's
-        // orange treatment on for modified-Both types/methods/free
-        // functions — the third state the visual language carries,
-        // distinct from base (removed) and head (added).
-        eprintln!("Marking body-modified entities ...");
-        if let Err(err) =
-            mark_body_modified(&mut unified, repo, bsha, head_sha.as_deref(), &workspace_root)
-        {
-            eprintln!("(warning) body_modified pass failed: {err}");
-        }
+        let unified = build_unified(base_facts, head_facts, hunks.as_ref());
         (unified, Some(base_path))
     } else {
         (head_facts, None)
@@ -193,6 +196,7 @@ pub fn run(workspace: &Path, revspec: RevSpec, port: u16, open_browser: bool) ->
         .route("/api/facts", get(get_facts))
         .route("/api/source", get(get_source))
         .route("/api/diff", get(get_diff))
+        .route("/api/changed-files", get(get_changed_files))
         .route("/api/tour", post(post_tour))
         .route("/api/tour-events", get(get_tour_events))
         .fallback(get(serve_static))
@@ -231,6 +235,13 @@ async fn get_facts(State(state): State<Arc<AppState>>) -> Response {
 struct HealthBody<'a> {
     status: &'a str,
     workspace_root: &'a str,
+    /// Absolute path to the base snapshot's materialized worktree.
+    /// Present only in diff mode. The viewer combines this with
+    /// `/api/diff`'s repo-relative `file_old` to reconstruct the
+    /// absolute path needed for base-side spanIndex lookups when a
+    /// user clicks a `del` line in the code panel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_workspace_root: Option<String>,
     /// True when the user passed a `--at` with a `..` separator. The
     /// viewer code panel checks this once at startup and switches its
     /// fetch path to `/api/diff` when set.
@@ -251,6 +262,10 @@ async fn get_health(State(state): State<Arc<AppState>>) -> Response {
     Json(HealthBody {
         status: "ok",
         workspace_root: state.workspace_root.to_string_lossy().as_ref(),
+        base_workspace_root: state
+            .base_workspace_root
+            .as_deref()
+            .map(|p| p.to_string_lossy().into_owned()),
         diff_enabled: state.diff_enabled,
         head_is_working_tree: state.head_sha.is_none(),
         unified_mode: state.base_sha.is_some(),
@@ -544,6 +559,104 @@ async fn get_diff(
         )
             .into_response(),
     }
+}
+
+#[derive(Serialize)]
+struct ChangedFile {
+    path: String,
+    adds: u32,
+    dels: u32,
+}
+
+#[derive(Serialize)]
+struct ChangedFilesBody {
+    files: Vec<ChangedFile>,
+}
+
+async fn get_changed_files(State(state): State<Arc<AppState>>) -> Response {
+    // The rollup chip on each module/crate row reads "+N -M" as
+    // lines (GitHub convention). The metric comes from `git diff
+    // --numstat`, aggregated per-file, then the viewer attributes
+    // each file to its owning module via spanIndex.moduleByFile.
+    // Endpoint is only meaningful in diff mode; off otherwise.
+    if !state.diff_enabled {
+        return (StatusCode::NOT_FOUND, "diff mode not enabled").into_response();
+    }
+    let Some(repo_root) = state.repo_root.as_deref() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "no repo root").into_response();
+    };
+    let Some(base) = state.base_sha.as_deref() else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "diff base = working tree is not yet supported",
+        )
+            .into_response();
+    };
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C"])
+        .arg(repo_root)
+        .args(["diff", "--numstat", "--no-renames", base]);
+    if let Some(h) = state.head_sha.as_deref() {
+        cmd.arg(h);
+    }
+    let out = match cmd.output() {
+        Ok(o) => o,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("git numstat failed to spawn: {err}"),
+            )
+                .into_response();
+        }
+    };
+    if !out.status.success() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "git numstat: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        )
+            .into_response();
+    }
+    let text = match String::from_utf8(out.stdout) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "git numstat output not utf-8",
+            )
+                .into_response();
+        }
+    };
+    let mut files: Vec<ChangedFile> = Vec::new();
+    for line in text.lines() {
+        // numstat format: "<adds>\t<dels>\t<path>". Binary files
+        // come back as "-\t-\t<path>" and have no LoC delta to
+        // contribute; skip them.
+        let mut parts = line.splitn(3, '\t');
+        let adds_s = parts.next().unwrap_or("");
+        let dels_s = parts.next().unwrap_or("");
+        let path = parts.next().unwrap_or("");
+        if adds_s == "-" || dels_s == "-" || path.is_empty() {
+            continue;
+        }
+        let adds: u32 = match adds_s.parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let dels: u32 = match dels_s.parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        files.push(ChangedFile {
+            path: path.to_string(),
+            adds,
+            dels,
+        });
+    }
+    ([(header::CONTENT_TYPE, "application/json")], Json(ChangedFilesBody { files }))
+        .into_response()
 }
 
 async fn serve_static(uri: axum::http::Uri) -> Response {

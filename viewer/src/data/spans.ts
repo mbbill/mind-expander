@@ -1,18 +1,25 @@
 // Span indexes built from facts.
 //
-//   • forward (elementId → Span): "what source range defines this thing?"
-//     Used by Cmd+click in the diagram to scroll the code panel.
-//   • reverse (file → [Span ranges]): "which element is at this line?"
-//     Used by click-in-code-panel to navigate the diagram.
+//   • forward (elementId, kind → SpanRecord): "where does this entity
+//     live?" A `SpanRecord` carries the canonical `span` (head file for
+//     present-in-head entities; base file for Base-only deleted ones)
+//     plus an optional `prev_span` for Modified entities (the base
+//     location, used to draw the union focus frame in the code panel).
+//     One record per `(id, kind)` pair — no side disambiguation in the
+//     lookup key. Used by Cmd+click in the diagram.
+//   • byFileHead / byFileBase (file → [IndexedSpan ranges]): "which
+//     element defines line N in head / base coordinates?" Used by
+//     clicks inside the code panel. Modified entities appear in BOTH
+//     reverse indexes (head span in byFileHead, prev_span in byFileBase)
+//     so a click on either a red base-only line or a green head-only
+//     line resolves to the same entity id.
 //
-// The extractor optionally emits per-item spans. When it doesn\'t
-// (older facts files, or until the Rust side ships span emission),
-// every type/field/method falls back to its module\'s file with line 1
-// so Cmd+click still opens the right file even though it can\'t
-// highlight the exact lines yet.
+// In single-snapshot mode (no `--at base..HEAD`), every entity is
+// `Side::Head`, byFileBase is empty, and `prev_span` is never set.
 
 import { classifyVisibility } from '../analysis/visibility.ts';
-import type { Facts, Span } from './schema.ts';
+import { fieldId, methodId } from './ids.ts';
+import type { ChangeKind, Facts, Side, Span } from './schema.ts';
 
 /** Kind of source-language element a span describes. Rust allows a
  *  field and a method on the same type to share a name (`Store::module`
@@ -25,71 +32,107 @@ import type { Facts, Span } from './schema.ts';
  *  emit a tighter span for the module itself. */
 export type ElementKind = 'module' | 'type' | 'field' | 'method' | 'function';
 
+/** What `lookupSpan` returns. `span` is the canonical location of the
+ *  entity (head for present-in-head; base for deleted-only). `prev_span`
+ *  is set only when `side === 'modified'` and carries the base location
+ *  for the union frame. `side` tells callers how to render the entity's
+ *  row (red / green / both-modified-dual-bar / no bar). */
+export interface SpanRecord {
+  readonly span: Span;
+  readonly prev_span?: Span;
+  readonly side: Side;
+  /** Sub-classification of a Modified entity. `undefined` for
+   *  Base/Head/Both. */
+  readonly change_kind?: ChangeKind;
+}
+
 export interface IndexedSpan {
   readonly elementId: string;
   readonly kind: ElementKind;
+  readonly side: Side;
   readonly file: string;
   readonly startLine: number;
   readonly endLine: number;
 }
 
 export interface SpanIndex {
-  /** Look up the span for an element. Keyed by (id, kind) so a struct
-   *  field and a like-named method on the same type don't collide on
-   *  the shared id. Use `lookupSpan` instead of poking the map
-   *  directly — it walks both kinds when only the id is known. */
-  readonly forward: ReadonlyMap<string, ReadonlyMap<ElementKind, Span>>;
-  readonly byFile: ReadonlyMap<string, readonly IndexedSpan[]>;
+  /** `(elementId, kind) → SpanRecord`. One record per entity. */
+  readonly forward: ReadonlyMap<string, ReadonlyMap<ElementKind, SpanRecord>>;
+  /** Head-coords reverse index: head workspace path → IndexedSpan[]. */
+  readonly byFileHead: ReadonlyMap<string, readonly IndexedSpan[]>;
+  /** Base-coords reverse index: base workspace path → IndexedSpan[]. */
+  readonly byFileBase: ReadonlyMap<string, readonly IndexedSpan[]>;
   /** Set of fullPaths that are types (struct/enum/union/trait/alias). */
   readonly types: ReadonlySet<string>;
-  /** For every (id, kind) pair, the diagram type-box id whose
-   *  expansion state controls that element's visibility. Free
-   *  functions live in `function_group` pseudo-types; methods/fields
-   *  in their owning type. Used by the host to expand the right
-   *  container before navigating. */
+  /** For every (id, kind), the diagram type-box id whose expansion
+   *  state controls that element's visibility. Free functions live in
+   *  `function_group` pseudo-types; methods/fields in their owning
+   *  type. */
   readonly containingTypeBoxId: ReadonlyMap<string, ReadonlyMap<ElementKind, string>>;
   /** Reverse lookup: absolute source-file path → moduleId. Lets the
    *  code panel's breadcrumb open a file as a module (so the diagram
-   *  side also updates). When multiple modules share a file
-   *  (parent + inline `mod foo`), the first registered wins. */
+   *  side also updates). Keys include both head and base workspace
+   *  paths so a base-only file resolves too. */
   readonly moduleByFile: ReadonlyMap<string, string>;
 }
 
-/** Convenience: fetch the span for `(id, kind)`. Returns null when the
- *  element wasn't indexed (e.g., span omitted by the extractor). */
+/** Fetch the `SpanRecord` for `(id, kind)`. Returns null when the
+ *  element wasn't indexed. */
 export function lookupSpan(
   index: SpanIndex,
   id: string,
   kind: ElementKind,
-): Span | null {
-  return index.forward.get(id)?.get(kind) ?? null;
+): SpanRecord | null {
+  const inner = index.forward.get(id);
+  if (inner === undefined) return null;
+  return inner.get(kind) ?? null;
 }
 
-/** Convenience: containing type-box id for `(id, kind)`. */
+/** Containing type-box id for `(id, kind)`. */
 export function containingTypeBoxIdFor(
   index: SpanIndex,
   id: string,
   kind: ElementKind,
 ): string | null {
-  return index.containingTypeBoxId.get(id)?.get(kind) ?? null;
+  const inner = index.containingTypeBoxId.get(id);
+  if (inner === undefined) return null;
+  return inner.get(kind) ?? null;
 }
 
 export function buildSpanIndex(facts: Facts): SpanIndex {
-  const forward = new Map<string, Map<ElementKind, Span>>();
-  const byFile = new Map<string, IndexedSpan[]>();
+  const forward = new Map<string, Map<ElementKind, SpanRecord>>();
+  const byFileHead = new Map<string, IndexedSpan[]>();
+  const byFileBase = new Map<string, IndexedSpan[]>();
   const types = new Set<string>();
   const containingTypeBoxId = new Map<string, Map<ElementKind, string>>();
   const moduleByFile = new Map<string, string>();
 
-  const setForward = (id: string, kind: ElementKind, span: Span): void => {
+  const setForward = (
+    id: string,
+    kind: ElementKind,
+    side: Side,
+    span: Span,
+    prev_span: Span | undefined,
+    change_kind: ChangeKind | undefined,
+  ): void => {
     let inner = forward.get(id);
     if (inner === undefined) {
       inner = new Map();
       forward.set(id, inner);
     }
-    inner.set(kind, span);
+    const record: SpanRecord = {
+      span,
+      side,
+      ...(prev_span !== undefined ? { prev_span } : {}),
+      ...(change_kind !== undefined ? { change_kind } : {}),
+    };
+    inner.set(kind, record);
   };
-  const setContainer = (id: string, kind: ElementKind, containerId: string): void => {
+  const setContainer = (
+    id: string,
+    kind: ElementKind,
+    containerId: string,
+  ): void => {
     let inner = containingTypeBoxId.get(id);
     if (inner === undefined) {
       inner = new Map();
@@ -97,125 +140,162 @@ export function buildSpanIndex(facts: Facts): SpanIndex {
     }
     inner.set(kind, containerId);
   };
-  const appendToFile = (entry: IndexedSpan): void => {
-    let list = byFile.get(entry.file);
-    if (list === undefined) {
-      list = [];
-      byFile.set(entry.file, list);
+  // Reverse-index decisions:
+  //   side='head'     → byFileHead only
+  //   side='base'     → byFileBase only
+  //   side='both'     → both (same span in both coord systems —
+  //                     context rows carry both lineHead and lineBase)
+  //   side='modified' → byFileHead via `span`, byFileBase via `prev_span`
+  const appendByFile = (
+    elementId: string,
+    kind: ElementKind,
+    side: Side,
+    span: Span,
+    prev_span: Span | undefined,
+  ): void => {
+    const headEntry: IndexedSpan = {
+      elementId,
+      kind,
+      side,
+      file: span.file,
+      startLine: span.start_line,
+      endLine: span.end_line,
+    };
+    const pushTo = (
+      map: Map<string, IndexedSpan[]>,
+      entry: IndexedSpan,
+    ): void => {
+      let list = map.get(entry.file);
+      if (list === undefined) {
+        list = [];
+        map.set(entry.file, list);
+      }
+      list.push(entry);
+    };
+    if (side === 'base') {
+      pushTo(byFileBase, headEntry);
+      return;
     }
-    list.push(entry);
+    if (side === 'head') {
+      pushTo(byFileHead, headEntry);
+      return;
+    }
+    if (side === 'both') {
+      pushTo(byFileHead, headEntry);
+      pushTo(byFileBase, headEntry);
+      return;
+    }
+    // Modified: head span goes to head index; base span (prev_span)
+    // goes to base index. Same elementId in both.
+    pushTo(byFileHead, headEntry);
+    if (prev_span !== undefined) {
+      pushTo(byFileBase, {
+        elementId,
+        kind,
+        side,
+        file: prev_span.file,
+        startLine: prev_span.start_line,
+        endLine: prev_span.end_line,
+      });
+    }
   };
+
+  const sideOf = (raw?: Side): Side => raw ?? 'head';
 
   for (const crate of Object.values(facts.crates)) {
     for (const mod of Object.values(crate.modules)) {
       const fallback: Span = { file: mod.file, start_line: 1, end_line: 1 };
+      const modSide = sideOf(mod.side);
       // Module-level entry: lets Cmd+click on a module label in the
-      // tree open its source file. The extractor's `mod.file` already
-      // points to whichever Rust file the module lives in — leaf
-      // module's `name.rs`, non-leaf's `name.rs` or `name/mod.rs`, or
-      // the parent file for inline `mod foo { ... }` declarations.
+      // tree open its source file.
       const moduleId =
         mod.path === '' ? crate.name : `${crate.name}::${mod.path}`;
-      setForward(moduleId, 'module', fallback);
+      setForward(moduleId, 'module', modSide, fallback, undefined, undefined);
       setContainer(moduleId, 'module', moduleId);
       if (!moduleByFile.has(mod.file)) moduleByFile.set(mod.file, moduleId);
       for (const t of mod.types) {
+        const tSide = sideOf(t.side);
         const tSpan = t.span ?? fallback;
+        const tPrev = t.prev_span;
         types.add(t.full_path);
-        setForward(t.full_path, 'type', tSpan);
+        setForward(t.full_path, 'type', tSide, tSpan, tPrev, t.change_kind);
         setContainer(t.full_path, 'type', t.full_path);
         if (t.span !== undefined) {
-          appendToFile({
-            elementId: t.full_path,
-            kind: 'type',
-            file: t.span.file,
-            startLine: t.span.start_line,
-            endLine: t.span.end_line,
-          });
+          appendByFile(t.full_path, 'type', tSide, t.span, tPrev);
         }
         for (const f of t.fields) {
-          const id = `${t.full_path}::${f.name}`;
-          setForward(id, 'field', f.span ?? tSpan);
+          const fSide = sideOf(f.side);
+          const id = fieldId(t.full_path, f.name);
+          setForward(id, 'field', fSide, f.span ?? tSpan, f.prev_span, f.change_kind);
           setContainer(id, 'field', t.full_path);
           if (f.span !== undefined) {
-            appendToFile({
-              elementId: id,
-              kind: 'field',
-              file: f.span.file,
-              startLine: f.span.start_line,
-              endLine: f.span.end_line,
-            });
+            appendByFile(id, 'field', fSide, f.span, f.prev_span);
           }
         }
         if (t.methods !== undefined) {
           for (const m of t.methods) {
-            const id = `${t.full_path}::${m.name}`;
-            setForward(id, 'method', m.span ?? tSpan);
+            const mSide = sideOf(m.side);
+            const id = methodId(t.full_path, m);
+            setForward(id, 'method', mSide, m.span ?? tSpan, m.prev_span, m.change_kind);
             setContainer(id, 'method', t.full_path);
             if (m.span !== undefined) {
-              appendToFile({
-                elementId: id,
-                kind: 'method',
-                file: m.span.file,
-                startLine: m.span.start_line,
-                endLine: m.span.end_line,
-              });
+              appendByFile(id, 'method', mSide, m.span, m.prev_span);
             }
           }
         }
       }
       for (const fn of mod.functions) {
+        const fnSide = sideOf(fn.side);
         const modPath = mod.path === '' ? '' : `::${mod.path}`;
-        const moduleId = `${crate.name}${modPath}`;
-        const id = `${moduleId}::${fn.name}`;
-        setForward(id, 'function', fn.span ?? fallback);
+        const modId = `${crate.name}${modPath}`;
+        const id = `${modId}::${fn.name}`;
+        setForward(id, 'function', fnSide, fn.span ?? fallback, fn.prev_span, fn.change_kind);
         // Free functions live in `function_group` pseudo-types (one
         // per visibility bucket per module). The id formula is owned
-        // by `module_tree.ts:239`; we mirror it here so the host
-        // knows which pseudo-type to expand without having to walk
-        // the module tree at click time.
+        // by `module_tree.ts:239`; we mirror it here.
         setContainer(
           id,
           'function',
-          `${moduleId}::__fn_${classifyVisibility(fn.visibility)}`,
+          `${modId}::__fn_${classifyVisibility(fn.visibility)}`,
         );
         if (fn.span !== undefined) {
-          appendToFile({
-            elementId: id,
-            kind: 'function',
-            file: fn.span.file,
-            startLine: fn.span.start_line,
-            endLine: fn.span.end_line,
-          });
+          appendByFile(id, 'function', fnSide, fn.span, fn.prev_span);
         }
       }
     }
   }
 
-  // Sort each file\'s spans by start line. Deepest-first when ties.
-  for (const list of byFile.values()) {
+  const sortList = (list: IndexedSpan[]): void => {
     list.sort((a, b) => {
       if (a.startLine !== b.startLine) return a.startLine - b.startLine;
       return (a.endLine - a.startLine) - (b.endLine - b.startLine);
     });
-  }
+  };
+  for (const list of byFileHead.values()) sortList(list);
+  for (const list of byFileBase.values()) sortList(list);
 
-  return { forward, byFile, types, containingTypeBoxId, moduleByFile };
+  return {
+    forward,
+    byFileHead,
+    byFileBase,
+    types,
+    containingTypeBoxId,
+    moduleByFile,
+  };
 }
 
 /** Find the DEEPEST (smallest-range) element whose span contains
- *  `line` in `file`. Returns null when no element covers the line —
- *  caller can treat as "click landed in whitespace, don't navigate".
- *  Returns the full IndexedSpan so callers know whether the line
- *  landed in a field, method, free function, or type — `Store::module`
- *  the field and `Store::module` the method share an id, so id alone
- *  is not enough to disambiguate. */
+ *  `line` in `file` on a specific `side`. Returns null when no
+ *  element covers the line. Returns the full IndexedSpan so callers
+ *  know which kind + side the line resolved to. */
 export function findElementAtLine(
   index: SpanIndex,
   file: string,
   line: number,
+  side: Side,
 ): IndexedSpan | null {
-  const list = index.byFile.get(file);
+  const map = side === 'base' ? index.byFileBase : index.byFileHead;
+  const list = map.get(file);
   if (list === undefined) return null;
   let best: IndexedSpan | null = null;
   for (const s of list) {

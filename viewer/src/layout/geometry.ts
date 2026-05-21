@@ -47,7 +47,8 @@ import {
 } from '../analysis/module_tree.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
 import { BUCKET_LABEL, type VisibilityBucket } from '../analysis/visibility.ts';
-import type { FnFacts, Ownership } from '../data/schema.ts';
+import { methodId } from '../data/ids.ts';
+import type { FnFacts, Ownership, Side } from '../data/schema.ts';
 import type { ViewState } from '../state/view_state.ts';
 import {
   type BandLayoutGridItem,
@@ -679,6 +680,12 @@ interface LocalRowSpec {
    *  so the renderer can color the name by ownership flavor without
    *  re-parsing the formatted signature. */
   readonly selfKind?: 'none' | 'by_value' | 'ref' | 'ref_mut';
+  /** Union-diff side carried per row. Set from the underlying entity
+   *  (`FnFacts.side` / `FieldFacts.side`). Lets the renderer distinguish
+   *  a split-on-change Base+Head pair that shares the same id but
+   *  renders as two adjacent rows — without this the second row's
+   *  data-side lookup by id would silently collapse to the first. */
+  readonly side?: Side;
 }
 
 function buildRowSpecs(
@@ -742,6 +749,7 @@ function buildRowSpecs(
       kind: 'field',
       bucketId: null,
       memberDriftClass,
+      ...(f.side !== undefined ? { side: f.side } : {}),
     });
   }
   if (methodsHidden) return rows;
@@ -778,7 +786,7 @@ function buildRowSpecs(
     for (const fn of mb.methods) {
       pushCallableRow(rows, {
         fn,
-        functionFullPath: `${t.fullPath}::${fn.name}`,
+        functionFullPath: methodId(t.fullPath, fn),
         kind: 'method',
         labelInset: FIELD_LABEL_INSET + METHOD_INDENT,
         parentTypeId: t.id,
@@ -856,6 +864,7 @@ function pushCallableRow(
     hasOutgoingCalls: callRefs.length > 0,
     hasIncomingCalls: incomingCallRefs.length > 0,
     kind: args.kind,
+    ...(args.fn.side !== undefined ? { side: args.fn.side } : {}),
     bucketId: null,
     memberDriftClass: null,
     ...(args.fn.self_kind !== undefined ? { selfKind: args.fn.self_kind } : {}),
@@ -1043,6 +1052,7 @@ function positionRows(
       kind: spec.kind,
       bucketId: spec.bucketId,
       memberDriftClass: spec.memberDriftClass,
+      ...(spec.side !== undefined ? { side: spec.side } : {}),
     });
     rowY += FIELD_ROW_H;
   }

@@ -297,7 +297,8 @@ export interface TreeRenderOptions {
    *  scroll to that element's source span. `id` is the same form used
    *  by `onToggle`/`onSelectField`; `kind` disambiguates a struct
    *  field from a method with the same name on the same type, since
-   *  both share the canonical id. */
+   *  both share the canonical id. One id = one entity (no
+   *  split-pair halves), so the host doesn't need a side hint. */
   readonly onShowCode: (
     id: string,
     kind: 'module' | 'type' | 'field' | 'method' | 'function',
@@ -337,7 +338,11 @@ export interface TreeRenderOptions {
    *  groups. Only `head`/`base` are stored; `both` (regardless of
    *  body edits) is never marked — member-row bars carry structural
    *  delta only. */
-  readonly sideByElementId?: ReadonlyMap<string, 'base' | 'head'>;
+  readonly sideByElementId?: ReadonlyMap<string, 'base' | 'head' | 'modified'>;
+  /** Per-Modified-entity sub-classification. Drives the bar colour:
+   *  `add` → solid green, `del` → solid red, `mixed` → dual.
+   *  Same id keyspace as `sideByElementId`. Absent for non-Modified. */
+  readonly changeKindByElementId?: ReadonlyMap<string, 'add' | 'del' | 'mixed'>;
   /** Per-type bar state, populated only in unified mode. Keyed by
    *  type fullPath (real types) or function-group synthetic id
    *  `${moduleId}::__fn_${bucket}`. Drives the type-box's vertical
@@ -1910,6 +1915,12 @@ function renderFieldsForType(
     .append('rect')
     .attr('class', 'row-side-bg')
     .attr('pointer-events', 'none');
+  // Two stacked bar halves. For solid Base/Head/Both rows only the
+  // top half renders (full 16-px height, single colour). For
+  // `data-side='modified'` rows the top half shrinks to 8 px red
+  // and the bottom half (8 px green) shows just below it — the
+  // dual bar communicates "this entity was modified" without
+  // splitting the row.
   enter
     .append('rect')
     .attr('class', 'row-side-bar')
@@ -1917,6 +1928,12 @@ function renderFieldsForType(
     .attr('height', FIELD_ROW_H)
     .attr('rx', 2)
     .attr('ry', 2)
+    .attr('pointer-events', 'none');
+  enter
+    .append('rect')
+    .attr('class', 'row-side-bar-bottom')
+    .attr('width', 4)
+    .attr('height', FIELD_ROW_H / 2)
     .attr('pointer-events', 'none');
 
   // Append the field name + the (hidden by default) type-text hint once on
@@ -1987,20 +2004,54 @@ function renderFieldsForType(
   // the full-row tint via the rects appended on enter. Same lookup
   // keys the renderer wrote into data-element-id above (so the row's
   // identity for selection and for diff side match).
-  merged.attr('data-side', (f) => {
+  // Resolve the row's `data-side`. For Modified entities, fold in
+  // the `change_kind` so CSS can paint:
+  //   - data-side='base'           → solid red bar (deleted)
+  //   - data-side='head'           → solid green bar (added)
+  //   - data-side='modified-add'   → solid green bar (additions only)
+  //   - data-side='modified-del'   → solid red bar (deletions only)
+  //   - data-side='modified-mixed' → dual red+green bar (both)
+  //   - absent                     → no bar (Both / unchanged)
+  const resolveDataSide = (f: { kind: string; functionFullPath?: string | null; name: string; side?: string }): string | null => {
+    const rowSide = f.side;
     const elemId =
       f.kind === 'method' || f.kind === 'function'
         ? f.functionFullPath ?? `${d.fullPath}::${f.name}`
         : `${d.fullPath}::${f.name}`;
-    const s = opts.sideByElementId?.get(elemId);
-    return s === 'base' || s === 'head' ? s : null;
-  });
+    let side: 'base' | 'head' | 'modified' | null = null;
+    if (rowSide === 'base' || rowSide === 'head' || rowSide === 'modified') {
+      side = rowSide;
+    } else {
+      const s = opts.sideByElementId?.get(elemId);
+      if (s === 'base' || s === 'head' || s === 'modified') side = s;
+    }
+    if (side === null) return null;
+    if (side !== 'modified') return side;
+    const ck =
+      (f as { change_kind?: string }).change_kind ??
+      opts.changeKindByElementId?.get(elemId) ??
+      'mixed';
+    return `modified-${ck}`;
+  };
+  merged.attr('data-side', (f) => resolveDataSide(f));
   merged
     .select<SVGRectElement>('rect.row-side-bar')
-    // Flush with the obstacle border, matching the type-box side-bar
-    // above for a continuous left edge.
+    // Flush with the obstacle border. For `modified-mixed` rows the
+    // top bar shrinks to half-height (red); the sibling
+    // `row-side-bar-bottom` rect paints the bottom half green.
     .attr('x', d.boxX - d.x)
-    .attr('y', (f) => f.y - groupTopY - ROW_H / 2 + 2);
+    .attr('y', (f) => f.y - groupTopY - ROW_H / 2 + 2)
+    .attr('height', (f) =>
+      resolveDataSide(f) === 'modified-mixed'
+        ? FIELD_ROW_H / 2
+        : FIELD_ROW_H,
+    );
+  merged
+    .select<SVGRectElement>('rect.row-side-bar-bottom')
+    .attr('x', d.boxX - d.x)
+    .attr('y', (f) =>
+      f.y - groupTopY - ROW_H / 2 + 2 + FIELD_ROW_H / 2,
+    );
   // The row-side-bg uses the type-box's obstacle width so the tint
   // spans the same horizontal extent as the member-bg (selection
   // background). That keeps the two layers consistent on a row that
@@ -2324,6 +2375,8 @@ function renderFieldsForType(
         // bucket id, not the module path, so `${d.fullPath}::${f.name}`
         // would miss the span-index entry.
         if (!isBucketHeader) {
+          // One id = one entity (no split-pair halves), so the host's
+          // span lookup is unambiguous from the id alone.
           if (f.kind === 'method' && f.functionFullPath !== null) {
             opts.onShowCode(f.functionFullPath, 'method');
           } else if (f.kind === 'function' && f.functionFullPath !== null) {

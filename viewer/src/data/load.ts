@@ -16,7 +16,21 @@ export class FactsLoadError extends Error {
   }
 }
 
-export async function loadFacts(url: string): Promise<Facts> {
+/** Both views of the facts:
+ *  - `canonical`: cfg-gated dups collapsed (one TypeFacts per full_path).
+ *    Used by every layout-facing consumer that requires id uniqueness
+ *    (`band_layout::assertUniqueItemIds`, the row index, arrow targets).
+ *  - `raw`: the validated extractor JSON before canonicalize. Used by the
+ *    span index so per-variant source-line spans (e.g. cfg-gated field
+ *    `snapshot` at line 411 in the non-memprof variant AND at line 626
+ *    in the memprof variant) both land in `byFile` — clicks on either
+ *    cfg branch's lines then resolve to the right entity. */
+export interface FactsBundle {
+  readonly canonical: Facts;
+  readonly raw: Facts;
+}
+
+export async function loadFacts(url: string): Promise<FactsBundle> {
   let res: Response;
   try {
     res = await fetch(url);
@@ -34,7 +48,8 @@ export async function loadFacts(url: string): Promise<Facts> {
     throw new FactsLoadError(`parse ${url} as JSON failed`, { cause });
   }
 
-  return canonicalize(validate(raw));
+  const validated = validate(raw);
+  return { canonical: canonicalize(validated), raw: validated };
 }
 
 // Narrow boundary check: confirm the shape we read. Does not recursively

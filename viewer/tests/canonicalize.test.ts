@@ -3,6 +3,7 @@ import { canonicalize } from '../src/data/canonicalize.ts';
 import type {
   CrateFacts,
   Facts,
+  FnFacts,
   ModuleFacts,
   ReExport,
   TypeFacts,
@@ -152,6 +153,182 @@ describe('canonicalize', () => {
     const out = canonicalize(input);
     const re_exports = out.crates['c']?.modules['string']?.re_exports ?? [];
     expect(re_exports.map((r) => r.exposed_name)).toEqual(['String', 'ToString']);
+  });
+
+  it('unions fields across cfg-gated variants', () => {
+    // Real-world repro: tracked-alloc's `AllocationProfile` has a
+    // non-memprof `pub struct AllocationProfile;` (no fields) and a
+    // memprof `pub struct AllocationProfile { now_ns, snapshot, ... }`
+    // (six fields). Pre-fix, canonicalize picked the empty variant as
+    // representative and dropped every field; the click-handler then
+    // couldn't resolve `snapshot` because it wasn't in the byFile
+    // reverse index. Union-fields fixes that.
+    const fld = (name: string): TypeFacts['fields'][number] => ({
+      name,
+      ty_text: 'u64',
+      ownership: 'primitive',
+      referenced: [],
+    });
+    const empty: TypeFacts = { ...ty('c', '', 'AllocationProfile', 'struct'), fields: [] };
+    const rich: TypeFacts = {
+      ...ty('c', '', 'AllocationProfile', 'struct'),
+      fields: [fld('now_ns'), fld('snapshot'), fld('timeline')],
+    };
+    const out = canonicalize(facts('c', [mod('', [empty, rich])]));
+    const got = typesAt(out, 'c', '');
+    expect(got).toHaveLength(1);
+    // Richest variant wins as representative — three fields unioned in.
+    expect(got[0]?.fields?.map((f) => f.name)).toEqual(['now_ns', 'snapshot', 'timeline']);
+  });
+
+  it('picks Both as the merged side when any variant is Both', () => {
+    // Union-merge can emit cfg-gated dups where one variant is Both
+    // (unchanged across base/head) and the other is Head (the other
+    // cfg branch changed). The merged type is unchanged at the macro
+    // level — it exists in at least one cfg branch as Both — so the
+    // type-row gets no side-bar; per-member sides still drive row
+    // colours.
+    const a: TypeFacts = { ...ty('c', '', 'X', 'struct'), side: 'both' };
+    const b: TypeFacts = { ...ty('c', '', 'X', 'struct'), side: 'head' };
+    const out = canonicalize(facts('c', [mod('', [a, b])]));
+    expect(typesAt(out, 'c', '')[0]?.side).toBe('both');
+  });
+
+  it('collapses cfg-gated dups to a single entry so band layout ids stay unique', () => {
+    // Regression for the `Band layout item ids must be unique` crash:
+    // before the fix, dedup keyed by (full_path, side) let both
+    // variants through, and `assertUniqueItemIds` blew up on the
+    // first redraw. The full_path-keyed dedup must collapse them to
+    // exactly one TypeFacts.
+    const a: TypeFacts = {
+      ...ty('c', '', 'AggregateEntry', 'struct'),
+      side: 'both',
+      span: { file: '/lib.rs', start_line: 358, end_line: 368 },
+    };
+    const b: TypeFacts = {
+      ...ty('c', '', 'AggregateEntry', 'struct'),
+      side: 'head',
+      span: { file: '/lib.rs', start_line: 573, end_line: 583 },
+    };
+    const out = canonicalize(facts('c', [mod('', [a, b])]));
+    const got = typesAt(out, 'c', '');
+    expect(got).toHaveLength(1);
+    // Only one item id per full_path — what the band layout requires.
+    expect(got[0]?.full_path).toBe('c::AggregateEntry');
+  });
+
+  it('preserves a method split-pair across canonicalize', () => {
+    // Split-on-change emits two FnFacts with the same `name` but
+    // different sides (Base + Head). The dedup key must include
+    // side so the diagram can render the pair as two rows; before
+    // the fix, unionMethods kept only the first occurrence by name,
+    // silently dropping the Head half.
+    const baseHalf: TypeFacts['methods'][number] = {
+      name: 'materialize',
+      visibility: 'pub',
+      side: 'base',
+    };
+    const headHalf: TypeFacts['methods'][number] = {
+      name: 'materialize',
+      visibility: 'pub',
+      side: 'head',
+    };
+    const variant: TypeFacts = {
+      ...ty('c', '', 'Handle', 'struct'),
+      methods: [baseHalf, headHalf],
+    };
+    const out = canonicalize(facts('c', [mod('', [variant])]));
+    const got = typesAt(out, 'c', '');
+    expect(got).toHaveLength(1);
+    const mats = got[0]?.methods?.filter((m) => m.name === 'materialize') ?? [];
+    expect(mats).toHaveLength(2);
+    const sides = mats.map((m) => m.side).sort();
+    expect(sides).toEqual(['base', 'head']);
+  });
+
+  it('preserves a field split-pair across canonicalize', () => {
+    // Mirror of the method-split case for fields.
+    const fld = (side: 'base' | 'head' | 'both'): TypeFacts['fields'][number] => ({
+      name: 'shape',
+      ty_text: 'u32',
+      ownership: 'primitive',
+      referenced: [],
+      side,
+    });
+    const variant: TypeFacts = {
+      ...ty('c', '', 'Snap', 'struct'),
+      fields: [fld('base'), fld('head')],
+    };
+    const out = canonicalize(facts('c', [mod('', [variant])]));
+    const shapes = (typesAt(out, 'c', '')[0]?.fields ?? []).filter(
+      (f) => f.name === 'shape',
+    );
+    expect(shapes).toHaveLength(2);
+    expect(shapes.map((f) => f.side).sort()).toEqual(['base', 'head']);
+  });
+
+  it('still collapses cfg-blind duplicate methods sharing a side', () => {
+    // Two cfg-gated `struct Vec` variants with the same `push`
+    // method (both tagged Head). The dedup must still squash these
+    // to one — they are the same conceptual method, just emitted
+    // twice by the cfg-blind walker.
+    const cfgA: TypeFacts = {
+      ...ty('c', '', 'Vec', 'struct'),
+      methods: [{ name: 'push', visibility: 'pub', side: 'head' }],
+    };
+    const cfgB: TypeFacts = {
+      ...ty('c', '', 'Vec', 'struct'),
+      methods: [{ name: 'push', visibility: 'pub', side: 'head' }],
+    };
+    const out = canonicalize(facts('c', [mod('', [cfgA, cfgB])]));
+    const got = typesAt(out, 'c', '');
+    expect(got).toHaveLength(1);
+    const pushes = got[0]?.methods?.filter((m) => m.name === 'push') ?? [];
+    expect(pushes).toHaveLength(1);
+  });
+
+  it('dedupes module-level free functions sharing name and side', () => {
+    // Repro for the `pub fn (20)` doubling regression: cfg-blind
+    // extractor emits the same module-level function twice (one per
+    // cfg branch), and `merge_module`'s free-fn merge collapses one
+    // pair but orphan-promotes the other → two identical Both-tagged
+    // FnFacts. Canonicalize must dedup to a single entry.
+    const fn = (side: 'base' | 'head' | 'both'): FnFacts => ({
+      name: 'snapshot',
+      visibility: 'pub',
+      side,
+    });
+    const m = {
+      ...mod('', []),
+      functions: [fn('both'), fn('both')],
+    };
+    const input = facts('c', [m]);
+    const out = canonicalize(input);
+    const fns = out.crates['c']?.modules['']?.functions ?? [];
+    const snaps = fns.filter((f) => f.name === 'snapshot');
+    expect(snaps).toHaveLength(1);
+  });
+
+  it('keeps a Modified function and lifts its prev_span via dedup', () => {
+    // Rust now emits ONE record per modified entity (Side::Modified
+    // with span=head, prev_span=base). Cfg-blind dups may produce a
+    // Both variant alongside the Modified one; canonicalize must
+    // keep the Modified record (it carries the prev_span; collapsing
+    // to Both would lose the base location).
+    const both: FnFacts = { name: 'rebuild', visibility: 'pub', side: 'both' };
+    const modified: FnFacts = {
+      name: 'rebuild',
+      visibility: 'pub',
+      side: 'modified',
+      span: { file: '/h/m.rs', start_line: 10, end_line: 20 },
+      prev_span: { file: '/b/m.rs', start_line: 8, end_line: 18 },
+    };
+    const m = { ...mod('', []), functions: [both, modified] };
+    const out = canonicalize(facts('c', [m]));
+    const fns = out.crates['c']?.modules['']?.functions ?? [];
+    expect(fns).toHaveLength(1);
+    expect(fns[0]?.side).toBe('modified');
+    expect(fns[0]?.prev_span?.start_line).toBe(8);
   });
 
   it('preserves call edges while normalizing type facts', () => {

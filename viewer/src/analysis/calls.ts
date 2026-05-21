@@ -1,3 +1,4 @@
+import { methodId } from '../data/ids.ts';
 import type { CallKind, CallResolution, Facts } from '../data/schema.ts';
 import { type ModuleNode, type TreeNode, methodBucketId } from './module_tree.ts';
 
@@ -72,7 +73,7 @@ export function buildFunctionCallIndex(facts: Facts, root: ModuleNode): Function
     for (const bucket of node.methodBuckets) {
       for (const method of bucket.methods) {
         addRow({
-          functionFullPath: `${node.fullPath}::${method.name}`,
+          functionFullPath: methodId(node.fullPath, method),
           typeId: node.fullPath,
           rowName: method.name,
           rowKind: 'method',

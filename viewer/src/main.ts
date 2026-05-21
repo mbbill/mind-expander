@@ -19,8 +19,9 @@ import {
   buildOwnershipIndex,
   computeOwnershipDepth,
 } from './analysis/ownership.ts';
-import { FactsLoadError, loadFacts } from './data/load.ts';
-import type { Facts } from './data/schema.ts';
+import { fieldId, methodId } from './data/ids.ts';
+import { type FactsBundle, FactsLoadError, loadFacts } from './data/load.ts';
+import type { Facts, Side } from './data/schema.ts';
 import {
   type ElementKind,
   buildSpanIndex,
@@ -282,9 +283,14 @@ async function main(): Promise<void> {
     currentCtx?.navigateToElement(head.id, head.kind, tourFocusScreenPoint(), true);
     // 3. Code panel: sync only if already open. Tour playback never
     //    forces the panel onto the user.
-    const span = lookupSpan(spanIndex, head.id, head.kind);
-    if (span !== null && codePanel.isOpen()) {
-      codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
+    const rec = lookupSpan(spanIndex, head.id, head.kind);
+    if (rec !== null && codePanel.isOpen()) {
+      codePanel.show({
+        file: rec.span.file,
+        startLine: rec.span.start_line,
+        endLine: rec.span.end_line,
+        ...(rec.prev_span !== undefined ? { prev_span: rec.prev_span } : {}),
+      });
     }
     // No artificial wait — the bubble polls `getAnchor()` each
     // frame and follows the animating row to its final position.
@@ -461,8 +467,17 @@ async function main(): Promise<void> {
       tourHighlightedArrow = g;
     });
   };
-  const facts = await tryLoadFacts();
-  if (!facts) return;
+  const factsBundle = await tryLoadFacts();
+  if (!factsBundle) return;
+  // `facts` (canonicalized) drives everything layout-facing — the diagram,
+  // the row index, the band layout's unique-id assertion. `rawFacts`
+  // preserves the pre-canonicalize variants so the span index can resolve
+  // cfg-gated member spans in either cfg branch (e.g. AllocationProfile's
+  // `snapshot` field lives at both line 411 in the non-memprof variant
+  // and line 626 in the memprof variant; only the canonicalized fact
+  // keeps one).
+  const facts = factsBundle.canonical;
+  const rawFacts = factsBundle.raw;
 
   // Read /api/health once at startup. Tells us whether the server was
   // launched with `--at <base>..<head>` (diff mode). The code panel
@@ -471,15 +486,21 @@ async function main(): Promise<void> {
   // the panel in plain source mode.
   let diffEnabled = false;
   let unifiedMode = false;
+  let workspaceRoot = '';
+  let baseWorkspaceRoot = '';
   try {
     const res = await fetch('/api/health');
     if (res.ok) {
       const body = (await res.json()) as {
         diff_enabled?: boolean;
         unified_mode?: boolean;
+        workspace_root?: string;
+        base_workspace_root?: string;
       };
       diffEnabled = body.diff_enabled === true;
       unifiedMode = body.unified_mode === true;
+      workspaceRoot = body.workspace_root ?? '';
+      baseWorkspaceRoot = body.base_workspace_root ?? '';
     }
   } catch {
     /* keep default */
@@ -493,8 +514,10 @@ async function main(): Promise<void> {
   //     row-level treatment (green/red bar+tint on members). Only
   //     `head` and `base` are stored; `both` (regardless of body
   //     edits) is NOT marked — bars carry structural delta only.
-  //   - rollupByModule: per-module subtree counts so a collapsed
-  //     parent shows `+N -M` next to its label.
+  //   - rollupByModule: per-module LoC churn. Populated later, after
+  //     spanIndex is built, by walking `git diff --numstat` and
+  //     attributing each file's adds/dels to its owning module
+  //     (and ancestors). Stays empty in single-snapshot mode.
   //   - typeBarStateById: per-type rollup of member sides. Keyed by
   //     type fullPath (real types) or function-group synthetic id
   //     `${moduleId}::__fn_${bucket}`. Values: 'add' (only members
@@ -502,27 +525,31 @@ async function main(): Promise<void> {
   //     Drives the vertical bar on the SVG type-box.
   // All maps stay empty in single-snapshot mode → byte-identical
   // rendering to before this feature landed.
-  type Side = import('./data/schema.ts').Side;
+  // Only Base/Head are recorded here — `Both` entities are
+  // unchanged and don't need a side hint for rendering. Both maps
+  // narrow to `'base' | 'head'` accordingly so the type matches
+  // downstream consumers (tree.ts) without a cast.
+  type SidedSide = 'base' | 'head' | 'modified';
   type TypeBarState = 'add' | 'del' | 'split';
-  const sideByModule = new Map<string, Side>();
-  const sideByElementId = new Map<string, Side>();
+  type ModifiedKind = 'add' | 'del' | 'mixed';
+  const sideByModule = new Map<string, SidedSide>();
+  const sideByElementId = new Map<string, SidedSide>();
+  // For Modified entities, the change_kind drives bar colour
+  // (solid green / solid red / dual). Same id keyspace as
+  // sideByElementId; absent for non-Modified entities.
+  const changeKindByElementId = new Map<string, ModifiedKind>();
   const rollupByModule = new Map<string, { add: number; del: number }>();
   const typeBarStateById = new Map<string, TypeBarState>();
+  // `ancestorIds` is used by both the entity-side walk (below) and
+  // the LoC rollup populated after spanIndex is built (further
+  // down). Hoist it so both can share the same helper.
+  const ancestorIds = (modId: string): string[] => {
+    const parts = modId.split('::');
+    const acc: string[] = [];
+    for (let i = 1; i <= parts.length; i++) acc.push(parts.slice(0, i).join('::'));
+    return acc;
+  };
   if (unifiedMode) {
-    const bumpRollup = (id: string, side: Side): void => {
-      if (side !== 'base' && side !== 'head') return;
-      const cur = rollupByModule.get(id) ?? { add: 0, del: 0 };
-      if (side === 'head') cur.add++;
-      else cur.del++;
-      rollupByModule.set(id, cur);
-    };
-    const ancestorIds = (modId: string): string[] => {
-      // "crate::a::b" → ["crate", "crate::a", "crate::a::b"].
-      const parts = modId.split('::');
-      const acc: string[] = [];
-      for (let i = 1; i <= parts.length; i++) acc.push(parts.slice(0, i).join('::'));
-      return acc;
-    };
     const barStateFor = (adds: number, dels: number): TypeBarState | null =>
       adds > 0 && dels > 0
         ? 'split'
@@ -531,55 +558,73 @@ async function main(): Promise<void> {
           : dels > 0
             ? 'del'
             : null;
+    // A `Modified` entity is both an "add" (head version) and a
+    // "del" (base version) for type-rollup purposes — counting it
+    // as both naturally produces a 'split' bar state on its
+    // containing type, which is the right visual cue.
+    const tallyMember = (
+      side: SidedSide | undefined,
+      counts: { add: number; del: number },
+    ): void => {
+      if (side === 'head') counts.add++;
+      else if (side === 'base') counts.del++;
+      else if (side === 'modified') {
+        counts.add++;
+        counts.del++;
+      }
+    };
+    const isSidedSide = (s: unknown): s is SidedSide =>
+      s === 'base' || s === 'head' || s === 'modified';
     for (const [crateName, crate] of Object.entries(facts.crates)) {
-      if (crate.side === 'base' || crate.side === 'head') {
+      if (isSidedSide(crate.side)) {
         sideByModule.set(crateName, crate.side);
-        bumpRollup(crateName, crate.side);
       }
       for (const [modPath, mod] of Object.entries(crate.modules)) {
         // Stay consistent with the rendered tree: buildModuleTree
-        // drops every `::tests::` module, so the rollup walk must do
-        // the same. Otherwise the badge count can lead the user to a
-        // parent module whose cited changes live in a hidden tests
-        // child that the diagram never reveals.
+        // drops every `::tests::` module, so we apply the same
+        // filter to the side maps and the bar-state computation.
+        // (LoC rollup applies the same filter against the file's
+        // owning-module path further down.)
         if (hasTestsSegment(modPath)) continue;
         const modId = modPath === '' ? crateName : `${crateName}::${modPath}`;
-        if (mod.side === 'base' || mod.side === 'head') {
+        if (isSidedSide(mod.side)) {
           sideByModule.set(modId, mod.side);
-          for (const a of ancestorIds(modId)) bumpRollup(a, mod.side);
         }
         // Tally free functions by visibility bucket so the per-bucket
         // function-group pseudo-type carries the right rollup bar.
         // Buckets mirror `synthesiseFunctionGroups`.
         const fnBucketCounts = new Map<string, { add: number; del: number }>();
+        const recordChangeKind = (id: string, ck: string | undefined): void => {
+          if (ck === 'add' || ck === 'del' || ck === 'mixed') {
+            changeKindByElementId.set(id, ck);
+          }
+        };
         for (const t of mod.types ?? []) {
-          if (t.side === 'base' || t.side === 'head') {
+          if (isSidedSide(t.side)) {
             sideByElementId.set(t.full_path, t.side);
-            for (const a of ancestorIds(modId)) bumpRollup(a, t.side);
+            recordChangeKind(t.full_path, t.change_kind);
           }
           // Per-type bar state: count this type's own contribution
-          // plus every member that's either added or removed.
-          let tAdds = 0;
-          let tDels = 0;
-          if (t.side === 'head') tAdds++;
-          else if (t.side === 'base') tDels++;
+          // plus every member that's added / removed / modified.
+          const counts = { add: 0, del: 0 };
+          tallyMember(isSidedSide(t.side) ? t.side : undefined, counts);
           for (const f of t.fields ?? []) {
-            if (f.side === 'base' || f.side === 'head') {
-              sideByElementId.set(`${t.full_path}::${f.name}`, f.side);
-              for (const a of ancestorIds(modId)) bumpRollup(a, f.side);
-              if (f.side === 'head') tAdds++;
-              else tDels++;
+            if (isSidedSide(f.side)) {
+              const id = fieldId(t.full_path, f.name);
+              sideByElementId.set(id, f.side);
+              recordChangeKind(id, f.change_kind);
+              tallyMember(f.side, counts);
             }
           }
           for (const m of t.methods ?? []) {
-            if (m.side === 'base' || m.side === 'head') {
-              sideByElementId.set(`${t.full_path}::${m.name}`, m.side);
-              for (const a of ancestorIds(modId)) bumpRollup(a, m.side);
-              if (m.side === 'head') tAdds++;
-              else tDels++;
+            if (isSidedSide(m.side)) {
+              const id = methodId(t.full_path, m);
+              sideByElementId.set(id, m.side);
+              recordChangeKind(id, m.change_kind);
+              tallyMember(m.side, counts);
             }
           }
-          const st = barStateFor(tAdds, tDels);
+          const st = barStateFor(counts.add, counts.del);
           if (st !== null) typeBarStateById.set(t.full_path, st);
         }
         for (const fn of mod.functions ?? []) {
@@ -587,9 +632,9 @@ async function main(): Promise<void> {
             modPath === ''
               ? `${crateName}::${fn.name}`
               : `${crateName}::${modPath}::${fn.name}`;
-          if (fn.side === 'base' || fn.side === 'head') {
+          if (isSidedSide(fn.side)) {
             sideByElementId.set(fnId, fn.side);
-            for (const a of ancestorIds(modId)) bumpRollup(a, fn.side);
+            recordChangeKind(fnId, fn.change_kind);
           }
           // Per-bucket function-group rollup, keyed by the same
           // synthetic id `synthesiseFunctionGroups` produces.
@@ -597,8 +642,7 @@ async function main(): Promise<void> {
           const bucket = classifyVisibility(fn.visibility);
           const groupId = `${idForModule(crateName, modPath)}::__fn_${bucket}`;
           const cur = fnBucketCounts.get(groupId) ?? { add: 0, del: 0 };
-          if (fn.side === 'head') cur.add++;
-          else if (fn.side === 'base') cur.del++;
+          tallyMember(isSidedSide(fn.side) ? fn.side : undefined, cur);
           fnBucketCounts.set(groupId, cur);
         }
         for (const [groupId, c] of fnBucketCounts) {
@@ -637,12 +681,74 @@ async function main(): Promise<void> {
   // clicked line back to the element it defines. When the extractor
   // doesn't emit per-item spans, the forward index falls back to the
   // module file (line 1) so Cmd+click still opens the right file.
-  const spanIndex = buildSpanIndex(facts);
+  // Span index built from the RAW (pre-canonicalize) facts so cfg-gated
+  // member variants both land in `byFile` — the canonicalize layer dedups
+  // by full_path for layout uniqueness, but byFile needs to know every
+  // source-line range where any cfg branch's field/method lives.
+  const spanIndex = buildSpanIndex(rawFacts);
   // Directory tree built from every `mod.file` the extractor saw.
   // Powers the code panel's breadcrumb popup: clicking a path segment
   // lists the folders/files known at that depth without us needing a
   // backend filesystem-browse endpoint.
   const fileTree = buildFileTree(Array.from(spanIndex.moduleByFile.keys()));
+
+  // LoC rollup: in unified mode, fetch `git diff --numstat` from the
+  // server and attribute each changed file's adds/dels to the
+  // owning module (and propagate to its ancestors). The `+N -M` chip
+  // on each module row in the left tree then reads as lines —
+  // matching the GitHub PR convention — instead of entity counts.
+  if (unifiedMode) {
+    try {
+      const res = await fetch('/api/changed-files');
+      if (res.ok) {
+        const body = (await res.json()) as {
+          files?: { path: string; adds: number; dels: number }[];
+        };
+        // Build a repo-relative → moduleId lookup once.
+        // `spanIndex.moduleByFile` is keyed by absolute path under
+        // the head worktree (`workspace_root`). The numstat paths
+        // are repo-relative; we don't know the repo prefix on the
+        // client, but we DO know workspace_root from /api/health.
+        // Strategy: pre-compute a reverse map by stripping each
+        // workspace_root + '/' prefix from moduleByFile keys.
+        // (Falls back to the suffix-match below for paths inside
+        // the workspace that don't share the same canonical prefix.)
+        const workspacePrefix = workspaceRoot.endsWith('/')
+          ? workspaceRoot
+          : workspaceRoot + '/';
+        const moduleByRelPath = new Map<string, string>();
+        for (const [absPath, moduleId] of spanIndex.moduleByFile) {
+          if (absPath.startsWith(workspacePrefix)) {
+            moduleByRelPath.set(absPath.slice(workspacePrefix.length), moduleId);
+          }
+        }
+        for (const f of body.files ?? []) {
+          const moduleId = moduleByRelPath.get(f.path);
+          if (moduleId === undefined) continue;
+          if (hasTestsSegment(moduleId)) continue;
+          for (const a of ancestorIds(moduleId)) {
+            const cur = rollupByModule.get(a) ?? { add: 0, del: 0 };
+            cur.add += f.adds;
+            cur.del += f.dels;
+            rollupByModule.set(a, cur);
+          }
+        }
+      }
+    } catch {
+      /* leave rollups empty on fetch failure */
+    }
+  }
+  // Resolve an entity's union-diff side from the id-side lookup. For
+  // entities populated by the merge as Base or Head only, the map
+  // stores their side directly. Everything else (Both entities,
+  // single-snapshot mode) defaults to 'head' — which the side-aware
+  // span helpers transparently fall back to the Both span for, so
+  // `lookupSpan(id, kind, 'head')` works for unchanged entities too.
+  const sideOfId = (id: string, kind: ElementKind): Side => {
+    if (kind === 'module') return sideByModule.get(id) ?? 'head';
+    return sideByElementId.get(id) ?? 'head';
+  };
+
   // Diagram-side mirror of the code panel's selection. We keep only
   // the original element id — the renderer derives the type-box and
   // row matches from it (see `rowMatchesSelection` /
@@ -650,6 +756,11 @@ async function main(): Promise<void> {
   // struct field and a like-named method don't collide.
   let selectedElementId: string | null = null;
   let selectedElementKind: ElementKind | null = null;
+  // Split-on-change pairs (Base + Head) share an elementId by
+  // design — that id identifies the conceptual entity. To highlight
+  // ONLY the clicked half on the diagram, record the side too;
+  // One row per entity, one entity id per row — no `(id, side)`
+  // ambiguity. The pre-overhaul `selectedElementSide` is gone.
   const setDiagramSelection = (
     elementId: string | null,
     kind: ElementKind | null,
@@ -680,26 +791,54 @@ async function main(): Promise<void> {
   };
   const codePanel = createCodePanel({
     diffEnabled,
-    onLineNavigate: (file, line) => {
-      const hit = findElementAtLine(spanIndex, file, line);
+    // The panel needs both workspace roots to reconstruct absolute
+    // paths from `/api/diff`'s repo-relative `file_old`/`file_new`.
+    // Without the prefix the panel's `currentHeadFile` /
+    // `currentBaseFile` would be repo-relative strings, mismatched
+    // against `spanIndex.byFile*` keys (which are absolute paths
+    // from each entity's `span.file`).
+    headWorkspaceRoot: workspaceRoot,
+    baseWorkspaceRoot,
+    onLineNavigate: (file, coords) => {
+      // The diff code panel carries TWO coordinate systems per row
+      // (head/new line, base/old line). `del` rows have only base;
+      // `add` rows only head; context rows both. Each click resolves
+      // to the entity in the matching side's reverse index — so a
+      // click on a red `del` line at old=35 lands on the Base entity
+      // that lived at base line 35, NOT on whatever sibling happens
+      // to be at head line 35. This is the click-correctness fix
+      // that powered the split-on-change redesign.
+      // Use the file path the panel handed us per side — the panel
+      // knows the head workspace path AND the base workspace path
+      // for the diff it's showing, and they're DIFFERENT absolute
+      // paths even though they point at the same repo-relative
+      // file. Base-only entities live in the base worktree's
+      // spans; without using the base path here, their byFileBase
+      // entries (keyed by base path) are unreachable from a
+      // del-line click that fired from the panel's head path.
+      let hit = null;
+      if (coords.headLine !== undefined) {
+        const headFile = coords.headFile ?? file;
+        hit = findElementAtLine(spanIndex, headFile, coords.headLine, 'head');
+      }
+      if (hit === null && coords.baseLine !== undefined) {
+        const baseFile = coords.baseFile ?? file;
+        hit = findElementAtLine(spanIndex, baseFile, coords.baseLine, 'base');
+      }
       if (hit === null) return;
       const { elementId, kind } = hit;
-      // Repaint the panel's highlight to the clicked element's full
-      // span so the user sees what got selected by clicking on code.
-      const span = lookupSpan(spanIndex, elementId, kind);
-      if (span !== null) {
-        codePanel.setHighlight(span.start_line, span.end_line);
+      const rec = lookupSpan(spanIndex, elementId, kind);
+      if (rec !== null) {
+        codePanel.setHighlight(rec.span, rec.prev_span);
       }
       setDiagramSelection(elementId, kind);
-      // navigateToElement handles types, methods/fields, AND free
-      // functions in one path — it finds whichever row matches in
-      // the current layout. Disambiguates field vs method via kind.
       currentCtx?.navigateToElement(elementId, kind);
     },
     onClose: () => {
       setDiagramSelection(null, null);
       updateCodeIndicator(false);
     },
+
     fileTree,
     // Breadcrumb popup → user picked a file. Route through openCodeFor
     // with kind='module' when we know the module so the diagram side
@@ -714,24 +853,15 @@ async function main(): Promise<void> {
     },
   });
   const openCodeFor = (id: string, kind: ElementKind): void => {
-    const span = lookupSpan(spanIndex, id, kind);
-    if (span === null) return;
+    const rec = lookupSpan(spanIndex, id, kind);
+    if (rec === null) return;
     setDiagramSelection(id, kind);
-    // In unified-diff mode the entity's side determines how the
-    // code panel resolves its source (head fs vs `git show <base>`)
-    // and how it interprets the entity span (base line numbers vs
-    // head line numbers) when positioning the focus frame in the
-    // diff. Look up side for ALL kinds, not just modules — a
-    // base-only type/method/field needs the same treatment.
-    const side =
-      kind === 'module'
-        ? sideByModule.get(id)
-        : sideByElementId.get(id);
     codePanel.show({
-      file: span.file,
-      startLine: span.start_line,
-      endLine: span.end_line,
-      side,
+      file: rec.span.file,
+      startLine: rec.span.start_line,
+      endLine: rec.span.end_line,
+      ...(rec.prev_span !== undefined ? { prev_span: rec.prev_span } : {}),
+      ...(rec.side === 'base' ? { loadFromBase: true } : {}),
     });
     updateCodeIndicator(true);
   };
@@ -741,10 +871,15 @@ async function main(): Promise<void> {
    *  pop it back up. Tour playback uses this so a step about a method
    *  doesn't force the source onto the user. */
   const selectAndSyncCode = (id: string, kind: ElementKind): void => {
-    const span = lookupSpan(spanIndex, id, kind);
+    const rec = lookupSpan(spanIndex, id, kind);
     setDiagramSelection(id, kind);
-    if (span !== null && codePanel.isOpen()) {
-      codePanel.show({ file: span.file, startLine: span.start_line, endLine: span.end_line });
+    if (rec !== null && codePanel.isOpen()) {
+      codePanel.show({
+        file: rec.span.file,
+        startLine: rec.span.start_line,
+        endLine: rec.span.end_line,
+        ...(rec.prev_span !== undefined ? { prev_span: rec.prev_span } : {}),
+      });
     }
   };
   void selectAndSyncCode; // consumer wires in shortly via the tour player
@@ -1219,6 +1354,7 @@ async function main(): Promise<void> {
         selectedElementId,
         selectedElementKind,
         sideByElementId,
+        changeKindByElementId,
         typeBarStateById,
         onToggle: (id) => {
           // Anchor the clicked item in both axes: expansion can change a
@@ -2042,7 +2178,7 @@ function findCallArrow(
   return null;
 }
 
-async function tryLoadFacts(): Promise<Facts | null> {
+async function tryLoadFacts(): Promise<FactsBundle | null> {
   try {
     return await loadFacts(FACTS_URL);
   } catch (err) {

@@ -36,6 +36,52 @@ interface PersistedState {
   readonly w: number;
 }
 
+/** Walk `items` in order and return each maximal run of consecutive
+ *  entries where `pred(item)` is true, as inclusive `[start, end]`
+ *  index pairs. Used by the focus-frame renderer so an entity whose
+ *  lines are split across diff hunks (with collapse markers or
+ *  unrelated rows between) gets one frame per contiguous run,
+ *  instead of one giant frame stretching across the gaps. */
+export function contiguousRuns<T>(
+  items: readonly T[],
+  pred: (item: T) => boolean,
+): [number, number][] {
+  const out: [number, number][] = [];
+  let start = -1;
+  for (let i = 0; i < items.length; i++) {
+    if (pred(items[i]!)) {
+      if (start === -1) start = i;
+    } else if (start !== -1) {
+      out.push([start, i - 1]);
+      start = -1;
+    }
+  }
+  if (start !== -1) out.push([start, items.length - 1]);
+  return out;
+}
+
+/** Clamp the auto-expand of a collapse marker around the focused
+ *  entity. `gapStart`/`gapEnd` describe the collapse marker's
+ *  half-open `[gs, ge)` range; `entityStart`/`entityEnd` are inclusive
+ *  head-coord lines. Returns the inclusive window `[wStart, wEnd]`
+ *  that should be revealed as context, leaving the rest of the gap
+ *  collapsed above and below. Without this clamp, an entity sitting
+ *  inside a trailing collapse marker (e.g. an unchanged function
+ *  past the file's last diff hunk) would auto-expand the entire
+ *  gap — pushing the actual hunks far off-screen so the user sees
+ *  no green/red anywhere in the viewport. */
+export function windowAroundEntity(
+  gapStart: number,
+  gapEnd: number,
+  entityStart: number,
+  entityEnd: number,
+  pad: number,
+): { wStart: number; wEnd: number } {
+  const wStart = Math.max(gapStart, entityStart - pad);
+  const wEnd = Math.min(gapEnd - 1, entityEnd + pad);
+  return { wStart, wEnd };
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -47,22 +93,55 @@ export interface CodePanelShowArgs {
   readonly file: string;
   readonly startLine: number;
   readonly endLine: number;
-  /** Union-diff side of the entity being shown. When `'base'`, the
-   *  panel fetches the file from the base snapshot via
-   *  `/api/source?side=base` (so removed modules / types can still
-   *  be inspected). Default behaviour is head-side reads. */
-  readonly side?: 'base' | 'head' | 'both';
+  /** Base location for `Side::Modified` entities. When set, the
+   *  focus frame and entity-row tagging extend across the union
+   *  of `(file, startLine..endLine)` and `(prev_span.file,
+   *  prev_span.start_line..end_line)` — that's how the dual red+
+   *  green hunk rows of a modified function end up inside one
+   *  contiguous purple frame. */
+  readonly prev_span?: { file: string; start_line: number; end_line: number };
+  /** Which snapshot to load `file` from. Defaults to head.
+   *  Set to `'base'` only for Side::Base (deleted) entities whose
+   *  canonical location lives in the base worktree. */
+  readonly loadFromBase?: boolean;
+}
+
+/** Coordinate keys for a clicked diff row. Every row carries the
+ *  side(s) of its visible line number(s): `add` lines have only
+ *  `headLine`, `del` only `baseLine`, context rows both. The host
+ *  uses the present keys to dispatch the entity lookup to the
+ *  matching coord-space index — the click-correctness fix that
+ *  makes red-line clicks land on Base entities.
+ *
+ *  In diff mode the panel also carries BOTH absolute file paths
+ *  (head workspace path and base workspace path, as returned by
+ *  `/api/diff`'s `file_new`/`file_old`). Base-side spanIndex
+ *  lookups must use the base path — a Base-only entity's span.file
+ *  lives in the BASE worktree, not the panel's current head path. */
+export interface CodePanelLineCoords {
+  readonly headLine?: number;
+  readonly baseLine?: number;
+  readonly headFile?: string;
+  readonly baseFile?: string;
 }
 
 export interface CodePanelOptions {
   /** Fired when the user clicks a line in the code body. The host
    *  resolves which element defines that line and navigates the
    *  diagram. Skipped if the user is just selecting text. */
-  readonly onLineNavigate: (file: string, line: number) => void;
+  readonly onLineNavigate: (file: string, coords: CodePanelLineCoords) => void;
   /** When true, the panel tries `/api/diff` before `/api/source` and
    *  paints additions/deletions with coloured backgrounds. Set from
    *  `/api/health`'s `diff_enabled` at startup. */
   readonly diffEnabled?: boolean;
+  /** Absolute path to the head snapshot's workspace root. Used to
+   *  reconstruct absolute file paths from `/api/diff`'s repo-
+   *  relative `file_new`, so click-to-navigate keys (passed to the
+   *  host's `byFileHead` reverse index) match the absolute paths the
+   *  index uses. */
+  readonly headWorkspaceRoot?: string;
+  /** Mirror for the base side. Present only in union-diff mode. */
+  readonly baseWorkspaceRoot?: string;
   /** Fired when the user closes the panel (X button or hide() call
    *  from outside). The host uses this to clear the diagram's
    *  selection so the two views stay in sync. */
@@ -90,8 +169,13 @@ export interface CodePanel {
   isOpen: () => boolean;
   /** Replace the highlighted line range without re-fetching the file.
    *  Used by the host when a click inside the panel resolves to a new
-   *  element so the visual selection follows the cursor. */
-  setHighlight: (startLine: number, endLine: number) => void;
+   *  element so the visual selection follows the cursor. The frame
+   *  spans the union of `span` and the optional `prev_span` (the
+   *  latter set only for Modified entities). */
+  setHighlight: (
+    span: { start_line: number; end_line: number },
+    prev_span?: { start_line: number; end_line: number },
+  ) => void;
   /** Current on-screen rect of the panel (window coords), or null when
    *  hidden. Lets the tour bubble avoid landing on top of the panel
    *  (it floats above all elements regardless of layout). */
@@ -112,6 +196,15 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
 
   let currentFile: string | null = null;
   let currentFileText: string | null = null;
+  // In diff mode the panel knows BOTH absolute paths for the file
+  // it's currently showing — `file_new` (head workspace) and
+  // `file_old` (base workspace), both supplied by `/api/diff`. The
+  // click handler emits the head path when a row has a head coord
+  // and the base path when it has a base coord, so the host can
+  // dispatch each side's `findElementAtLine` against the right
+  // `byFile*` map. Source mode leaves these null.
+  let currentHeadFile: string | null = null;
+  let currentBaseFile: string | null = null;
   let inflight: AbortController | null = null;
 
   // Persisted width. Clamped on load so a smaller window after the
@@ -177,32 +270,60 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     hide();
   });
 
-  // Click on a line in the code body → fire onLineNavigate. Skip when
-  // the user is dragging out a text selection (don't hijack copy).
+  // Click on a line in the code body → fire onLineNavigate with the
+  // coord side(s) carried by this row. Skip when the user is
+  // dragging out a text selection (don't hijack copy).
   bodyEl.addEventListener('click', (e) => {
     const sel = window.getSelection();
     if (sel !== null && sel.toString().length > 0) return;
     const lineEl = (e.target as HTMLElement).closest<HTMLElement>('.code-panel-line');
     if (lineEl === null || currentFile === null) return;
-    const line = Number(lineEl.dataset.line);
-    if (Number.isFinite(line) && line > 0) {
-      opts.onLineNavigate(currentFile, line);
+    // Diff rows tag their gutter numbers via `data-line-head` and
+    // `data-line-base`. Source-mode rows (no diff) carry a single
+    // `data-line` which is head-coord by definition.
+    const headRaw = lineEl.dataset.lineHead ?? lineEl.dataset.line;
+    const baseRaw = lineEl.dataset.lineBase;
+    const headLine = headRaw !== undefined ? Number(headRaw) : NaN;
+    const baseLine = baseRaw !== undefined ? Number(baseRaw) : NaN;
+    const coords: CodePanelLineCoords = {};
+    if (Number.isFinite(headLine) && headLine > 0) {
+      Object.assign(coords, { headLine });
+      // Head-side lookups use the head path. In source mode we
+      // don't have a separate base path; the host will fall back to
+      // `currentFile` for both sides.
+      if (currentHeadFile !== null) Object.assign(coords, { headFile: currentHeadFile });
     }
+    if (Number.isFinite(baseLine) && baseLine > 0) {
+      Object.assign(coords, { baseLine });
+      // Base-side lookups MUST use the base path. A Base-only
+      // entity's `span.file` lives in the base worktree, not the
+      // panel's head path — using the wrong path silently misses.
+      if (currentBaseFile !== null) Object.assign(coords, { baseFile: currentBaseFile });
+    }
+    if (coords.headLine === undefined && coords.baseLine === undefined) return;
+    opts.onLineNavigate(currentFile, coords);
   });
 
   // Focus frame — a purple dashed overlay that wraps the rows of
-  // the clicked entity. Same visual language as the SVG type-box
-  // selection ring; composes cleanly with diff-mode row backgrounds
-  // because it's a separate absolutely-positioned layer instead of
-  // a per-row background. Call after every body re-render or
-  // .entity-row class change.
+  // the clicked entity. With line folding removed, the panel is a
+  // flat scrollable view, so the entity-rows form a single
+  // contiguous block in DOM order — one frame, from the first
+  // entity-row to the last.
   const drawFocusFrame = (): void => {
-    const old = bodyEl.querySelector<HTMLElement>('.code-panel-entity-frame');
-    if (old !== null) old.remove();
-    const rows = bodyEl.querySelectorAll<HTMLElement>('.code-panel-line.entity-row');
-    if (rows.length === 0) return;
-    const first = rows[0]!;
-    const last = rows[rows.length - 1]!;
+    bodyEl.querySelectorAll('.code-panel-entity-frame').forEach((el) => el.remove());
+    const children = Array.from(bodyEl.children) as HTMLElement[];
+    let first: HTMLElement | null = null;
+    let last: HTMLElement | null = null;
+    for (const ch of children) {
+      if (
+        ch.classList.contains('code-panel-line') &&
+        ch.classList.contains('entity-row')
+      ) {
+        if (first === null) first = ch;
+        last = ch;
+      }
+    }
+    if (first === null || last === null) return;
     const top = first.offsetTop - 2;
     const height = last.offsetTop + last.offsetHeight - first.offsetTop + 4;
     const frame = document.createElement('div');
@@ -333,69 +454,70 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
   // accent + the row is the scroll target.
   const renderDiff = (
     diff: DiffPayload,
-    entityStart?: number,
-    entityEnd?: number,
-    entityIsBaseSide?: boolean,
-    expandHandler?: (
-      marker: HTMLElement,
-      gapStart: number,
-      gapEnd: number,
-    ) => void,
+    entityStart: number,
+    entityEnd: number,
+    entityIsBaseSide: boolean,
+    sourceLines: readonly string[] | null,
+    totalHeadLines: number | undefined,
   ): void => {
+    // FLAT rendering — no collapse markers, no folding. Every line
+    // of the head source file is emitted as a `code-panel-line`,
+    // with hunk lines (red `del` / green `add`) interleaved at
+    // their head-line positions. Entity-row tagging follows the
+    // same rule as `setHighlight` so the focus frame matches.
     const grammar = Prism.languages.rust;
     const highlightOne = (text: string): string =>
       grammar !== undefined ? Prism.highlight(text, grammar, 'rust') : escapeHtml(text);
     const frag = document.createDocumentFragment();
-    const mkCollapse = (n: number, gapStart: number, gapEnd: number, suffix: string): HTMLElement => {
-      const c = document.createElement('div');
-      c.className = 'code-panel-collapse';
-      c.dataset.gapStart = String(gapStart);
-      c.dataset.gapEnd = String(gapEnd);
-      c.title = 'Click to expand';
-      // `canonicalText` stays stable across loading/error transitions
-      // so the expand handler can always reset the marker to its
-      // original phrasing — otherwise an "(failed to load — click to
-      // retry)" suffix would accumulate on every retry.
-      const canonical = `… ${n} unchanged line${n === 1 ? '' : 's'}${suffix} — click to expand …`;
-      c.dataset.canonicalText = canonical;
-      c.textContent = canonical;
-      if (expandHandler !== undefined) {
-        c.addEventListener('click', () => {
-          expandHandler(c, gapStart, gapEnd);
-        });
+
+    const tagEntity = (
+      lineEl: HTMLElement,
+      headLine: number | undefined,
+      baseLine: number | undefined,
+    ): void => {
+      const ref = entityIsBaseSide ? baseLine : headLine;
+      if (ref !== undefined && ref >= entityStart && ref <= entityEnd) {
+        lineEl.classList.add('entity-row');
       }
-      return c;
     };
-    for (let hi = 0; hi < diff.hunks.length; hi++) {
-      const hunk = diff.hunks[hi]!;
-      // Collapse marker between non-adjacent hunks. The first hunk
-      // also gets one if it doesn't start at line 1.
-      const prev = hi === 0 ? null : diff.hunks[hi - 1]!;
-      const gapStart = prev !== null ? prev.new_start + prev.new_count : 1;
-      const gapEnd = hunk.new_start;
-      if (gapEnd > gapStart) {
-        frag.appendChild(mkCollapse(gapEnd - gapStart, gapStart, gapEnd, ''));
-      } else if (hi === 0 && hunk.new_start > 1) {
-        frag.appendChild(mkCollapse(hunk.new_start - 1, 1, hunk.new_start, ' above'));
+
+    const emitContextFromSource = (headLine: number): void => {
+      const text = sourceLines !== null ? sourceLines[headLine - 1] ?? '' : '';
+      const lineEl = document.createElement('div');
+      lineEl.className = 'code-panel-line';
+      lineEl.dataset.kind = 'context';
+      lineEl.dataset.lineHead = String(headLine);
+      tagEntity(lineEl, headLine, undefined);
+      const oldGutter = document.createElement('span');
+      oldGutter.className = 'code-panel-gutter old';
+      oldGutter.textContent = String(headLine);
+      const newGutter = document.createElement('span');
+      newGutter.className = 'code-panel-gutter new';
+      newGutter.textContent = String(headLine);
+      const code = document.createElement('span');
+      code.className = 'code-panel-text';
+      code.innerHTML = highlightOne(text);
+      lineEl.appendChild(oldGutter);
+      lineEl.appendChild(newGutter);
+      lineEl.appendChild(code);
+      frag.appendChild(lineEl);
+    };
+
+    let cursor = 1; // next head-side line to emit as context
+    for (const hunk of diff.hunks) {
+      // Emit context lines between previous cursor and this hunk.
+      while (cursor < hunk.new_start && cursor <= (totalHeadLines ?? Infinity)) {
+        emitContextFromSource(cursor);
+        cursor++;
       }
+      // Emit hunk lines verbatim — preserving add/del/context kinds.
       for (const line of hunk.lines) {
         const lineEl = document.createElement('div');
         lineEl.className = 'code-panel-line';
         lineEl.dataset.kind = line.kind;
-        // dataset.line drives click-to-navigate: prefer the head
-        // (new) number so a clicked diff line jumps to the current
-        // code; fall back to old for pure deletions.
-        const navLine = line.new ?? line.old ?? 0;
-        if (navLine > 0) lineEl.dataset.line = String(navLine);
-        // Mark this row as belonging to the clicked entity. Match
-        // by the line side the entity lives on (head for normal/
-        // added/modified, base for removed entities).
-        if (entityStart !== undefined && entityEnd !== undefined) {
-          const ref = entityIsBaseSide ? line.old : line.new;
-          if (ref !== undefined && ref >= entityStart && ref <= entityEnd) {
-            lineEl.classList.add('entity-row');
-          }
-        }
+        if (line.new !== undefined) lineEl.dataset.lineHead = String(line.new);
+        if (line.old !== undefined) lineEl.dataset.lineBase = String(line.old);
+        tagEntity(lineEl, line.new, line.old);
         const oldGutter = document.createElement('span');
         oldGutter.className = 'code-panel-gutter old';
         oldGutter.textContent = line.old !== undefined ? String(line.old) : '';
@@ -410,13 +532,20 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
         lineEl.appendChild(code);
         frag.appendChild(lineEl);
       }
+      cursor = hunk.new_start + hunk.new_count;
+    }
+    // Trailing context lines past the last hunk.
+    if (totalHeadLines !== undefined) {
+      while (cursor <= totalHeadLines) {
+        emitContextFromSource(cursor);
+        cursor++;
+      }
     }
     bodyEl.replaceChildren(frag);
-    // Scroll-to-entity: pin the first row of the entity ~25% from
-    // the top, mirroring source-mode behaviour. Fall back to the
-    // first diff line if the entity isn't in view (e.g. the diff is
-    // entirely outside its span — shouldn't happen for changed
-    // entities but be defensive).
+
+    // Scroll-to-entity: pin the first entity-row ~25% from the top.
+    // Fall back to the first hunk line if the entity isn't visible
+    // (rare; defensive only).
     const target =
       bodyEl.querySelector<HTMLElement>('.code-panel-line.entity-row') ??
       bodyEl.querySelector<HTMLElement>('.code-panel-line[data-kind="add"], .code-panel-line[data-kind="del"]');
@@ -462,91 +591,59 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
         const dr = await fetchDiff(args.file, signal);
         if (signal.aborted) return;
         if (dr.ok) {
-          // Also fetch the head source so the user can expand
-          // collapse markers and see the unchanged context lines
-          // inline. We do this in parallel (already past the diff
-          // fetch) and cache it; the expand handler reads it.
-          let sourceLines: string[] | null = null;
-          const ensureSource = async (): Promise<string[] | null> => {
-            if (sourceLines !== null) return sourceLines;
-            try {
-              const text = await fetchSource(args.file, signal);
-              if (signal.aborted) return null;
-              sourceLines = text.split('\n');
-              return sourceLines;
-            } catch {
-              return null;
-            }
-          };
-          const grammar = Prism.languages.rust;
-          const highlightOne = (text: string): string =>
-            grammar !== undefined
-              ? Prism.highlight(text, grammar, 'rust')
-              : escapeHtml(text);
-          const expand = async (
-            marker: HTMLElement,
-            gapStart: number,
-            gapEnd: number,
-          ): Promise<void> => {
-            // Render visible feedback so the click never feels
-            // silently swallowed. We read the canonical text from
-            // the marker's data attr (not its current textContent)
-            // so retries reset to the original phrasing instead of
-            // accumulating "(failed to load — click to retry)"
-            // suffixes on every click.
-            const canonical = marker.dataset.canonicalText ?? marker.textContent ?? '';
-            marker.textContent = `… loading ${gapEnd - gapStart} lines …`;
-            let lines: string[] | null = null;
-            try {
-              lines = await ensureSource();
-            } catch (err) {
-              console.error('[code-panel] expand fetch threw', err);
-            }
-            if (lines === null) {
-              marker.textContent = `${canonical} (failed to load — click to retry)`;
-              return;
-            }
-            const frag = document.createDocumentFragment();
-            // Source lines are 0-indexed; gap line numbers are
-            // 1-indexed head-side. Slice the inclusive range.
-            for (let n = gapStart; n < gapEnd; n++) {
-              const text = lines[n - 1] ?? '';
-              const lineEl = document.createElement('div');
-              lineEl.className = 'code-panel-line';
-              lineEl.dataset.kind = 'context';
-              lineEl.dataset.line = String(n);
-              const oldGutter = document.createElement('span');
-              oldGutter.className = 'code-panel-gutter old';
-              oldGutter.textContent = String(n);
-              const newGutter = document.createElement('span');
-              newGutter.className = 'code-panel-gutter new';
-              newGutter.textContent = String(n);
-              const code = document.createElement('span');
-              code.className = 'code-panel-text';
-              code.innerHTML = highlightOne(text);
-              lineEl.appendChild(oldGutter);
-              lineEl.appendChild(newGutter);
-              lineEl.appendChild(code);
-              frag.appendChild(lineEl);
-            }
-            marker.replaceWith(frag);
-          };
           currentFile = args.file;
-          currentFileText = null; // invalidate source cache
+          currentFileText = null;
+          const headRoot = opts.headWorkspaceRoot ?? '';
+          const baseRoot = opts.baseWorkspaceRoot ?? '';
+          const absHead = (rel: string | null | undefined): string | null =>
+            rel === null || rel === undefined
+              ? null
+              : headRoot === ''
+                ? rel
+                : `${headRoot.replace(/\/$/, '')}/${rel}`;
+          const absBase = (rel: string | null | undefined): string | null =>
+            rel === null || rel === undefined
+              ? null
+              : baseRoot === ''
+                ? rel
+                : `${baseRoot.replace(/\/$/, '')}/${rel}`;
+          currentHeadFile = absHead(dr.diff.file_new) ?? args.file;
+          currentBaseFile = absBase(dr.diff.file_old);
+          // Fetch the full head source so renderDiff can interleave
+          // every unchanged context line inline (no folding). On
+          // failure, fall back to rendering hunks only.
+          let sourceLines: string[] | null = null;
+          try {
+            const text = await fetchSource(args.file, signal);
+            if (signal.aborted) return;
+            sourceLines = text.split('\n');
+          } catch {
+            sourceLines = null;
+          }
+          const totalHeadLines = sourceLines !== null ? sourceLines.length : undefined;
           renderDiff(
             dr.diff,
             args.startLine,
             args.endLine,
-            args.side === 'base',
-            expand,
+            args.loadFromBase === true,
+            sourceLines,
+            totalHeadLines,
           );
           return;
         }
       }
-      const text = await fetchSource(args.file, signal, args.side);
+      const text = await fetchSource(
+        args.file,
+        signal,
+        args.loadFromBase === true ? 'base' : undefined,
+      );
       if (signal.aborted) return;
       currentFile = args.file;
       currentFileText = text;
+      // Source mode → no separate base/head paths; clicks fall back
+      // to currentFile for either side via the host's resolver.
+      currentHeadFile = null;
+      currentBaseFile = null;
       render(text, args.startLine, args.endLine);
     };
 
@@ -752,14 +849,33 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     }
   };
 
-  const setHighlight = (startLine: number, endLine: number): void => {
-    // Toggle the entity-row class to update which lines belong to
-    // the focused entity, then redraw the wrapping purple dashed
-    // frame to match the new bounds.
+  const setHighlight = (
+    span: { start_line: number; end_line: number },
+    prev_span?: { start_line: number; end_line: number },
+  ): void => {
+    // Tag a row `entity-row` when it falls inside `span` (head coords)
+    // OR inside `prev_span` (base coords, set only for Modified
+    // entities). Source-mode rows still carry the legacy single
+    // `dataset.line` which we treat as the head coord. The union
+    // covers both base and head halves of a modified function so
+    // the contiguous purple frame wraps the dual red+green hunk
+    // block in one rectangle.
     const lines = bodyEl.querySelectorAll<HTMLElement>('.code-panel-line');
     lines.forEach((el) => {
-      const n = Number(el.dataset.line);
-      if (Number.isFinite(n) && n >= startLine && n <= endLine) {
+      const headRaw = el.dataset.lineHead ?? el.dataset.line;
+      const baseRaw = el.dataset.lineBase;
+      const headN = headRaw !== undefined ? Number(headRaw) : NaN;
+      const baseN = baseRaw !== undefined ? Number(baseRaw) : NaN;
+      const inHead =
+        Number.isFinite(headN) &&
+        headN >= span.start_line &&
+        headN <= span.end_line;
+      const inBase =
+        prev_span !== undefined &&
+        Number.isFinite(baseN) &&
+        baseN >= prev_span.start_line &&
+        baseN <= prev_span.end_line;
+      if (inHead || inBase) {
         el.classList.add('entity-row');
       } else {
         el.classList.remove('entity-row');

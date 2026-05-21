@@ -279,11 +279,14 @@
          is never covered. */
       .code-panel-entity-frame {
         position: absolute;
-        /* Sit between the diff bar (4px border-left) and the line
-           numbers — far enough right that the bar reads as part of
-           the line, not part of the frame, and close enough to the
-           gutter that the frame visually "hugs" the entity. */
-        left: 10px;
+        /* Frame's left edge sits between the line-number gutters and
+           the code text. Computed from the row layout:
+             4px diff bar + 8px gap + 2.3em old gutter
+             + 8px gap + 2.3em new gutter + 8px gap = 28px + 4.6em.
+           Keeps the gutter columns out of the frame entirely so the
+           focus ring wraps the code, not the line numbers. Right edge
+           keeps 8px padding from the panel edge. */
+        left: calc(4.6em + 20px);
         right: 8px;
         border: 2px dashed #a855f7;
         border-radius: 4px;
@@ -495,6 +498,43 @@
       }
       g.field-row-g[data-side='head'] rect.row-side-bar {
         fill: #56C271;
+      }
+      /* Modified rows come in three flavours. The bar colour
+         encodes WHAT KIND of change happened inside the body:
+           - modified-add  → solid green bar (additions only)
+           - modified-del  → solid red bar (deletions only)
+           - modified-mixed → top half red + bottom half green
+         The text colour stays default for all three — only fully-
+         added rows (data-side='head') get green text, and fully-
+         deleted (data-side='base') get the strikethrough red. */
+      g.field-row-g[data-side='modified-add'] rect.row-side-bar {
+        fill: #56C271;
+      }
+      g.field-row-g[data-side='modified-add'] rect.row-side-bg {
+        fill: rgba(86, 194, 113, 0.15);
+      }
+      g.field-row-g[data-side='modified-del'] rect.row-side-bar {
+        fill: #FF6B6B;
+      }
+      g.field-row-g[data-side='modified-del'] rect.row-side-bg {
+        fill: rgba(255, 107, 107, 0.15);
+      }
+      /* Green top + red bottom, matching the type-box split bar.
+         (Row bar drawing direction is top→bottom; green-top reads
+         as "the head version is here", red-bottom as "removed
+         from base".) */
+      g.field-row-g[data-side='modified-mixed'] rect.row-side-bar {
+        fill: #56C271;
+      }
+      g.field-row-g[data-side='modified-mixed'] rect.row-side-bar-bottom {
+        fill: #FF6B6B;
+      }
+      g.field-row-g[data-side='modified-mixed'] rect.row-side-bg {
+        fill: rgba(99, 102, 241, 0.08);
+      }
+      /* Bottom-half rect visible only for modified-mixed. */
+      g.field-row-g:not([data-side='modified-mixed']) rect.row-side-bar-bottom {
+        display: none;
       }
       g.field-row-g:not([data-side]) rect.row-side-bar,
       g.field-row-g:not([data-side]) rect.row-side-bg {

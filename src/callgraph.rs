@@ -501,6 +501,7 @@ impl BodyCallVisitor<'_> {
                 origin: origin.clone(),
                 callsite_start_line,
                 callsite_end_line,
+                side: crate::model::Side::default(),
             });
         }
     }
@@ -747,6 +748,7 @@ mod tests {
     fn fn_facts(name: &str) -> FnFacts {
         FnFacts {
             name: name.to_string(),
+            impl_trait: None,
             visibility: "pub".to_string(),
             self_kind: SelfKind::None,
             is_unsafe: false,
@@ -762,8 +764,9 @@ mod tests {
             unsafe_blocks: 0,
             doc_first_line: None,
             span: None,
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
-            body_modified: false,
         }
     }
 
@@ -787,8 +790,9 @@ mod tests {
             unsafe_blocks: 0,
             doc_first_line: None,
             span: None,
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
-            body_modified: false,
         }
     }
 

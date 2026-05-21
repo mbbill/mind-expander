@@ -36,16 +36,36 @@ export type Ownership =
   | 'other';
 
 /** Which snapshot an entity belongs to in union-diff view.
+ *  - `base` = present only in base (deleted in head).
+ *  - `head` = present only in head (added) — or single-snapshot mode.
+ *  - `both` = present in both, body unchanged.
+ *  - `modified` = present in both, body changed. The entity carries
+ *    `prev_span` with the base location alongside the canonical
+ *    head `span`.
  *  Defaults to `'head'` for single-snapshot output (the server omits
  *  the field in non-diff mode so the viewer treats everything as
  *  head; absent === 'head' in TypeScript consumers). */
-export type Side = 'base' | 'head' | 'both';
+export type Side = 'base' | 'head' | 'both' | 'modified';
+
+/** Sub-classification of a `Side::Modified` entity. Drives the
+ *  diagram bar's colour:
+ *   - 'add'   → solid green bar  (body has `+` lines only)
+ *   - 'del'   → solid red bar    (body has `−` lines only)
+ *   - 'mixed' → dual red+green bar (body has both)
+ *  Absent when `side !== 'modified'`. */
+export type ChangeKind = 'add' | 'del' | 'mixed';
 
 export interface FieldFacts {
   readonly name: string;
   readonly ty_text: string;
   readonly ownership: Ownership;
   readonly span?: Span;
+  /** Base location for `side === 'modified'` fields. Carries the
+   *  field's span in the base snapshot so the code panel can
+   *  compute the union frame across base+head. Absent for all
+   *  other sides. */
+  readonly prev_span?: Span;
+  readonly change_kind?: ChangeKind;
   readonly side?: Side;
 }
 
@@ -63,12 +83,19 @@ export interface TypeFacts {
    *  the viewer treats the type as having no method visualisation. */
   readonly methods?: readonly FnFacts[];
   readonly span?: Span;
+  /** Base location for `side === 'modified'` types. */
+  readonly prev_span?: Span;
+  readonly change_kind?: ChangeKind;
   readonly side?: Side;
-  readonly body_modified?: boolean;
 }
 
 export interface FnFacts {
   readonly name: string;
+  /** For methods inside `impl Trait for Type`: trait name (last path
+   *  segment). `undefined` for inherent methods and free functions.
+   *  Disambiguates same-name methods across multiple impl blocks
+   *  (e.g. two `from`s from `impl From<A> for X` + `impl From<B> for X`). */
+  readonly impl_trait?: string;
   /** Raw extractor visibility token: `"pub"`, `"pub(crate)"`, …, `"priv"`,
    *  or sentinels like `"<orphan-impl>"` that the viewer filters out. */
   readonly visibility: string;
@@ -87,8 +114,10 @@ export interface FnFacts {
   readonly is_const?: boolean;
   readonly is_async?: boolean;
   readonly span?: Span;
+  /** Base location for `side === 'modified'` functions/methods. */
+  readonly prev_span?: Span;
+  readonly change_kind?: ChangeKind;
   readonly side?: Side;
-  readonly body_modified?: boolean;
 }
 
 /**
@@ -162,6 +191,10 @@ export interface Edge {
    * For `fn_param`/`fn_return`: `fn {fnName} param {paramName}` / `fn {fnName} return`.
    */
   readonly origin: string;
+  /** Union-diff side: `'head'` when the edge exists only in head,
+   *  `'base'` only in base, `'both'` when matched on both sides.
+   *  `'head'` in single-snapshot mode. */
+  readonly side?: Side;
 }
 
 export type CallKind = 'function' | 'associated_function' | 'method';
@@ -174,6 +207,8 @@ export interface CallEdge {
   readonly kind: CallKind;
   readonly resolution: CallResolution;
   readonly origin: string;
+  /** Union-diff side; same semantics as `Edge.side`. */
+  readonly side?: Side;
 }
 
 export interface Facts {

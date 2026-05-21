@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 
 /// Which snapshot an entity belongs to in the union-diff view.
 /// `Head` is the default for single-snapshot extraction; the union
-/// pipeline (`unified_facts::build_unified`) replaces it with `Base`
-/// or `Both` for merged facts. Default = Head so single-snapshot
-/// construction sites don't need to mention it.
+/// pipeline (`unified_facts::build_unified`) replaces it with `Base`,
+/// `Both`, or `Modified` for merged facts. Default = Head so
+/// single-snapshot construction sites don't need to mention it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
@@ -16,9 +16,29 @@ pub enum Side {
     Base,
     /// Present only in head (added) — or single-snapshot mode.
     Head,
-    /// Present in both snapshots. Renderer is neutral unless
-    /// `body_modified` is set, in which case orange.
+    /// Present in both snapshots AND truly identical (no diff hunk
+    /// overlaps the entity's span on either side).
     Both,
+    /// Present in both snapshots but the body falls in a diff hunk.
+    /// One canonical record per entity carries `span` = head location
+    /// and `prev_span` = base location. The companion `change_kind`
+    /// field on FnFacts / FieldFacts / TypeFacts distinguishes
+    /// add-only (solid green bar), del-only (solid red bar), and
+    /// mixed (dual red+green bar) at the renderer.
+    Modified,
+}
+
+/// Sub-classification for `Side::Modified` entities. Drives the
+/// diagram bar's colour without overloading the `Side` enum.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    /// Body has `+` lines only (no `−` lines inside the entity span).
+    Add,
+    /// Body has `−` lines only.
+    Del,
+    /// Body has both `+` and `−` lines.
+    Mixed,
 }
 
 impl Default for Side {
@@ -145,14 +165,18 @@ pub struct TypeFacts {
     /// file's first line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    /// Base location for `Side::Modified` entities. `None` for all
+    /// other sides; carries the type's span in the base snapshot
+    /// so the viewer can compute the union frame across base+head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_span: Option<Span>,
+    /// Sub-classification of a `Side::Modified` entity. `None` for
+    /// other sides. Drives the diagram bar's colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_kind: Option<ChangeKind>,
     /// Union-diff side.
     #[serde(default)]
     pub side: Side,
-    /// True for `side=Both` types whose head-side span overlaps a
-    /// diff hunk. Drives the orange "modified" marker. Always false
-    /// for Base/Head-only entities (they have their own colors).
-    #[serde(default)]
-    pub body_modified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -183,6 +207,12 @@ pub struct FieldFacts {
     /// multi-line for complex enum variant payloads).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    /// Base location for `Side::Modified` fields. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_span: Option<Span>,
+    /// Sub-classification of a `Side::Modified` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_kind: Option<ChangeKind>,
     /// Union-diff side.
     #[serde(default)]
     pub side: Side,
@@ -191,6 +221,13 @@ pub struct FieldFacts {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FnFacts {
     pub name: String,
+    /// For methods inside `impl Trait for Type` blocks: the trait
+    /// name (last path segment). `None` for inherent methods and
+    /// free functions. Disambiguates same-name methods across
+    /// multiple impl blocks (e.g. two `from` methods from
+    /// `impl From<A> for X` and `impl From<B> for X`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impl_trait: Option<String>,
     pub visibility: String,
     pub self_kind: SelfKind,
     pub is_unsafe: bool,
@@ -214,13 +251,15 @@ pub struct FnFacts {
     /// of the body (or just the signature for trait/extern fns).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    /// Base location for `Side::Modified` functions. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_span: Option<Span>,
+    /// Sub-classification of a `Side::Modified` function.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_kind: Option<ChangeKind>,
     /// Union-diff side.
     #[serde(default)]
     pub side: Side,
-    /// True for `side=Both` functions whose body changed between
-    /// snapshots (per intersection of diff hunks with the head span).
-    #[serde(default)]
-    pub body_modified: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -360,6 +399,11 @@ pub struct Edge {
     pub cardinality: Cardinality,
     /// Origin description (field name, fn name, etc.) — handy for follow-up.
     pub origin: String,
+    /// Union-diff side. `Head` in single-snapshot mode; assigned per
+    /// snapshot at extraction time and upgraded to `Both` by the
+    /// union merge when the same edge exists in both base and head.
+    #[serde(default)]
+    pub side: Side,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -405,6 +449,9 @@ pub struct CallEdge {
     pub callsite_start_line: u32,
     #[serde(default)]
     pub callsite_end_line: u32,
+    /// Union-diff side. Same semantics as [`Edge::side`].
+    #[serde(default)]
+    pub side: Side,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

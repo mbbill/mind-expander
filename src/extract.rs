@@ -314,8 +314,8 @@ impl Ctx {
             Item::Fn(f) => {
                 let name = f.sig.ident.to_string();
                 let visibility = vis_text(&f.vis);
-                let span = Some(span_of(&self.file, f.span()));
-                let facts = build_fn_facts(&name, visibility, &f.sig, Some(&f.block), &f.attrs, span);
+                let span = Some(fn_span_of(&self.file, &f.sig, Some(&f.block)));
+                let facts = build_fn_facts(&name, None, visibility, &f.sig, Some(&f.block), &f.attrs, span);
                 let module_path = self.current_module_path();
                 self.ensure_module(&module_path).functions.push(facts);
             }
@@ -386,8 +386,9 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span,
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
-            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -416,6 +417,8 @@ impl Ctx {
                     cardinality: vec![],
                     lifetimes: vec![],
                     span: var_span,
+                    prev_span: None,
+            change_kind: None,
                     side: crate::model::Side::default(),
                 });
             } else {
@@ -443,8 +446,9 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span,
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
-            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -479,8 +483,9 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span,
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
-            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -501,8 +506,8 @@ impl Ctx {
                 let name = f.sig.ident.to_string();
                 let visibility = "pub".to_string();
                 let block_ref = f.default.as_ref();
-                let span = Some(span_of(&self.file, f.span()));
-                let facts = build_fn_facts(&name, visibility, &f.sig, block_ref, &f.attrs, span);
+                let span = Some(fn_span_of(&self.file, &f.sig, block_ref));
+                let facts = build_fn_facts(&name, None, visibility, &f.sig, block_ref, &f.attrs, span);
                 methods.push(facts);
             }
         }
@@ -521,8 +526,9 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span,
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
-            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -546,6 +552,8 @@ impl Ctx {
             cardinality,
             lifetimes,
             span: item_span.clone(),
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
         }];
         let facts = TypeFacts {
@@ -562,8 +570,9 @@ impl Ctx {
             unsafe_blocks: 0,
             doc_first_line: doc,
             span: item_span,
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
-            body_modified: false,
         };
         let module_path = self.current_module_path();
         self.ensure_module(&module_path).types.push(facts);
@@ -591,8 +600,16 @@ impl Ctx {
             if let ImplItem::Fn(f) = item {
                 let name = f.sig.ident.to_string();
                 let vis = vis_text(&f.vis);
-                let span = Some(span_of(&self.file, f.span()));
-                let facts = build_fn_facts(&name, vis, &f.sig, Some(&f.block), &f.attrs, span);
+                let span = Some(fn_span_of(&self.file, &f.sig, Some(&f.block)));
+                let facts = build_fn_facts(
+                    &name,
+                    trait_name.clone(),
+                    vis,
+                    &f.sig,
+                    Some(&f.block),
+                    &f.attrs,
+                    span,
+                );
                 unsafe_blocks += facts.unsafe_blocks;
                 methods.push(facts);
             }
@@ -639,8 +656,9 @@ impl Ctx {
             unsafe_blocks,
             doc_first_line: None,
             span: None,
+            prev_span: None,
+            change_kind: None,
             side: crate::model::Side::default(),
-            body_modified: false,
         };
         let module_path_owned = module_path;
         self.ensure_module(&module_path_owned).types.push(stub);
@@ -727,6 +745,8 @@ fn fields_from_struct(fields: &syn::Fields, file: &str) -> Vec<FieldFacts> {
                     cardinality,
                     lifetimes,
                     span: Some(span_of(file, f.span())),
+                    prev_span: None,
+            change_kind: None,
                     side: crate::model::Side::default(),
                 }
             })
@@ -751,6 +771,8 @@ fn field_from_named(f: &syn::Field, file: &str) -> FieldFacts {
         cardinality,
         lifetimes,
         span: Some(span_of(file, f.span())),
+        prev_span: None,
+            change_kind: None,
         side: crate::model::Side::default(),
     }
 }
@@ -783,8 +805,28 @@ fn span_of(file: &str, s: proc_macro2::Span) -> Span {
     }
 }
 
+/// Tight span for a function — from the `fn` keyword (start of
+/// `syn::Signature`) to the body's closing brace. AVOIDS leaking
+/// into doc comments and `#[...]` attributes above the function,
+/// which `syn::ItemFn::span()` would otherwise include. A modified
+/// attribute above an unchanged function would otherwise push the
+/// whole function into a Modified state via hunk overlap.
+fn fn_span_of(file: &str, sig: &syn::Signature, body: Option<&syn::Block>) -> Span {
+    let start = sig.span().start();
+    let end = match body {
+        Some(b) => b.span().end(),
+        None => sig.span().end(),
+    };
+    Span {
+        file: file.to_string(),
+        start_line: start.line as u32,
+        end_line: end.line as u32,
+    }
+}
+
 fn build_fn_facts(
     name: &str,
+    impl_trait: Option<String>,
     visibility: String,
     sig: &syn::Signature,
     body: Option<&syn::Block>,
@@ -857,6 +899,7 @@ fn build_fn_facts(
 
     FnFacts {
         name: name.to_string(),
+        impl_trait,
         visibility,
         self_kind,
         is_unsafe: sig.unsafety.is_some(),
@@ -872,8 +915,9 @@ fn build_fn_facts(
         unsafe_blocks,
         doc_first_line: doc_first_line(attrs),
         span,
+        prev_span: None,
+            change_kind: None,
         side: crate::model::Side::default(),
-        body_modified: false,
     }
 }
 
@@ -1188,6 +1232,7 @@ fn emit_edges_from_type(ty: &TypeFacts, reg: &Registry, out: &mut Vec<Edge>) {
                         via,
                         cardinality,
                         origin: format!("field {}", f.name),
+                        side: crate::model::Side::default(),
                     });
                 }
             }
@@ -1203,6 +1248,7 @@ fn emit_edges_from_type(ty: &TypeFacts, reg: &Registry, out: &mut Vec<Edge>) {
                 via: ViaKind::TraitImplBlock,
                 cardinality: crate::model::Cardinality::One,
                 origin: "impl".into(),
+                side: crate::model::Side::default(),
             });
         }
     }
@@ -1238,6 +1284,7 @@ fn emit_edges_from_fn(from: &str, f: &FnFacts, reg: &Registry, out: &mut Vec<Edg
                     via: ViaKind::FnParam,
                     cardinality,
                     origin: format!("fn {} param {}", f.name, p.name),
+                    side: crate::model::Side::default(),
                 });
             }
         }
@@ -1267,6 +1314,7 @@ fn emit_edges_from_fn(from: &str, f: &FnFacts, reg: &Registry, out: &mut Vec<Edg
                     via: ViaKind::FnReturn,
                     cardinality,
                     origin: format!("fn {} -> ret", f.name),
+                    side: crate::model::Side::default(),
                 });
             }
         }
@@ -1608,6 +1656,95 @@ mod tests {
         )
         .unwrap();
         assert_eq!(re.target_path, "c::a::Foo");
+    }
+
+    // Extract methods from a synthetic single-file crate so we can
+    // inspect impl_trait tagging on the resulting FnFacts. Keeps the
+    // helper local to this test cluster — we only need the methods
+    // attached to one named type, not full workspace machinery.
+    fn methods_of(src: &str, type_name: &str) -> Vec<FnFacts> {
+        let ast: File = syn::parse_str(src).expect("parse_str failed");
+        let mut ctx = Ctx {
+            crate_name: "test".into(),
+            file: "test.rs".into(),
+            module_stack: vec![String::new()],
+            modules: BTreeMap::new(),
+            pending_re_exports: BTreeMap::new(),
+        };
+        ctx.ensure_module("");
+        for item in &ast.items {
+            ctx.visit_item(item);
+        }
+        let module = ctx.modules.get("").expect("root module missing");
+        module
+            .types
+            .iter()
+            .find(|t| t.name == type_name)
+            .map(|t| t.methods.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn same_name_methods_in_two_impl_blocks_get_distinct_impl_trait_tags() {
+        // Two `impl From<X> for Wrapper` blocks both define a `from`
+        // method. Without impl_trait disambiguation, the viewer's id
+        // scheme `${typePath}::${method.name}` would collide; with it,
+        // each method carries the trait name of its impl block so the
+        // ids stay unique downstream.
+        let src = r#"
+            pub struct Wrapper(i32);
+            impl From<i32> for Wrapper {
+                fn from(v: i32) -> Self { Wrapper(v) }
+            }
+            impl From<u32> for Wrapper {
+                fn from(v: u32) -> Self { Wrapper(v as i32) }
+            }
+            impl Wrapper {
+                pub fn inherent(&self) -> i32 { self.0 }
+            }
+        "#;
+        let methods = methods_of(src, "Wrapper");
+        let from_methods: Vec<&FnFacts> = methods.iter().filter(|m| m.name == "from").collect();
+        assert_eq!(from_methods.len(), 2, "expected two `from` methods");
+        // Both `from` methods carry impl_trait="From" — the trait name
+        // is the disambiguator; the generic arg distinguishes them at
+        // the source level but isn't part of the schema (yet).
+        for m in &from_methods {
+            assert_eq!(m.impl_trait.as_deref(), Some("From"));
+        }
+        // Inherent method has no impl_trait — preserves backward-
+        // compatible id `${typePath}::inherent`.
+        let inherent = methods.iter().find(|m| m.name == "inherent").expect("inherent missing");
+        assert_eq!(inherent.impl_trait, None);
+    }
+
+    #[test]
+    fn free_function_has_no_impl_trait_tag() {
+        // Sanity check that the visit_item free-function path passes
+        // None through to build_fn_facts.
+        let src = r#"
+            pub fn standalone() -> i32 { 42 }
+            pub struct Holder;
+        "#;
+        let ast: File = syn::parse_str(src).expect("parse_str failed");
+        let mut ctx = Ctx {
+            crate_name: "test".into(),
+            file: "test.rs".into(),
+            module_stack: vec![String::new()],
+            modules: BTreeMap::new(),
+            pending_re_exports: BTreeMap::new(),
+        };
+        ctx.ensure_module("");
+        for item in &ast.items {
+            ctx.visit_item(item);
+        }
+        let module = ctx.modules.get("").expect("root module missing");
+        let standalone = module
+            .functions
+            .iter()
+            .find(|f| f.name == "standalone")
+            .expect("standalone missing");
+        assert_eq!(standalone.impl_trait, None);
     }
 
     #[test]
