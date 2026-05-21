@@ -838,9 +838,19 @@
         flex-direction: column;
         gap: 4px;
       }
-      /* Foldable toggle. Folded by default; click to expand. State is
-         persisted in sessionStorage so it survives page reloads within
-         the same tab session. */
+      /* The wrapper rule above has higher specificity than the
+         user-agent `[hidden] { display: none }`, so without this
+         explicit override the chips would stay visible even when JS
+         flips the `hidden` attribute. */
+      #keyhints .chips[hidden] {
+        display: none;
+      }
+      /* Corner button — `⌘` (Command symbol) reads as "keyboard
+         shortcut". Click toggles the chip list below; no keyboard
+         binding (the `?` key is reserved for opening the legend
+         modal). Chip-list visibility is persisted in
+         sessionStorage. Style matches the sibling `☰` settings
+         toggle so the corner cluster reads as a coherent set. */
       #keyhints .keyhints-toggle {
         align-self: flex-end;
         background: white;
@@ -848,24 +858,233 @@
         border-radius: 4px;
         padding: 2px 8px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 600;
         color: #64748b;
         cursor: pointer;
-        line-height: 1.5;
+        line-height: 1.4;
       }
       #keyhints .keyhints-toggle:hover {
         background: #f8fafc;
         color: #1e293b;
       }
-      #keyhints .keyhints-body {
+      #keyhints .keyhints-toggle:hover {
+        background: #f8fafc;
+        color: #1e293b;
+      }
+      /* `?` chip now opens a modal (see `.legend-modal` below). No
+         foldable body anymore — the chips for F/M/C/S/R/Space sit
+         directly under the chip cluster as quick reminders. */
+      /* Legend & shortcuts modal. Backdrop dims the canvas; the
+         centered card holds the four reference sections. Hidden
+         attribute toggles the entire dialog so layout / focus stay
+         clean when it's closed. */
+      .legend-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 32;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .legend-modal[hidden] {
+        display: none;
+      }
+      .legend-modal-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.42);
+      }
+      .legend-modal-card {
+        position: relative;
+        background: white;
+        color: #1e293b;
+        border-radius: 8px;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25),
+          0 0 0 1px rgba(15, 23, 42, 0.08);
+        width: min(720px, calc(100vw - 32px));
+        max-height: calc(100vh - 64px);
         display: flex;
         flex-direction: column;
-        align-items: flex-end;
-        gap: 4px;
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       }
-      #keyhints .keyhints-body[hidden] {
-        display: none;
+      .legend-modal-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .legend-modal-head h2 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 600;
+        color: #0f172a;
+      }
+      .legend-modal-close {
+        background: transparent;
+        border: 0;
+        font-size: 22px;
+        line-height: 1;
+        color: #64748b;
+        cursor: pointer;
+        padding: 2px 8px;
+        border-radius: 4px;
+      }
+      .legend-modal-close:hover {
+        background: #f1f5f9;
+        color: #1e293b;
+      }
+      .legend-modal-body {
+        padding: 8px 16px 16px;
+        overflow-y: auto;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      /* On narrower viewports stack the sections in a single column so
+         the dialog stays usable without horizontal scroll. */
+      @media (max-width: 640px) {
+        .legend-modal-body {
+          grid-template-columns: 1fr;
+        }
+      }
+      .legend-section h3 {
+        margin: 12px 0 6px;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #475569;
+      }
+      .legend-section-note {
+        margin: 0 0 8px;
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.4;
+      }
+      .legend-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .legend-grid-row {
+        display: grid;
+        grid-template-columns: 38px 1fr;
+        align-items: start;
+        gap: 8px;
+        padding: 4px 2px;
+      }
+      .legend-grid-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .legend-grid-text strong {
+        font-size: 12px;
+        color: #1e293b;
+      }
+      .legend-grid-desc {
+        font-size: 11px;
+        color: #475569;
+        line-height: 1.4;
+      }
+      .legend-grid-desc code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        background: #f1f5f9;
+        padding: 0 4px;
+        border-radius: 3px;
+      }
+      .legend-kind-letter {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        font-weight: 700;
+        color: #b91c1c;
+      }
+      /* Per-language tag chips inline with descriptions. Make the
+         scope of each row visually obvious at a glance. */
+      .lang-tag {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 0 5px;
+        border-radius: 3px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        margin-right: 4px;
+      }
+      .lang-rust { background: #fee2e2; color: #991b1b; }
+      .lang-ts   { background: #dbeafe; color: #1e40af; }
+      .lang-na   { background: #f1f5f9; color: #94a3b8; }
+      /* Section-internal kbd reuses the chip styling from #keyhints
+         so the corner reminders and the dialog reference look the
+         same. Defined separately to avoid the #keyhints prefix
+         scoping it out. */
+      .legend-modal kbd {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 22px;
+        height: 22px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        font-weight: 600;
+        color: #1e293b;
+        background: #f1f5f9;
+        border: 1px solid #cbd5e1;
+        border-bottom-width: 2px;
+        border-radius: 3px;
+        padding: 0 6px;
+      }
+      .legend-modal .legend-arrow {
+        width: 36px;
+        height: 10px;
+      }
+      /* The per-row `→` glyph rendered inline in the call-marker
+         legend section. Matches the size/weight used in the diagram
+         so the swatch reads as the actual marker rather than a
+         decorative caret. */
+      .legend-call-glyph {
+        display: inline-block;
+        width: 36px;
+        text-align: center;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1;
+        margin-top: 2px;
+      }
+      /* Rows with multi-key combos (e.g. `⌘+Click`) need a wider
+         first column than the default 38px so the combo doesn't
+         clip into the text column. */
+      .legend-grid-row--combo {
+        grid-template-columns: auto 1fr;
+      }
+      .legend-key-combo {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        white-space: nowrap;
+      }
+      .legend-key-plus {
+        font-size: 11px;
+        color: #94a3b8;
+        padding: 0 1px;
+      }
+      .legend-modal .legend-dot {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-top: 5px;
+        margin-left: 5px;
       }
       #settings {
         display: flex;
@@ -1672,103 +1891,204 @@
               type="button"
               class="keyhints-toggle"
               aria-expanded="false"
-              aria-controls="keyhints-body"
-              title="Toggle legend & shortcuts"
+              aria-controls="keyhints-chips"
+              title="Show or hide keyboard shortcuts"
             >
-              ?
+              ⌘
             </button>
-            <div class="keyhints-body" id="keyhints-body" hidden>
-              <div class="legend" aria-label="legend">
-                <div class="legend-col" aria-label="arrow legend">
-                  <div class="legend-row">
-                    <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
-                      <line
-                        x1="2"
-                        y1="5"
-                        x2="28"
-                        y2="5"
-                        stroke="#94a3b8"
-                        stroke-width="1"
-                        marker-end="url(#legend-arrow-marker)"
-                      />
-                    </svg>
-                    <span>canonical</span>
-                  </div>
-                  <div class="legend-row">
-                    <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
-                      <line
-                        x1="2"
-                        y1="5"
-                        x2="28"
-                        y2="5"
-                        stroke="#3b82f6"
-                        stroke-width="1"
-                        marker-end="url(#legend-arrow-marker)"
-                      />
-                    </svg>
-                    <span>selected</span>
-                  </div>
-                  <div class="legend-row">
-                    <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
-                      <line
-                        x1="2"
-                        y1="5"
-                        x2="28"
-                        y2="5"
-                        stroke="#f59e0b"
-                        stroke-width="1"
-                        marker-end="url(#legend-arrow-marker)"
-                      />
-                    </svg>
-                    <span>drift_below</span>
-                  </div>
-                  <div class="legend-row">
-                    <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
-                      <line
-                        x1="2"
-                        y1="5"
-                        x2="28"
-                        y2="5"
-                        stroke="#ef4444"
-                        stroke-width="1"
-                        marker-end="url(#legend-arrow-marker)"
-                      />
-                    </svg>
-                    <span>drift_above</span>
-                  </div>
-                </div>
-                <div class="legend-col" aria-label="visibility legend">
-                  <div class="legend-row">
-                    <span class="legend-dot" style="background:#ef4444"></span>
-                    <span>pub</span>
-                  </div>
-                  <div class="legend-row">
-                    <span class="legend-dot" style="background:#22c55e"></span>
-                    <span>pub(crate)</span>
-                  </div>
-                  <div class="legend-row">
-                    <span class="legend-dot" style="background:#3b82f6"></span>
-                    <span>pub(super)</span>
-                  </div>
-                  <div class="legend-row">
-                    <span class="legend-dot" style="background:#f97316"></span>
-                    <span>pub(in path)</span>
-                  </div>
-                  <div class="legend-row">
-                    <span class="legend-dot" style="background:#94a3b8"></span>
-                    <span>local</span>
-                  </div>
-                </div>
-              </div>
-              <div class="chips">
-                <div class="row" id="hint-focus"><kbd>F</kbd><span>focus</span></div>
-                <div class="row" id="hint-methods" title="Show or hide the per-type method buckets"><kbd>M</kbd><span>methods</span></div>
-                <div class="row" id="hint-code" title="Show or hide the source code panel"><kbd>C</kbd><span>code</span></div>
-                <div class="row" id="hint-scale" title="Reset zoom to 100%"><kbd>S</kbd><span>scale</span><span id="scale-value">100%</span></div>
-                <div class="row" id="hint-reset" title="Reset everything"><kbd>R</kbd><span>reset</span></div>
-                <div class="row" id="hint-overview" title="Toggle fit-all overview / 100% at cursor"><kbd>Space</kbd><span>overview</span></div>
-              </div>
+            <!-- Keyboard shortcut chips — hidden by default, toggled
+                 by the keyboard-emoji button above (mouse only, no
+                 keyboard binding). The `?` row inside the list opens
+                 the legend modal (via the `?` keyboard handler in
+                 main.ts), so users learn the shortcut from the chip
+                 itself rather than from a separate corner button. -->
+            <div class="chips" id="keyhints-chips" hidden>
+              <div class="row" id="hint-legend" title="Open the legend & shortcuts dialog"><kbd>?</kbd><span>legend</span></div>
+              <div class="row" id="hint-focus"><kbd>F</kbd><span>focus</span></div>
+              <div class="row" id="hint-methods" title="Show or hide the per-type method buckets"><kbd>M</kbd><span>methods</span></div>
+              <div class="row" id="hint-code" title="Show or hide the source code panel"><kbd>C</kbd><span>code</span></div>
+              <div class="row" id="hint-scale" title="Reset zoom to 100%"><kbd>S</kbd><span>scale</span><span id="scale-value">100%</span></div>
+              <div class="row" id="hint-reset" title="Reset everything"><kbd>R</kbd><span>reset</span></div>
+              <div class="row" id="hint-overview" title="Toggle fit-all overview / 100% at cursor"><kbd>Space</kbd><span>overview</span></div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Legend & reference modal. Opened by clicking the `?` chip or
+           pressing the `?` key; dismissed by clicking the backdrop or
+           pressing ESC. Hidden via the `hidden` attribute so it stays
+           out of layout when closed. -->
+      <div
+        id="legend-modal"
+        class="legend-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="legend-modal-title"
+        hidden
+      >
+        <div class="legend-modal-backdrop" aria-hidden="true"></div>
+        <div class="legend-modal-card" role="document">
+          <header class="legend-modal-head">
+            <h2 id="legend-modal-title">Legend &amp; shortcuts</h2>
+            <button
+              type="button"
+              class="legend-modal-close"
+              aria-label="Close legend"
+              title="Close (Esc)"
+            >×</button>
+          </header>
+          <div class="legend-modal-body">
+
+            <section class="legend-section" aria-labelledby="legend-arrows-h">
+              <h3 id="legend-arrows-h">Arrows</h3>
+              <div class="legend-grid">
+                <div class="legend-grid-row">
+                  <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                    <line x1="2" y1="5" x2="28" y2="5" stroke="#94a3b8" stroke-width="1" marker-end="url(#legend-arrow-marker)" />
+                  </svg>
+                  <div class="legend-grid-text">
+                    <strong>canonical</strong>
+                    <span class="legend-grid-desc">structural reference between types — field, parameter, return, trait impl. The graph's default edge.</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                    <line x1="2" y1="5" x2="28" y2="5" stroke="#3b82f6" stroke-width="1" marker-end="url(#legend-arrow-marker)" />
+                  </svg>
+                  <div class="legend-grid-text">
+                    <strong>selected</strong>
+                    <span class="legend-grid-desc">an edge you explicitly revealed (clicked a row's <code>→</code> glyph or a call-picker entry).</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                    <line x1="2" y1="5" x2="28" y2="5" stroke="#f59e0b" stroke-width="1" marker-end="url(#legend-arrow-marker)" />
+                  </svg>
+                  <div class="legend-grid-text">
+                    <strong>drift_below</strong>
+                    <span class="legend-grid-desc">structural drift — the owned type lives deeper in the module tree than its owners would suggest. Common smell: an inner helper that wants to be promoted closer to its callers.</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <svg class="legend-arrow" viewBox="0 0 36 10" preserveAspectRatio="xMidYMid meet">
+                    <line x1="2" y1="5" x2="28" y2="5" stroke="#ef4444" stroke-width="1" marker-end="url(#legend-arrow-marker)" />
+                  </svg>
+                  <div class="legend-grid-text">
+                    <strong>drift_above</strong>
+                    <span class="legend-grid-desc">structural drift — the owned type sits in a module above where its owners are concentrated. Often a candidate for moving the definition closer to where it's actually used.</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="legend-section" aria-labelledby="legend-call-h">
+              <h3 id="legend-call-h">Call markers on a row</h3>
+              <p class="legend-section-note">Function and method rows show small <code>→</code> glyphs on each side. Click either side to reveal / hide the matching arrows in the diagram.</p>
+              <div class="legend-grid">
+                <div class="legend-grid-row">
+                  <span class="legend-call-glyph" style="color:#94a3b8">→</span>
+                  <div class="legend-grid-text">
+                    <strong>left arrow — incoming</strong>
+                    <span class="legend-grid-desc">someone in the workspace calls this function. Grey when no incoming arrows are currently revealed; turns <span style="color:#2563eb;font-weight:600">blue and bold</span> once you've revealed at least one.</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <span class="legend-call-glyph" style="color:#64748b">→</span>
+                  <div class="legend-grid-text">
+                    <strong>right arrow — outgoing, local-only</strong>
+                    <span class="legend-grid-desc">every call this function makes stays inside its own module. Grey = "nothing surprising over here".</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <span class="legend-call-glyph" style="color:#2563eb">→</span>
+                  <div class="legend-grid-text">
+                    <strong>right arrow — outgoing, external</strong>
+                    <span class="legend-grid-desc">at least one call crosses a module or crate boundary. Blue mirrors the stroke color used for the actual cross-module arrows in the diagram.</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <span class="legend-call-glyph" style="color:#f97316">→</span>
+                  <div class="legend-grid-text">
+                    <strong>right arrow — outgoing, unresolved</strong>
+                    <span class="legend-grid-desc">at least one call couldn't be resolved to a known workspace symbol — typically a heuristic match on a shared method name, or a call into an external library.</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="legend-section" aria-labelledby="legend-vis-h">
+              <h3 id="legend-vis-h">Visibility dots</h3>
+              <p class="legend-section-note">Color encodes how widely an item is callable. Same palette is used on the diagram's type dots and the minimap.</p>
+              <div class="legend-grid">
+                <div class="legend-grid-row">
+                  <span class="legend-dot" style="background:#ef4444"></span>
+                  <div class="legend-grid-text">
+                    <strong>pub</strong>
+                    <span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span> <code>pub</code> declaration. <span class="lang-tag lang-ts">TS</span> <code>export</code>ed top-level item or a <code>public</code> class member.</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <span class="legend-dot" style="background:#22c55e"></span>
+                  <div class="legend-grid-text">
+                    <strong>pub(crate)</strong>
+                    <span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span> visible within the same crate. <span class="lang-tag lang-na">TS</span> n/a — TypeScript has no crate boundary.</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <span class="legend-dot" style="background:#3b82f6"></span>
+                  <div class="legend-grid-text">
+                    <strong>pub(super)</strong>
+                    <span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span> visible to the parent module. <span class="lang-tag lang-ts">TS</span> <code>protected</code> class member (visible to subclasses).</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <span class="legend-dot" style="background:#f97316"></span>
+                  <div class="legend-grid-text">
+                    <strong>pub(in path)</strong>
+                    <span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span> visible only within a named module path. <span class="lang-tag lang-na">TS</span> n/a.</span>
+                  </div>
+                </div>
+                <div class="legend-grid-row">
+                  <span class="legend-dot" style="background:#94a3b8"></span>
+                  <div class="legend-grid-text">
+                    <strong>private / local</strong>
+                    <span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span> no <code>pub</code> modifier. <span class="lang-tag lang-ts">TS</span> non-exported top-level item, <code>private</code> class member, or <code>#field</code>.</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="legend-section" aria-labelledby="legend-kinds-h">
+              <h3 id="legend-kinds-h">Kind markers</h3>
+              <p class="legend-section-note">The bold letter to the left of each row tells you what kind of item it is.</p>
+              <div class="legend-grid legend-grid-kinds">
+                <div class="legend-grid-row"><span class="legend-kind-letter">S</span><div class="legend-grid-text"><strong>struct</strong><span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span></span></div></div>
+                <div class="legend-grid-row"><span class="legend-kind-letter">E</span><div class="legend-grid-text"><strong>enum</strong><span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span> <span class="lang-tag lang-ts">TS</span></span></div></div>
+                <div class="legend-grid-row"><span class="legend-kind-letter">U</span><div class="legend-grid-text"><strong>union</strong><span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span></span></div></div>
+                <div class="legend-grid-row"><span class="legend-kind-letter">T</span><div class="legend-grid-text"><strong>trait</strong><span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span></span></div></div>
+                <div class="legend-grid-row"><span class="legend-kind-letter">A</span><div class="legend-grid-text"><strong>type alias</strong><span class="legend-grid-desc"><span class="lang-tag lang-rust">Rust</span> <span class="lang-tag lang-ts">TS</span></span></div></div>
+                <div class="legend-grid-row"><span class="legend-kind-letter">C</span><div class="legend-grid-text"><strong>class</strong><span class="legend-grid-desc"><span class="lang-tag lang-ts">TS</span></span></div></div>
+                <div class="legend-grid-row"><span class="legend-kind-letter">I</span><div class="legend-grid-text"><strong>interface</strong><span class="legend-grid-desc"><span class="lang-tag lang-ts">TS</span></span></div></div>
+                <div class="legend-grid-row"><span class="legend-kind-letter">F</span><div class="legend-grid-text"><strong>function group</strong><span class="legend-grid-desc">a module's free functions, grouped by visibility (synthetic — both languages).</span></div></div>
+              </div>
+            </section>
+
+            <section class="legend-section" aria-labelledby="legend-keys-h">
+              <h3 id="legend-keys-h">Keyboard shortcuts</h3>
+              <div class="legend-grid">
+                <div class="legend-grid-row"><kbd>F</kbd><div class="legend-grid-text"><strong>focus</strong><span class="legend-grid-desc">hide every module that isn't relevant to your current activity — keeps only the expanded types, the modules their fields/methods point into, and any revealed call targets. Toggle off to bring the rest back.</span></div></div>
+                <div class="legend-grid-row"><kbd>M</kbd><div class="legend-grid-text"><strong>methods</strong><span class="legend-grid-desc">show or hide the per-type method buckets.</span></div></div>
+                <div class="legend-grid-row"><kbd>C</kbd><div class="legend-grid-text"><strong>code</strong><span class="legend-grid-desc">open or close the right-side source-code panel.</span></div></div>
+                <div class="legend-grid-row"><kbd>S</kbd><div class="legend-grid-text"><strong>scale</strong><span class="legend-grid-desc">reset zoom to 100%.</span></div></div>
+                <div class="legend-grid-row"><kbd>R</kbd><div class="legend-grid-text"><strong>reset</strong><span class="legend-grid-desc">reset everything — selections, expansion, focus, methods, zoom/pan.</span></div></div>
+                <div class="legend-grid-row"><kbd>Space</kbd><div class="legend-grid-text"><strong>overview</strong><span class="legend-grid-desc">toggle fit-all overview vs. 100% at the cursor.</span></div></div>
+                <div class="legend-grid-row"><kbd>?</kbd><div class="legend-grid-text"><strong>legend</strong><span class="legend-grid-desc">open or close this dialog.</span></div></div>
+                <div class="legend-grid-row"><kbd>Esc</kbd><div class="legend-grid-text"><strong>dismiss</strong><span class="legend-grid-desc">close this dialog or any open picker / popup.</span></div></div>
+                <div class="legend-grid-row legend-grid-row--combo"><span class="legend-key-combo"><kbd>⌘</kbd><span class="legend-key-plus">+</span><kbd>Click</kbd></span><div class="legend-grid-text"><strong>show code</strong><span class="legend-grid-desc">Cmd-click (or Ctrl-click on Windows / Linux) any name in the diagram to open its source in the right-hand code panel.</span></div></div>
+              </div>
+            </section>
+
           </div>
         </div>
       </div>

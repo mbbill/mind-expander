@@ -1181,26 +1181,69 @@ async function main(): Promise<void> {
     }
   };
 
-  // Foldable legend / shortcuts panel — collapsed by default. Toggle by
-  // clicking the "?" chip OR pressing the `?` key. State persists in
+  // Corner keyboard-emoji button → toggle the shortcut chip list
+  // (mouse only, NO keyboard binding). Chips state is persisted in
   // sessionStorage so a reload within the same tab keeps the user's
-  // preference.
+  // visibility preference. The `?` key is reserved for opening the
+  // legend modal — keeping the two affordances distinct so users
+  // don't accidentally hide their chip reminders by mistyping.
   const keyhintsToggle = document.querySelector<HTMLButtonElement>('.keyhints-toggle');
-  const keyhintsBody = document.querySelector<HTMLElement>('#keyhints-body');
+  const keyhintsChips = document.querySelector<HTMLElement>('#keyhints-chips');
+  if (keyhintsToggle && keyhintsChips) {
+    // First-time visitors see the chips expanded — discoverability
+    // beats compactness on first contact. Once the user has toggled
+    // the state at least once we honor their stored preference
+    // (either '1' = open or '0' = collapsed) on subsequent loads.
+    const storedChips = sessionStorage.getItem('mind-expander.keyhints.chips');
+    let chipsOpen = storedChips === null ? true : storedChips === '1';
+    const applyChips = (): void => {
+      keyhintsChips.hidden = !chipsOpen;
+      keyhintsToggle.setAttribute('aria-expanded', chipsOpen ? 'true' : 'false');
+      sessionStorage.setItem('mind-expander.keyhints.chips', chipsOpen ? '1' : '0');
+    };
+    applyChips();
+    keyhintsToggle.addEventListener('click', () => {
+      chipsOpen = !chipsOpen;
+      applyChips();
+    });
+  }
+
+  // Legend modal. Opened by pressing the `?` key (wired in the
+  // global keydown handler above via `toggleKeyhints`); dismissed by
+  // the close button, by clicking the backdrop, or by ESC. The
+  // modal lives in the DOM (hidden when closed) so accessibility
+  // attributes stay stable. No sessionStorage persistence — the
+  // dialog is reference-only and shouldn't re-pop on every reload.
+  const legendModal = document.querySelector<HTMLElement>('#legend-modal');
+  const legendBackdrop = document.querySelector<HTMLElement>('.legend-modal-backdrop');
+  const legendCloseBtn = document.querySelector<HTMLButtonElement>('.legend-modal-close');
   let toggleKeyhints: (() => void) | null = null;
-  if (keyhintsToggle && keyhintsBody) {
-    let expanded = sessionStorage.getItem('mind-expander.keyhints.expanded') === '1';
-    const apply = (): void => {
-      keyhintsToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-      keyhintsBody.hidden = !expanded;
-      sessionStorage.setItem('mind-expander.keyhints.expanded', expanded ? '1' : '0');
+  if (legendModal) {
+    const setOpen = (open: boolean): void => {
+      legendModal.hidden = !open;
     };
-    apply();
-    toggleKeyhints = () => {
-      expanded = !expanded;
-      apply();
-    };
-    keyhintsToggle.addEventListener('click', toggleKeyhints);
+    const isOpen = (): boolean => !legendModal.hidden;
+    toggleKeyhints = () => setOpen(!isOpen());
+    legendCloseBtn?.addEventListener('click', () => setOpen(false));
+    legendBackdrop?.addEventListener('click', () => setOpen(false));
+    // Click the in-chip "? legend" row to open the modal too — gives
+    // mouse-only users an affordance that matches the key.
+    document.querySelector<HTMLElement>('#hint-legend')?.addEventListener('click', () => {
+      setOpen(!isOpen());
+    });
+    // ESC closes the modal first if it's open; otherwise lets other
+    // ESC handlers (pickers, popups) run as usual. Capture phase so
+    // we observe the key even when focus is on an inner control.
+    document.addEventListener(
+      'keydown',
+      (e) => {
+        if (e.key === 'Escape' && isOpen()) {
+          e.stopPropagation();
+          setOpen(false);
+        }
+      },
+      true,
+    );
   }
 
   const minimapToggle = document.querySelector<HTMLButtonElement>('.minimap-toggle');
