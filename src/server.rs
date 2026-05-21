@@ -228,6 +228,7 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
         .route("/api/diff", get(get_diff))
         .route("/api/changed-files", get(get_changed_files))
         .route("/api/tour", post(post_tour))
+        .route("/api/tours", get(get_tours))
         .route("/api/tour-events", get(get_tour_events))
         .fallback(get(serve_static))
         .with_state(state);
@@ -978,6 +979,17 @@ fn mime_for(path: &str) -> &'static str {
         "map" => "application/json",
         _ => "application/octet-stream",
     }
+}
+
+/// Snapshot of every tour the server has accepted in this process
+/// lifetime. The viewer fetches this on initial load so a page
+/// reload after a tour was posted doesn't lose the tour from the
+/// top bar — the SSE channel only broadcasts new tours; without
+/// this replay path, a refresh would orphan the queue.
+async fn get_tours(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<crate::tour::ResolvedTour>> {
+    Json(state.tours.snapshot())
 }
 
 async fn get_tour_events(

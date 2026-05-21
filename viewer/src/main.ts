@@ -210,6 +210,18 @@ async function main(): Promise<void> {
     // or closing the panel mid-tour re-flows the bubble immediately.
     getAvoidRect: () => codePanel.getScreenRect(),
   });
+  // Replay tours that were already posted before this tab connected.
+  // The SSE channel only broadcasts NEW tours; without this initial
+  // fetch a page reload after a tour was posted orphans the queue
+  // server-side, and the top bar looks empty even though the tour is
+  // still ingested and resolvable.
+  fetch('/api/tours')
+    .then((r) => (r.ok ? r.json() : []))
+    .then((tours: ResolvedTour[]) => {
+      for (const t of tours) tourBar.addTour(t);
+    })
+    .catch((err) => console.warn('[tour] could not replay /api/tours:', err));
+
   const tourEvents = new EventSource('/api/tour-events');
   tourEvents.addEventListener('tour', (e) => {
     try {
