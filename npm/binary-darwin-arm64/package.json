@@ -1,0 +1,21 @@
+{
+  "name": "@mind-expander/binary-darwin-arm64",
+  "version": "0.1.0",
+  "description": "macOS aarch64 (Apple Silicon) binary for mind-expander.",
+  "license": "Apache-2.0",
+  "author": "Bill Ming <mbbill@gmail.com>",
+  "homepage": "https://github.com/mbbill/mind-expander",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mbbill/mind-expander.git"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin"
+  ]
+}

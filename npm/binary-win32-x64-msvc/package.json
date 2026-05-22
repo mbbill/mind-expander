@@ -1,0 +1,21 @@
+{
+  "name": "@mind-expander/binary-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "Windows x86_64 (MSVC) binary for mind-expander.",
+  "license": "Apache-2.0",
+  "author": "Bill Ming <mbbill@gmail.com>",
+  "homepage": "https://github.com/mbbill/mind-expander",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mbbill/mind-expander.git"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ]
+}

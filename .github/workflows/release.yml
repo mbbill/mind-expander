@@ -1,0 +1,170 @@
+# Release pipeline.
+#
+# Trigger: tag push matching `v*` (e.g. `v0.1.0`, `v0.2.1`).
+#
+# Pipeline:
+#   1. Build the Rust binary for each supported platform in parallel.
+#      Each job uses a native runner (no cross-compile) so the build
+#      script's `npm install && npm run build` in viewer/ runs the
+#      right way for that OS. ARM Linux uses ubuntu-24.04-arm runners
+#      which went GA in 2024.
+#   2. Upload the built binary as an artifact tagged with its
+#      target triple.
+#   3. A final `publish` job downloads every artifact, drops each into
+#      its sibling platform-package's bin/, then npm-publishes the
+#      five platform packages first and the main launcher package
+#      last (so users never install a launcher that points at an
+#      un-published binary package).
+#
+# Secrets needed:
+#   NPM_TOKEN — Automation token with publish rights on the
+#               `mind-expander` package and the `@mind-expander` org.
+#               See RELEASING.md for the upgrade path to Trusted
+#               Publishing (OIDC, no long-lived token).
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  # `id-token: write` is required once we move to Trusted Publishing.
+  # Harmless to leave on for v0.x — npm just ignores it until enabled.
+  id-token: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            pkg: binary-darwin-x64
+            exe: mind-expander
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            pkg: binary-darwin-arm64
+            exe: mind-expander
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            pkg: binary-linux-x64-gnu
+            exe: mind-expander
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            pkg: binary-linux-arm64-gnu
+            exe: mind-expander
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            pkg: binary-win32-x64-msvc
+            exe: mind-expander.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Bucket cache per target so cross-builds don't clobber
+          # each other (each target has its own ~/.cargo/target).
+          key: ${{ matrix.target }}
+
+      - name: Install Node
+        # build.rs runs `npm install && npm run build` in viewer/ to
+        # bake viewer/dist into the binary via include_dir!. Every
+        # builder needs Node + npm even though the artifact is pure
+        # Rust.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build release binary
+        # --features typescript pulls in the swc-based TS frontend so
+        # the published binary can extract polyglot repos. Skipping it
+        # would ship a Rust-only build, which is not what we want for
+        # the npm package.
+        run: cargo build --release --features typescript --target ${{ matrix.target }}
+
+      - name: Stage binary into platform package
+        # Copy the built binary into npm/binary-<triple>/bin/ so the
+        # artifact upload captures the package's full publishable
+        # layout, not just the bare binary.
+        shell: bash
+        run: |
+          set -eux
+          src="target/${{ matrix.target }}/release/${{ matrix.exe }}"
+          dst="npm/${{ matrix.pkg }}/bin/${{ matrix.exe }}"
+          cp "$src" "$dst"
+          # Belt-and-suspenders: make sure unix binaries are
+          # executable. `cp` should preserve the bit from cargo's
+          # output but file modes on Windows runners are fiddly.
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            chmod +x "$dst"
+          fi
+
+      - name: Upload platform package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.pkg }}
+          path: npm/${{ matrix.pkg }}
+          # Preserve the +x bit on unix binaries through artifact
+          # round-trip — upload-artifact v4 strips modes by default.
+          include-hidden-files: true
+
+  publish:
+    name: publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: npm-artifacts
+
+      - name: Stage artifacts into npm/binary-* dirs
+        # The artifacts arrive as `npm-artifacts/<pkg>/...` which
+        # mirrors the layout we already have under `npm/`. Copy each
+        # bin/ over so the package-as-published has its binary.
+        shell: bash
+        run: |
+          set -eux
+          for pkg in binary-darwin-arm64 binary-darwin-x64 binary-linux-x64-gnu binary-linux-arm64-gnu binary-win32-x64-msvc; do
+            cp -r "npm-artifacts/$pkg/bin/." "npm/$pkg/bin/"
+          done
+
+      - name: Publish platform packages first
+        # Platform packages must be live BEFORE the main package
+        # publishes — the main package's optionalDependencies resolve
+        # against the registry at install time, and we don't want a
+        # window where someone installs `mind-expander` and finds the
+        # binary packages don't yet exist.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -eux
+          for pkg in binary-darwin-arm64 binary-darwin-x64 binary-linux-x64-gnu binary-linux-arm64-gnu binary-win32-x64-msvc; do
+            (cd "npm/$pkg" && npm publish --access public --provenance)
+          done
+
+      - name: Publish main launcher package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm/mind-expander
+          npm publish --access public --provenance
