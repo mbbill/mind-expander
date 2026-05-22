@@ -43,13 +43,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            pkg: binary-darwin-x64
-            exe: mind-expander
+          # Both Mac targets build on macos-14 (Apple Silicon). The
+          # Intel cross-compile works natively because Xcode's SDK on
+          # ARM Macs ships both architectures — no cargo-zigbuild or
+          # universal-binary lipo needed. The macos-13 (Intel) runner
+          # pool was effectively retired by GitHub (1+ hour queue
+          # times) so we don't use it.
           - target: aarch64-apple-darwin
             runner: macos-14
             pkg: binary-darwin-arm64
+            exe: mind-expander
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            pkg: binary-darwin-x64
             exe: mind-expander
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
@@ -64,7 +70,7 @@ jobs:
             pkg: binary-win32-x64-msvc
             exe: mind-expander.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -83,7 +89,7 @@ jobs:
         # bake viewer/dist into the binary via include_dir!. Every
         # builder needs Node + npm even though the artifact is pure
         # Rust.
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
@@ -112,7 +118,7 @@ jobs:
           fi
 
       - name: Upload platform package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.pkg }}
           path: npm/${{ matrix.pkg }}
@@ -125,15 +131,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: npm-artifacts
 
