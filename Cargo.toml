@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Bill Ming <mbbill@gmail.com>"]
 description = "Codebase fact extractor for Silverfir-nano (per-type ownership facts + cross-type edge graph)"
-license = "MIT/Apache-2.0"
+license = "Apache-2.0"
 
 [[bin]]
 name = "mind-expander"

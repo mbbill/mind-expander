@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Browser viewer for mind-expander facts JSON. D3 + SVG, TypeScript.",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

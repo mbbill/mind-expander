@@ -1,7 +1,7 @@
 <div align="center">
   <h1>mind-expander</h1>
   <p>
-    <strong>A human-AI collaboration tool for understanding and changing large codebases.</strong>
+    <strong>A human-AI collaboration tool for large codebases.</strong>
   </p>
   <p>
     It gives software architects and AI coding agents a shared visual workspace:
@@ -19,7 +19,7 @@
     <img alt="AI-native" src="https://img.shields.io/badge/AI--native-collaboration-111827?style=flat-square">
     <img alt="Local-first" src="https://img.shields.io/badge/local--first-architecture%20workspace-2563eb?style=flat-square">
     <img alt="Source-grounded" src="https://img.shields.io/badge/source--grounded-real%20code-059669?style=flat-square">
-    <img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-7c3aed?style=flat-square">
+    <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7c3aed?style=flat-square">
   </p>
 </div>
 
@@ -113,5 +113,4 @@ mind-expander view /path/to/workspace
 # Open a diff-oriented view.
 mind-expander view /path/to/workspace --at main..
 ```
-
 
