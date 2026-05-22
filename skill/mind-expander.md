@@ -2,16 +2,12 @@
 name: mind-expander
 description: |
   mind-expander turns a plan, code review, or codebase walkthrough into a
-  guided tour through a live interactive diagram of the user's Rust
-  workspace. The agent reads source code normally (Read, grep, etc.) and
-  then either replies in markdown (default) or posts a "tour" JSON — each
-  narrated step pinned to a file:line — and the user watches a bubble walk
-  through the diagram while reading the explanation. INVOCATION POLICY:
-  default to plain markdown for plan / review / walkthrough requests and
-  append ONE low-key closing-line offer of the tour as an alternative;
-  invoke the tour directly (no offer) when the user uses visual language
-  ("tour", "walk me through", "show me on the diagram", "visualize this")
-  or when a feedback memory records that this user prefers tours.
+  guided tour through a live interactive diagram of the user's
+  workspace — each narrated step pinned to a file:line. Default to a
+  markdown reply with a one-line tour offer; invoke the tour directly
+  when the user uses visual language ("tour", "walk me through", "show
+  me on the diagram", "visualize this") or when memory records they
+  prefer tours.
 ---
 
 # mind-expander
@@ -99,36 +95,36 @@ its own port if `--port` is omitted.
 
 ## Posting a tour
 
-**Prefer stdin / inline** so you don't need filesystem write permission
-or leftover `/tmp/*.json` files. Two equivalent patterns:
-
-Heredoc via the `tour` subcommand (the `-` reads JSON from stdin):
-
-```bash
-npx mind-expander tour - --host 127.0.0.1:<port> <<'EOF'
-{
-  "schema_version": 2,
-  "title": "...",
-  "steps": [ ... ]
-}
-EOF
-```
-
-Or POST directly with curl reading the body from stdin:
+**Default — launch a fresh server with the tour.** Most of the time
+the user does not have a viewer running yet. Start one and load the
+tour in the same flow; capture the `port` from `view`'s stdout and
+pipe the tour into `tour -`:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:<port>/api/tour \
-  -H 'content-type: application/json' \
-  --data-binary @- <<'EOF'
+mind-expander view <repo> [--at <revspec>]   # prints pid + port
+mind-expander tour - --host 127.0.0.1:<port> <<'EOF'
 { "schema_version": 2, "steps": [ ... ] }
 EOF
 ```
 
-Only fall back to a `/tmp/tour.json` file if the tour is enormous and
-the shell heredoc would be unwieldy.
+**Follow-up — post to the server that's already running.** If the user
+is mid-conversation and still has the webpage open from an earlier
+tour (e.g. asks a follow-up question, wants a second cut), do **not**
+restart the server. Reuse the existing port so the user keeps their
+place; POST the new tour directly:
+
+```bash
+curl -sS -X POST http://127.0.0.1:<port>/api/tour \
+  -H 'content-type: application/json' --data-binary @- <<'EOF'
+{ "schema_version": 2, "steps": [ ... ] }
+EOF
+```
+
+Fall back to a `/tmp/tour.json` file only if the tour is enormous and
+the heredoc would be unwieldy.
 
 Success returns `{status: "ok", tour_id}`. Failure returns 422 with
-`{errors: [{step, ref, msg}]}` — fix and resend (still via stdin).
+`{errors: [{step, ref, msg}]}` — fix and resend.
 
 ## Tour schema
 
@@ -223,8 +219,9 @@ the why. A 4-step "tour" is not a plan.
    defs, sigs, before/after), tables (mapping rules), nested
    bullets, bold key terms, inline `code` for every symbol.
 4. **Anchoring files that don't exist yet:** ref the file you'll
-   **mirror** (TS analog when planning Go; existing trait when
-   planning a new impl). Lead with "Mirror this for X".
+   **mirror** — an existing analog in the codebase, or the existing
+   trait/interface when planning a new impl. Lead with "Mirror this
+   for X".
 5. **Surface the deliberately untouched** — anchor to a
    representative file you're leaving alone, with prose explaining
    why.
@@ -233,28 +230,16 @@ the why. A 4-step "tour" is not a plan.
    total size estimate, and **one concrete open question** the
    user can answer to unblock implementation.
 
-**Example** — three representative step shapes (opening, mid-plan
-anchored, closing). A full plan would have ~15–20 such steps; this
-shows the markdown patterns they share.
+**Example** — one representative mid-plan step in full. A real plan has
+~15–20 such steps; opening is text-only (goal + phases + size),
+closing anchors back to the invocation site with commit order + LoC
+budget + one open question, and "deliberately untouched" steps anchor
+to a representative file you're leaving alone with prose explaining
+why.
 
 ```json
-{
-  "schema_version": 2,
-  "title": "Add retry policy to HTTP client",
-  "subject": { "file": "src/http.rs", "line": 120 },
-  "steps": [
-    { "say": "## Goal\n\nConfigurable retry-on-5xx on every outbound request.\n\n## Phases\n\n1. **Config type** — new `RetryPolicy` struct (~30 LoC)\n2. **Send loop** — wrap with retry + backoff (~80 LoC)\n3. **Caller cleanup** — delete 2 ad-hoc retry loops (~40 LoC)\n4. **Tests** — three unit cases + property test (~120 LoC)\n\n**Size:** ~250 LoC, no public API break." },
-
-    { "say": "## Phase 2.1 — Send loop\n\nThe method to wrap. Keep the signature; add a retry loop around the body:\n\n```rust\npub async fn send(&self, req: Request) -> Result<Response> {\n    let mut attempt = 0;\n    loop {\n        match self.send_once(&req).await {\n            Ok(r) if !is_retryable(&r, &self.cfg.retry) => return Ok(r),\n            _ if attempt + 1 >= self.cfg.retry.max_attempts => /* return last */,\n            _ => { /* back off and retry */ }\n        }\n        attempt += 1;\n    }\n}\n```\n\n### Why a loop, not recursion\n\n- Stack-safe for high `max_attempts`\n- Easier to thread `attempt` for backoff math\n- Use `tokio::time::sleep` so tests can fast-forward via `tokio::time::pause()`",
-      "ref": { "file": "src/http.rs", "line": 120 } },
-
-    { "say": "## Deliberately untouched — `src/tx.rs`\n\nThis caller's retry **interacts with a transaction**. The generic retry layer would re-fire the request inside the same transaction context, risking duplicate commits.\n\n### Decision\n\nLeave the ad-hoc retry in place. The default `max_attempts: 1` makes the generic layer a no-op here.\n\n### Follow-up\n\nIf transactional retries become common, add `RetryStrategy::TransactionAware` later. Out of scope.",
-      "ref": { "file": "src/tx.rs", "line": 30 } },
-
-    { "say": "## Commit order + sign-off\n\n### Sequence\n\n1. **Config type** (~30 LoC) — defaults make it inert\n2. **Send loop** (~80 LoC) — CI green, no caller behavior change yet\n3. **Caller cleanup** (~40 LoC, bundled) — delete 2 ad-hoc loops\n4. **Tests** (~120 LoC)\n\n### Total\n\n**~250 LoC**, 4 commits, no public API break.\n\n### Open question\n\n**Default `retryable_status`**:\n\n- `[502, 503, 504]` — transient gateway errors only\n- `[502, 503, 504, 429]` — also rate-limit (requires `Retry-After` parsing)\n- empty — opt-in per call site\n\n429 with `Retry-After` is bigger scope. Go with `[502, 503, 504]` and file the 429 work as follow-up?",
-      "ref": { "file": "src/http.rs", "line": 120 } }
-  ]
-}
+{ "say": "## Phase 2.1 — Send loop\n\nThe method to wrap. Keep the signature; add a retry loop around the body:\n\n```rust\npub async fn send(&self, req: Request) -> Result<Response> {\n    let mut attempt = 0;\n    loop {\n        match self.send_once(&req).await {\n            Ok(r) if !is_retryable(&r, &self.cfg.retry) => return Ok(r),\n            _ if attempt + 1 >= self.cfg.retry.max_attempts => /* return last */,\n            _ => { /* back off and retry */ }\n        }\n        attempt += 1;\n    }\n}\n```\n\n### Why a loop, not recursion\n\n- Stack-safe for high `max_attempts`\n- Easier to thread `attempt` for backoff math\n- Use `tokio::time::sleep` so tests can fast-forward via `tokio::time::pause()`",
+  "ref": { "file": "src/http.rs", "line": 120 } }
 ```
 
 The review and walkthrough patterns below stay tighter — one
@@ -274,30 +259,24 @@ call edge. Close with verdict + the one thing worth raising in the PR.
   "schema_version": 2,
   "title": "Review main..HEAD",
   "steps": [
-    { "say": "3 entities changed: 1 added, 1 modified (mixed body), 1 deleted. No public signature changes. Walking in dependency order." },
-    { "say": "── Deletion ──" },
+    { "say": "3 entities changed: 1 added, 1 modified, 1 deleted. No public signature changes. Walking deletions → modifications → additions." },
     { "say": "`old_parse` was only called from `init` (also rewritten) — safe to drop.",
       "ref": { "file": "src/cli.rs", "line": 88 } },
-    { "say": "── Modified ──" },
-    { "say": "`init` was rewritten: inline parser replaced with a call to the new `parse_byte_size`. Cleaner, but the new edge introduces test coverage you should verify.",
-      "ref": { "file": "src/cli.rs", "line": 36 } },
-    { "say": "Here's the new call edge.",
+    { "say": "`init` was rewritten: inline parser replaced with a call to the new `parse_byte_size`. New edge — verify test coverage.",
       "arrow": {
         "from": { "file": "src/cli.rs", "line": 36 },
         "to":   { "file": "src/parse.rs", "line": 10 }
       } },
-    { "say": "── Added ──" },
-    { "say": "`parse_byte_size` handles strings like `\"64KiB\"`. Match arms cover lowercase suffixes only — capitalized inputs silently hit `_ => None`. Worth knowing whether that's intentional.",
+    { "say": "`parse_byte_size` handles `\"64KiB\"`-style strings. Match arms cover lowercase suffixes only — capitalized inputs silently hit `_ => None`. Intentional?",
       "ref": { "file": "src/parse.rs", "line": 10 } },
-    { "say": "── Verdict ──" },
-    { "say": "Clean structurally. Surface the parse_byte_size case-sensitivity in the PR description; otherwise good to merge." }
+    { "say": "**Verdict:** clean structurally. Surface the case-sensitivity in the PR description; otherwise good to merge." }
   ]
 }
 ```
 
 ### General walkthrough
 
-Orient a newcomer in 5–10 minutes. Anchor 6–10 entities along the
+Orient a newcomer in 5–10 minutes. Anchor 5–8 entities along the
 lifecycle (request flow, compile pipeline, whatever metaphor fits).
 Resist exhaustiveness — a tour is a curated narrative, not an index.
 End with "where to start making changes."
@@ -307,18 +286,16 @@ End with "where to start making changes."
   "schema_version": 2,
   "title": "Tour of `tinyhttp`",
   "steps": [
-    { "say": "Small HTTP/1.1 server. ~2000 LoC, 6 modules. I'll follow the request lifecycle." },
+    { "say": "Small HTTP/1.1 server. ~2000 LoC, 6 modules. Following the request lifecycle." },
     { "say": "Entry point: `Server::bind` — SocketAddr + Handler in, runnable Server out.",
       "ref": { "file": "src/lib.rs", "line": 20 } },
-    { "say": "Handler is the trait users implement. Routing lives in user code; this crate is wire-level plumbing.",
-      "ref": { "file": "src/handler.rs", "line": 8 } },
     { "say": "Accept loop — spawns a tokio task per connection.",
       "ref": { "file": "src/server.rs", "line": 45 } },
     { "say": "Per-connection: parse request → call handler → write response → close. No keep-alive in v1.",
       "ref": { "file": "src/server.rs", "line": 80 } },
     { "say": "Parser is hand-rolled (no nom, no httparse). Read here when debugging weird-encoding requests.",
       "ref": { "file": "src/parse.rs", "line": 1 } },
-    { "say": "Where to start making changes: routing API for user-facing changes, parser for protocol fixes. The accept loop rarely needs touching." }
+    { "say": "Where to start: routing API for user-facing changes, parser for protocol fixes. Accept loop rarely needs touching." }
   ]
 }
 ```
@@ -344,7 +321,3 @@ End with "where to start making changes."
   user's task is done.
 - Auto-daemonize is Unix-only. Pass `--foreground` on Windows or in CI.
 
-## Limitations
-
-- Rust workspaces only today (TS/Go planned).
-- Diff/review mode needs a git repo with valid base+head SHAs.
