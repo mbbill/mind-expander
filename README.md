@@ -27,15 +27,7 @@
   </p>
 </div>
 
-<p align="center">
-  <a href="assets/mind-expander-showoff.mp4"><strong>Watch the demo</strong></a>
-  ·
-  <a href="docs/demo-videos.md">Browse all demo clips</a>
-</p>
-
-<!-- After uploading assets/mind-expander-showoff.mp4 to GitHub, replace the
-     link above with the generated github.com/user-attachments URL on its own
-     line so GitHub renders the embedded video player. -->
+https://github.com/user-attachments/assets/0bb41ece-a493-4596-9c34-22d9c4e6dbea
 
 ## Why It Exists
 
