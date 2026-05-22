@@ -44,14 +44,46 @@ decline, save the opposite. Then stop offering for similar requests.
 
 When in doubt, default — least intrusive, still teaches discovery.
 
+## Mode — diff vs full-repo
+
+**Decide this BEFORE running `view`.** The diagram itself runs in one of
+two modes, and `--at <base>..<head>` selects diff mode. Getting this
+wrong is the most common skill failure: the user asks about *changes*
+and the agent boots a full-repo diagram, then has to restart.
+
+**Diff mode** (`--at base..head`) — the diagram highlights only entities
+touched in the revspec. Use whenever the request is scoped to a set of
+changes. Triggers:
+
+- "review this PR", "code review", "review the diff"
+- "what changed", "the changes", "what's new since X"
+- **"walk me through the last N commits / the last N changes / recent work"**
+  — *walkthrough verbs paired with "changes" / "commits" still mean diff mode*
+- An explicit revspec, commit range, or PR number is mentioned
+- The user just finished work and is asking you to look at it
+
+**Full-repo mode** (no `--at`) — the whole crate graph. Use when the
+request is about the codebase as a system, not a specific delta:
+
+- "tour of this codebase", "explain how X works", "show me the architecture"
+- Planning a refactor or new feature (the changes don't exist yet)
+- General orientation / onboarding
+
+**The tiebreaker:** the word "changes" / "commits" / "diff" / "PR" /
+"recent" is a strong diff-mode signal *even when* paired with walkthrough
+language. Lean diff. If a request is genuinely ambiguous (e.g. "show me
+this repo" right after a series of commits), ask one short question
+before starting the server — restarting in the other mode is wasted work
+the user sees.
+
 ## Setup
 
 ```bash
 npx mind-expander view <repo> [--at <revspec>]
 ```
 
-`--at <base>..<head>` for review (e.g. `main..HEAD`); omit for planning /
-walkthroughs. Self-daemonizes on Unix: foreground exits 0 once ready, the
+`--at` selects diff vs full-repo mode — see the section above before
+running this. Self-daemonizes on Unix: foreground exits 0 once ready, the
 server keeps running. Stdout block:
 
 ```
@@ -128,9 +160,13 @@ Success returns `{status: "ok", tour_id}`. Failure returns 422 with
 
 **Each step:**
 
-- `say` — required. **Rendered as Markdown** in the bubble (`**bold**`,
-  `` `code` ``, lists, links). Keep each `say` tight; a wall of text in
-  one step loses the bubble's punch.
+- `say` — required. **Rendered as Markdown** in the bubble. Full
+  CommonMark support: `**bold**`, `*italic*`, `` `code` ``, fenced
+  code blocks with language hints, ordered + unordered lists,
+  tables, links, `## headings`. Keep tight for **reviews** and
+  **walkthroughs** (one bubble = one observation); planning steps
+  can be much longer — see the planning use case below for the
+  markdown-rich shape.
 - `ref` *or* `arrow` — mutually exclusive; both optional (omit both for a
   text-only step).
 - `Reference = {file, line?}`. `file` is **repo-relative**. Omitting
@@ -171,22 +207,35 @@ makes sense when there's a real edge the viewer can draw.
 ### Planning (the highest-detail use case)
 
 A planning tour should cover the entire plan — every file the user
-will touch, every function they'll modify, the order of changes, and the
-why. A 4-step "tour" is not a plan.
+will touch, every function they'll modify, the order of changes, and
+the why. A 4-step "tour" is not a plan.
 
 **Structure that consistently works:**
 
-1. Opening text-only step — state the goal, announce the phases.
-2. One **phase per concern** (data model, core logic, callers, tests).
-   Introduce each with `── Phase N: <name> ──`.
-3. One element step per concrete change. File:line + a sentence on what
-   to do AND why.
-4. Surface the **deliberately untouched** — places where the user might
-   expect a change but you've ruled it out. Don't gloss.
-5. Closing step with commit order, size estimate, and one concrete
-   question to give the user something to respond to.
+1. **Opening step** — text-only, allowed. Goal, phase list, size
+   estimate. This is the *only* step without a `ref`.
+2. **Every other step is anchored.** No bare `── Phase ──`
+   separator steps — they waste a click and the bubble has nothing
+   to point at. Fold phase headers into the **prose** as a `## Phase
+   3.2 — name` markdown heading.
+3. **Each step is a mini-section** — not a one-liner. Use the
+   bubble's full markdown: H2 headings, fenced code blocks (type
+   defs, sigs, before/after), tables (mapping rules), nested
+   bullets, bold key terms, inline `code` for every symbol.
+4. **Anchoring files that don't exist yet:** ref the file you'll
+   **mirror** (TS analog when planning Go; existing trait when
+   planning a new impl). Lead with "Mirror this for X".
+5. **Surface the deliberately untouched** — anchor to a
+   representative file you're leaving alone, with prose explaining
+   why.
+6. **Closing step** — anchored to the CLI / main / invocation
+   site. Numbered commit sequence with per-commit LoC budgets,
+   total size estimate, and **one concrete open question** the
+   user can answer to unblock implementation.
 
-**Example** — user asks to plan a retry policy for an HTTP client:
+**Example** — three representative step shapes (opening, mid-plan
+anchored, closing). A full plan would have ~15–20 such steps; this
+shows the markdown patterns they share.
 
 ```json
 {
@@ -194,44 +243,23 @@ why. A 4-step "tour" is not a plan.
   "title": "Add retry policy to HTTP client",
   "subject": { "file": "src/http.rs", "line": 120 },
   "steps": [
-    { "say": "Goal: configurable retry-on-5xx on every outbound request. Four phases: config type, send loop, callers (no signature break), tests." },
+    { "say": "## Goal\n\nConfigurable retry-on-5xx on every outbound request.\n\n## Phases\n\n1. **Config type** — new `RetryPolicy` struct (~30 LoC)\n2. **Send loop** — wrap with retry + backoff (~80 LoC)\n3. **Caller cleanup** — delete 2 ad-hoc retry loops (~40 LoC)\n4. **Tests** — three unit cases + property test (~120 LoC)\n\n**Size:** ~250 LoC, no public API break." },
 
-    { "say": "── Phase 1: config type ──" },
-    { "say": "Add a `RetryPolicy` struct here, next to `Config` — same module so consumers import from one place. Fields: `max_attempts` (u8), `backoff` (Duration), `retryable_status` (Vec<u16>).",
-      "ref": { "file": "src/config.rs", "line": 14 } },
-    { "say": "Add `Config::retry: RetryPolicy` to the existing struct. Default = `max_attempts: 1` so this stays a zero-behavior-change addition until callers opt in.",
-      "ref": { "file": "src/config.rs", "line": 8 } },
-
-    { "say": "── Phase 2: send loop ──" },
-    { "say": "The method I'll wrap. Keep the signature; add a retry loop around the body.",
+    { "say": "## Phase 2.1 — Send loop\n\nThe method to wrap. Keep the signature; add a retry loop around the body:\n\n```rust\npub async fn send(&self, req: Request) -> Result<Response> {\n    let mut attempt = 0;\n    loop {\n        match self.send_once(&req).await {\n            Ok(r) if !is_retryable(&r, &self.cfg.retry) => return Ok(r),\n            _ if attempt + 1 >= self.cfg.retry.max_attempts => /* return last */,\n            _ => { /* back off and retry */ }\n        }\n        attempt += 1;\n    }\n}\n```\n\n### Why a loop, not recursion\n\n- Stack-safe for high `max_attempts`\n- Easier to thread `attempt` for backoff math\n- Use `tokio::time::sleep` so tests can fast-forward via `tokio::time::pause()`",
       "ref": { "file": "src/http.rs", "line": 120 } },
-    { "say": "Pull the 5xx-detection out of this branch into `is_retryable(&err, &policy)` so the loop body stays readable.",
-      "ref": { "file": "src/http.rs", "line": 158 } },
-    { "say": "Backoff: `policy.backoff * 2^attempt`. Use `tokio::time::sleep` so tests can fast-forward virtual time." },
 
-    { "say": "── Phase 3: callers ──" },
-    { "say": "All 8 callers go through `send`. Signature unchanged, so no code change required. But callers with ad-hoc retries need their loops removed — otherwise we double-retry. This is one.",
-      "ref": { "file": "src/sync.rs", "line": 47 } },
-    { "say": "Same pattern — delete the manual 503 retry; set `config.retry.retryable_status = vec![503]` at the call site.",
-      "ref": { "file": "src/poll.rs", "line": 92 } },
-    { "say": "**Deliberately untouched:** this caller's retry interacts with a transaction. Leave it; default `max_attempts: 1` keeps us from double-firing.",
+    { "say": "## Deliberately untouched — `src/tx.rs`\n\nThis caller's retry **interacts with a transaction**. The generic retry layer would re-fire the request inside the same transaction context, risking duplicate commits.\n\n### Decision\n\nLeave the ad-hoc retry in place. The default `max_attempts: 1` makes the generic layer a no-op here.\n\n### Follow-up\n\nIf transactional retries become common, add `RetryStrategy::TransactionAware` later. Out of scope.",
       "ref": { "file": "src/tx.rs", "line": 30 } },
 
-    { "say": "── Phase 4: tests ──" },
-    { "say": "Existing send test. Add three cases below: 500-retried-twice-then-succeeds, 500-retried-max-then-errors, 200-no-retry.",
-      "ref": { "file": "tests/http.rs", "line": 64 } },
-    { "say": "Property test — random RetryPolicy + response sequence, assert HTTP calls = min(max_attempts, attempts_until_2xx). Proptest is already a dep.",
-      "ref": { "file": "tests/http.rs", "line": 200 } },
-
-    { "say": "── Done ──" },
-    { "say": "Commit order: config → core loop → caller cleanup (bundle) → tests. ~250 LoC, no public API break. Want me to start with Phase 1?" }
+    { "say": "## Commit order + sign-off\n\n### Sequence\n\n1. **Config type** (~30 LoC) — defaults make it inert\n2. **Send loop** (~80 LoC) — CI green, no caller behavior change yet\n3. **Caller cleanup** (~40 LoC, bundled) — delete 2 ad-hoc loops\n4. **Tests** (~120 LoC)\n\n### Total\n\n**~250 LoC**, 4 commits, no public API break.\n\n### Open question\n\n**Default `retryable_status`**:\n\n- `[502, 503, 504]` — transient gateway errors only\n- `[502, 503, 504, 429]` — also rate-limit (requires `Retry-After` parsing)\n- empty — opt-in per call site\n\n429 with `Retry-After` is bigger scope. Go with `[502, 503, 504]` and file the 429 work as follow-up?",
+      "ref": { "file": "src/http.rs", "line": 120 } }
   ]
 }
 ```
 
-The review and walkthrough patterns below reuse this structure — opening
-overview, sectioned body with `──` headers, anchored steps, closing
-question.
+The review and walkthrough patterns below stay tighter — one
+observation per step, plain `say` strings, no need for the dense
+multi-section structure that planning warrants.
 
 ### Code review
 
