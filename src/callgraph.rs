@@ -824,6 +824,7 @@ mod tests {
                     name: "c".to_string(),
                     root: "src".to_string(),
                     modules: modules.into_iter().map(|m| (m.path.clone(), m)).collect(),
+                    language: crate::model::Language::Rust,
                     side: crate::model::Side::default(),
                 },
             )]),

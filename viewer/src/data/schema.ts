@@ -164,10 +164,18 @@ export interface ModuleFacts {
   readonly side?: Side;
 }
 
+/** Source language this crate was extracted from — stamped by the
+ *  owning Rust-side `LanguageFrontend`. Optional + defaults to
+ *  `'rust'` in old JSON dumps (the field was added when TS landed). */
+export type Language = 'rust' | 'typescript';
+
 export interface CrateFacts {
   readonly name: string;
   readonly modules: Readonly<Record<string, ModuleFacts>>;
   readonly side?: Side;
+  /** See `Language`. Omitted on pre-language JSON — treat absent
+   *  as `'rust'`. */
+  readonly language?: Language;
 }
 
 export type EdgeKind =

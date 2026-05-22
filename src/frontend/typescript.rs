@@ -180,6 +180,7 @@ fn extract_package(pkg: &PackageRoot) -> Result<CrateFacts> {
         name: pkg.name.clone(),
         root: pkg.src_root.to_string_lossy().into_owned(),
         modules,
+        language: crate::model::Language::Typescript,
         side: Default::default(),
     })
 }

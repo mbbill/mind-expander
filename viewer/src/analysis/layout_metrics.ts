@@ -152,14 +152,15 @@ export function computeLeafSegment(
 }
 
 // Module label is just the leaf — depth is conveyed by indentation, not
-// by a dimmed parent-path prefix.
-export function moduleLeafLabel(id: string): string {
-  const segs = id.split('::');
-  return segs[segs.length - 1] ?? id;
-}
-
+// Measure the hit-width (and matching chip background width) for a
+// module row whose visible label is `label`. The label is authoritative
+// — pass exactly what the renderer will render, so the bold-measured
+// width matches the rendered pixels. For TS leaves that means the
+// filename (`band_layout.ts`); for everything else, the bare path
+// segment. Caller (`geometry.ts`) reads it off `ModuleNode.label`,
+// which `buildModuleTree` set authoritatively.
 export function measureModuleHitWidth(
-  id: string,
+  label: string,
   _measureText: (text: string) => number,
   measureBoldText: (text: string) => number,
 ): number {
@@ -167,7 +168,6 @@ export function measureModuleHitWidth(
   // and click hit-rect never under-fit the rendered text (crate rows
   // render bold; submodules render in the normal weight, but their
   // bold-measured width is a safe upper bound).
-  const leaf = moduleLeafLabel(id);
-  const labelWidth = measureBoldText(leaf) * MODULE_LABEL_LEAF_FONT_SCALE;
+  const labelWidth = measureBoldText(label) * MODULE_LABEL_LEAF_FONT_SCALE;
   return MODULE_LABEL_X + labelWidth + MODULE_HIT_PAD_RIGHT;
 }

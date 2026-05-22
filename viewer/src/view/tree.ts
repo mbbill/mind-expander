@@ -31,7 +31,6 @@ import {
   TYPE_EXPAND_ARROW_OPEN,
   TYPE_LABEL_FONT_SIZE,
   TYPE_LABEL_X,
-  moduleLeafLabel,
 } from '../analysis/layout_metrics.ts';
 import { type Layout, ROW_H } from '../analysis/layout_model.ts';
 import type { OwnershipIndex } from '../analysis/ownership.ts';
@@ -1227,9 +1226,11 @@ function renderModules(
 
   // Refresh the module label each draw — content can shift across
   // redraws when crates change or focus mode collapses ancestors.
+  // `d.label` was set authoritatively by `buildModuleTree` (file
+  // basename for TS leaves, path segment otherwise).
   merged
     .select<SVGTextElement>('text.name')
-    .text((d) => moduleLeafLabel(d.id));
+    .text((d) => d.label);
 
   // Refresh click handler with current closure each draw.
   merged
@@ -1434,7 +1435,7 @@ export function renderStickyModules(
     .text((d) => (d.expanded ? '-' : '+'))
     .attr('fill', (d) => (d.expanded ? COLOR_CHEVRON_COLLAPSE : COLOR_CHEVRON_EXPAND));
 
-  merged.select<SVGTextElement>('text.name').text((d) => moduleLeafLabel(d.id));
+  merged.select<SVGTextElement>('text.name').text((d) => d.label);
 
   const CHIP_OUTER_PAD = 4;
   merged.each(function (d) {

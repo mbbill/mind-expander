@@ -70,6 +70,8 @@ function toModuleRows(geometry: Geometry): ModuleRow[] {
       hasChildren: m.hasChildren,
       prefixSegments: m.prefixSegments,
       leafBg: m.leafBg,
+      isLeaf: m.node.isLeaf,
+      language: m.node.language,
     }),
   );
 }

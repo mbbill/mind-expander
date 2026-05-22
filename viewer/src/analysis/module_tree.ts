@@ -2,7 +2,7 @@
 // with types as leaves. No DOM, no D3, no view state — view-state machinery
 // keys off the stable `id` field of each node.
 
-import type { CrateFacts, Facts, FieldFacts, FnFacts, ReExport, TypeKind } from '../data/schema.ts';
+import type { CrateFacts, Facts, FieldFacts, FnFacts, Language, ReExport, TypeKind } from '../data/schema.ts';
 import {
   BUCKET_LABEL,
   BUCKET_ORDER,
@@ -20,6 +20,19 @@ export interface ModuleNode {
   readonly label: string;
   readonly path: string;
   readonly children: readonly TreeNode[];
+  /** True when this node came from `crate.modules` — i.e. an actual
+   *  source file the extractor parsed. False for synthesized
+   *  intermediates that exist only to bridge gaps in the module path
+   *  hierarchy. For Rust this distinction is mostly decorative; the
+   *  TS renderer uses it to draw folder vs file icons since TS
+   *  module path = file path. */
+  readonly isLeaf: boolean;
+  /** Source language of the crate this module belongs to. Stamped on
+   *  every descendant during tree build so the renderer doesn't have
+   *  to walk back to the crate-root to know which language to use.
+   *  The workspace root carries `'rust'` as a harmless placeholder
+   *  since nothing renders folder/file icons on it. */
+  readonly language: Language;
 }
 
 export interface TypeNode {
@@ -82,12 +95,20 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
     (m) => !excludeTests || !hasTestsSegment(m.path),
   );
 
+  // Crate language is stamped on every descendant of this tree so
+  // the renderer doesn't have to walk back to the crate-root to ask.
+  // Defaults to 'rust' for older JSON dumps that pre-date the
+  // language field (it was added when TS support landed).
+  const crateLanguage: Language = crate.language ?? 'rust';
+
   type Scratch = {
     kind: 'module';
     id: string;
     label: string;
     path: string;
     children: TreeNode[];
+    isLeaf: boolean;
+    language: Language;
   };
 
   const root: Scratch = {
@@ -96,13 +117,18 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
     label: crate.name,
     path: '',
     children: [],
+    // The crate-root node represents the package as a whole, not a
+    // file — render it as a container.
+    isLeaf: false,
+    language: crateLanguage,
   };
   const byPath = new Map<string, Scratch>([['', root]]);
 
   // Build the prefix chain for every module path. Synthetic intermediates
   // (not in `crate.modules` themselves) default to folder-style labels since
-  // their existence implies they hold submodules. Recursion is bounded by max
-  // path depth, which is small in practice.
+  // their existence implies they hold submodules. The `isLeaf` flag starts
+  // false here; the explicit-modules loop below flips it to true on any
+  // path that actually appears in `crate.modules`.
   const ensureChain = (path: string): Scratch => {
     const cached = byPath.get(path);
     if (cached) return cached;
@@ -116,6 +142,8 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
       label: lastSegment,
       path,
       children: [],
+      isLeaf: false,
+      language: crateLanguage,
     };
     parent.children.push(node);
     byPath.set(path, node);
@@ -130,6 +158,26 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
   // with the parent prefix dimmed/smaller to make module-ness explicit.
   for (const m of modules) {
     const node = m.path === '' ? root : ensureChain(m.path);
+    // This module path appeared in `crate.modules` — mark the node
+    // as a real source file (vs. a synthesized intermediate). For
+    // TS this drives the file-vs-folder icon in the renderer; for
+    // Rust it's harmless metadata.
+    node.isLeaf = true;
+    // TS module path = file path (sans extension); the actual
+    // filename — including `.ts` / `.tsx` — is sitting right
+    // there in `m.file`. Use it as the leaf label so the tree
+    // reads as a filesystem view rather than as a stripped-name
+    // module hierarchy. Rust modules don't get this treatment:
+    // module ≠ file (mod.rs, multi-file modules), so the path
+    // segment is the honest label.
+    //
+    // Crate root (m.path === '') keeps its bare crate-name label
+    // even for TS — we don't want to show `index.ts` for a
+    // single-file package, the crate name is the right grouping.
+    if (crateLanguage === 'typescript' && m.path !== '') {
+      const basename = leafBasename(m.file);
+      if (basename !== null) node.label = basename;
+    }
     // Synthetic function-group pseudo-types come FIRST so they appear at
     // the top of the module's column when the band sorts kind-aware.
     for (const groupNode of synthesiseFunctionGroups(crate.name, m.path, m.functions)) {
@@ -196,6 +244,15 @@ export function buildWorkspaceTree(facts: Facts, options: BuildOptions = {}): Mo
     label: WORKSPACE_ROOT_ID,
     path: '',
     children,
+    // The synthetic workspace root holds crates, not modules from a
+    // single source file — render as a container if it were ever
+    // rendered (the layout currently skips painting it).
+    isLeaf: false,
+    // The language field is denormalized down from each crate; the
+    // workspace root itself spans multiple languages in a polyglot
+    // repo, so picking one would lie. The renderer never reads the
+    // workspace root's language, so 'rust' is just a placeholder.
+    language: 'rust',
   };
 }
 
@@ -338,6 +395,21 @@ export function hasTestsSegment(path: string): boolean {
  *  id without duplicating the rule. */
 export function idForModule(crateName: string, path: string): string {
   return path === '' ? crateName : `${crateName}::${path}`;
+}
+
+/** Last `/`-separated segment of an absolute path, returned with its
+ *  extension intact (e.g. `band_layout.ts`, `view_state.tsx`). Returns
+ *  null for paths that don't have a meaningful basename — used by
+ *  `buildModuleTree` to label TS leaf modules from their actual
+ *  filename instead of the extension-stripped module path. */
+function leafBasename(file: string): string | null {
+  if (file === '') return null;
+  // Handle both POSIX and Windows separators defensively. Most paths
+  // in practice come from `std::path::Path::display` on macOS / Linux
+  // so the `/` branch dominates.
+  const slash = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
+  const tail = slash >= 0 ? file.slice(slash + 1) : file;
+  return tail === '' ? null : tail;
 }
 
 // Order within a module's children:

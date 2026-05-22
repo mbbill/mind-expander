@@ -12,7 +12,7 @@
 // scrollTop. Native sticky responds to scrollTop changes regardless of
 // whether the user or JS moved it, so the breadcrumb is fully native.
 
-import { INDENT_PX, ROW_H, moduleLeafLabel } from '../analysis/layout_metrics.ts';
+import { INDENT_PX, ROW_H } from '../analysis/layout_metrics.ts';
 import type { Layout } from '../analysis/layout_model.ts';
 import type { Side } from '../data/schema.ts';
 
@@ -108,6 +108,14 @@ export function renderHtmlModuleTree(
     const group = document.createElement('div');
     group.className = 'module-group';
     group.dataset.id = m.id;
+    // `data-leaf` = "this module is a real source file" vs a
+    // synthesized directory intermediate. `data-crate-lang` =
+    // owning crate's language ("rust" | "typescript"). Both are
+    // pure data attributes read by CSS to switch the
+    // folder-vs-file icon on TypeScript crates; Rust rows ignore
+    // them (no matching CSS).
+    group.dataset.leaf = m.isLeaf ? 'true' : 'false';
+    group.dataset.crateLang = m.language;
     // Union-diff side coloring. When the host provides a sideByModule
     // map (only in unified mode), tag the group's element so CSS can
     // paint a left-edge bar. Skip `both` for v1 because we don't yet
@@ -333,7 +341,11 @@ function renderHeader(
 
   const chip = document.createElement('span');
   chip.className = 'module-chip';
-  chip.textContent = moduleLeafLabel(m.id);
+  // The label was set by `buildModuleTree` from the right source —
+  // bare path segment for Rust modules and folder intermediates;
+  // actual filename (incl. `.ts` / `.tsx`) for TS leaf modules.
+  // We just render whatever's there.
+  chip.textContent = m.label;
   chip.style.fontSize = `${(m.modDepth === 0 ? 15 : 14) * k}px`;
   // No background or border on the chip — legibility comes from the
   // text-shadow halo on `.module-header`. If we want to bring chips

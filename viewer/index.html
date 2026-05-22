@@ -630,6 +630,47 @@
         white-space: nowrap;
         flex: 0 0 auto;
       }
+      /* TypeScript crates: every module path maps 1:1 to either a
+         directory or a `.ts` / `.tsx` file, so we can decorate rows
+         with the matching icon. Rust crates don't get these rules
+         because module ≠ file there (mod.rs, multi-file modules,
+         etc.) and showing folders/files would be misleading.
+
+         The icons are inline SVGs encoded as data: URIs so we don't
+         have to ship a separate asset. Both icons are 14×14 slate-500
+         outlines (`#64748b`) to match the secondary-text palette.
+         Skip the crate-tier row (depth 0) — it represents the
+         package as a whole, not a folder or a file. */
+      #html-modules .module-group[data-crate-lang='typescript']
+        .module-header:not(.crate-tier) .module-chip::before {
+        content: '';
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        margin-right: 5px;
+        flex: 0 0 auto;
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: contain;
+        vertical-align: -2px;
+      }
+      /* Folder icon — SOLID FILL in amber (#f59e0b) so it stands
+         apart from the outlined file icon at a glance. Same hue
+         family system folder icons use in most file managers, so
+         it reads instantly as "directory" without needing to
+         examine the shape. */
+      #html-modules .module-group[data-crate-lang='typescript'][data-leaf='false']
+        .module-header:not(.crate-tier) .module-chip::before {
+        background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23f59e0b' d='M2 5 Q2 4 3 4 L6.5 4 L8 5.5 L13 5.5 Q14 5.5 14 6.5 L14 12.5 Q14 13.5 13 13.5 L3 13.5 Q2 13.5 2 12.5 Z'/%3E%3C/svg%3E");
+      }
+      /* File icon — outlined paper with two text lines inside.
+         Darker slate stroke + the content lines make this read as
+         "document with text" rather than just an empty rectangle,
+         and contrasts with the filled amber folder above. */
+      #html-modules .module-group[data-crate-lang='typescript'][data-leaf='true']
+        .module-header:not(.crate-tier) .module-chip::before {
+        background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23475569' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 2 L9.5 2 L13 5.5 L13 13.5 Q13 14 12.5 14 L3.5 14 Q3 14 3 13.5 L3 2.5 Q3 2 3.5 2 Z'/%3E%3Cpath d='M9.5 2 L9.5 5.5 L13 5.5'/%3E%3Cline x1='5' y1='9' x2='10.5' y2='9'/%3E%3Cline x1='5' y1='11' x2='10.5' y2='11'/%3E%3C/svg%3E");
+      }
       #tree.viewport-dragging,
       #tree.viewport-dragging:active {
         cursor: move;
@@ -2177,6 +2218,7 @@
                 <div class="legend-grid-row"><span class="legend-kind-letter">C</span><div class="legend-grid-text"><strong>class</strong><span class="legend-grid-desc"><span class="lang-tag lang-ts">TS</span></span></div></div>
                 <div class="legend-grid-row"><span class="legend-kind-letter">I</span><div class="legend-grid-text"><strong>interface</strong><span class="legend-grid-desc"><span class="lang-tag lang-ts">TS</span></span></div></div>
                 <div class="legend-grid-row"><span class="legend-kind-letter">F</span><div class="legend-grid-text"><strong>function group</strong><span class="legend-grid-desc">a module's free functions, grouped by visibility (synthetic — both languages).</span></div></div>
+                <div class="legend-grid-row"><span class="legend-kind-letter">📁</span><div class="legend-grid-text"><strong>folder / file icons</strong><span class="legend-grid-desc"><span class="lang-tag lang-ts">TS</span> folder icon on directory rows, file icon on rows backed by a real <code>.ts</code> / <code>.tsx</code> file. TS module paths map 1:1 to filesystem paths, so the tree doubles as a file browser. Rust crates don't show these icons because module ≠ file there.</span></div></div>
               </div>
             </section>
 

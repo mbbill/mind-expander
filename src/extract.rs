@@ -162,6 +162,10 @@ fn extract_crate(
         name: name.to_string(),
         root: src_root.display().to_string(),
         modules: BTreeMap::new(),
+        // Rust frontend overwrites this in `src/frontend/rust.rs`,
+        // but the default = Rust covers callers that go through
+        // this path without the wrapper too.
+        language: crate::model::Language::default(),
         side: crate::model::Side::default(),
     };
     for entry in WalkDir::new(src_root).into_iter().filter_map(|e| e.ok()) {

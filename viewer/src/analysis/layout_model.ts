@@ -1,4 +1,4 @@
-import type { Ownership, TypeKind } from '../data/schema.ts';
+import type { Language, Ownership, TypeKind } from '../data/schema.ts';
 import type { ViewState } from '../state/view_state.ts';
 import type { FunctionCallIndex, FunctionCallRef, FunctionRowRef } from './calls.ts';
 import type { DriftClass, DriftIndex } from './drift.ts';
@@ -28,6 +28,15 @@ export interface ModuleRow {
    *  every row shows a defined chip; `isParent` tells the renderer whether
    *  to use the hashed colour (parent of deeper rows) or a neutral white. */
   readonly leafBg: LeafBgSegment;
+  /** True when this module is a real source file (came from
+   *  `crate.modules`), false when it's a synthesized directory
+   *  intermediate. The TS renderer uses this for the folder/file
+   *  icon. See `ModuleNode.isLeaf` for the source of truth. */
+  readonly isLeaf: boolean;
+  /** Source language the owning crate was extracted from. Lets the
+   *  renderer scope language-specific decorations (folder/file icons
+   *  for TS) without walking up to the crate root. */
+  readonly language: Language;
 }
 
 export type RowKind = 'field' | 'method_bucket' | 'method' | 'function' | 'signature_arg';

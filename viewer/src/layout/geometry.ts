@@ -335,7 +335,7 @@ function collectVisibleModuleBands(
       node,
       modDepth,
       labelX,
-      hitWidth: measureModuleHitWidth(node.id, measure, measureBold),
+      hitWidth: measureModuleHitWidth(node.label, measure, measureBold),
       hasChildren,
       expanded,
       semanticItems,
@@ -1142,7 +1142,7 @@ function computeGlobalXStart(
     if (n.kind !== 'module') return;
     if (modDepth > 0 && !parentExpanded) return;
     const labelX = LEFT_PAD + modDepth * INDENT_PX + MODULE_GLYPH_W;
-    const chipWidth = measureModuleHitWidth(n.id, measure, measureBold);
+    const chipWidth = measureModuleHitWidth(n.label, measure, measureBold);
     if (labelX + chipWidth > maxLabelEnd) maxLabelEnd = labelX + chipWidth;
     const expanded = state.isExpanded(n.id);
     for (const c of n.children) walk(c, modDepth + 1, expanded);

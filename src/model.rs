@@ -87,9 +87,29 @@ pub struct CrateFacts {
     pub root: String,
     /// Modules indexed by full path inside the crate (e.g. "vm::wasm").
     pub modules: BTreeMap<String, ModuleFacts>,
+    /// Source language this crate was extracted from. Stamped by the
+    /// owning `LanguageFrontend` at extraction time. Defaults to
+    /// `Rust` for backward compatibility with older JSON dumps that
+    /// pre-date this field.
+    #[serde(default)]
+    pub language: Language,
     /// Union-diff side. Defaults to Head for single-snapshot mode.
     #[serde(default)]
     pub side: Side,
+}
+
+/// Source language of an extracted crate. The viewer reads this to
+/// switch language-flavored rendering on (e.g. folder/file icons in
+/// the module tree for TS crates, where module path = file path).
+/// Reuses the same string identifiers the [`crate::frontend::LanguageFrontend`]
+/// impls return from their `name()` method, so the field's value is
+/// always what the frontend already calls itself.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    #[default]
+    Rust,
+    Typescript,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

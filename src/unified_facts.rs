@@ -280,6 +280,9 @@ fn merge_crate(b: CrateFacts, h: CrateFacts, hunks: Option<&Hunks>) -> CrateFact
         // because we take the `tag_crate` branch above.
         root: h.root,
         modules,
+        // Head and base have the same language (would be the same
+        // file paths under the same crate). Take it from head.
+        language: h.language,
         side: Side::Both,
     }
 }
@@ -706,6 +709,7 @@ mod tests {
             name: name.to_string(),
             root: format!("/{name}"),
             modules: modules.into_iter().map(|m| (m.path.clone(), m)).collect(),
+            language: crate::model::Language::Rust,
             side: Side::Head,
         }
     }
