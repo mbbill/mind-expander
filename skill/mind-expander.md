@@ -305,9 +305,11 @@ End with "where to start making changes."
 - **Don't dump prose with a tour as afterthought.** If you go the tour
   route, the tour IS the reply — your text before/after should be one or
   two lines max.
-- **Pin every concrete claim.** A `say` without a `ref` is fine for
-  transitions and `── headers ──`. But "we should refactor this module"
-  with no pointer is wasted breath.
+- **Pin every concrete claim.** A bare `say` is fine for the opening
+  step (goal + phase overview) and nothing else. Don't insert
+  `── Phase ──` separator steps — they waste a click and the bubble
+  has nothing to point at. Fold phase headers into the prose of the
+  next anchored step as `## Phase N — name` markdown headings.
 - **Don't fabricate arrows.** A rejected arrow kills the whole tour (422).
   If unsure the edge exists, use `ref` steps + prose.
 - **Repo-relative paths only.** `src/foo.rs` ✓, absolute paths ✗.

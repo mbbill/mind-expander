@@ -44,9 +44,16 @@ the exact modules, symbols, relationships, and changes that matter.
 
 mind-expander is designed to be driven by an AI coding agent.
 
-1. **Install the skill in your agent.** Copy
-   [skill/mind-expander.md](skill/mind-expander.md) into your agent's
-   skills directory (Claude Code, Cursor, etc.).
+1. **Install the skill in your agent.** One command:
+
+   ```sh
+   npx mind-expander install-skill
+   ```
+
+   Detects whichever AI coding agents you have installed (Claude
+   Code, Codex, Cursor), then writes the skill to each user / project
+   config directory. Idempotent — re-run after upgrading the package
+   to refresh the installed skill.
 
 2. **Ask naturally.** Examples:
 
