@@ -1,6 +1,6 @@
 {
   "name": "@mind-expander/binary-darwin-x64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "macOS x86_64 (Intel) binary for mind-expander.",
   "license": "Apache-2.0",
   "author": "Bill Ming <mbbill@gmail.com>",
