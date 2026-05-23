@@ -50,9 +50,9 @@ fn main() {
         .and_then(|m| m.modified().ok());
 
     let needs_build = match (newest_input, dist_mtime) {
-        (_, None) => true,                          // dist missing
-        (Some(src), Some(dist)) => src > dist,      // any input is newer
-        (None, Some(_)) => false,                   // nothing to compare; trust dist
+        (_, None) => true,                     // dist missing
+        (Some(src), Some(dist)) => src > dist, // any input is newer
+        (None, Some(_)) => false,              // nothing to compare; trust dist
     };
 
     if !needs_build {
@@ -118,4 +118,3 @@ fn run_npm(cwd: &Path, args: &[&str]) {
         );
     }
 }
-

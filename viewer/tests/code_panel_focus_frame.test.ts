@@ -40,7 +40,7 @@ describe('contiguousRuns', () => {
 
   it('handles many short runs (multi-hunk method)', () => {
     // Real-world shape from arm64::control::lower_terminator_dispatch
-    // [63, 107] in the silverfir-nano diff: rows alternate between
+    // [63, 107] in the example diff: rows alternate between
     // entity-rows (in-hunk) and collapse markers / out-of-entity
     // context. Each contiguous in-hunk slice should be its own frame.
     const items = [

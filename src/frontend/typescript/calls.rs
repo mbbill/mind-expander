@@ -92,7 +92,9 @@ fn build_fn_registry(ws: &WorkspaceFacts) -> Registry {
                 }
                 // Also index the type name itself for `new Type(...)`
                 // → `Type::constructor` resolution downstream.
-                reg.entry(t.name.clone()).or_default().push(t.full_path.clone());
+                reg.entry(t.name.clone())
+                    .or_default()
+                    .push(t.full_path.clone());
             }
         }
     }
@@ -226,7 +228,10 @@ impl<'a> CallVisitor<'a> {
                                 // `Type::foo` resolutions when the
                                 // global short-name set has many
                                 // entries.
-                                (CallKind::AssociatedFunction, lookup_fq_for_type(self.registry, &recv))
+                                (
+                                    CallKind::AssociatedFunction,
+                                    lookup_fq_for_type(self.registry, &recv),
+                                )
                             } else {
                                 (CallKind::Method, None)
                             }

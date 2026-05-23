@@ -171,7 +171,7 @@ pub enum ReExportKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeFacts {
     pub name: String,
-    /// Full canonical path, e.g. `sf-nano-core::vm::wasm::context::CompileContext`.
+    /// Full canonical path, e.g. `my-crate::vm::wasm::context::CompileContext`.
     pub full_path: String,
     pub kind: TypeKind,
     pub visibility: String,

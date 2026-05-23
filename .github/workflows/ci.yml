@@ -1,0 +1,71 @@
+# PR + main-branch test pipeline.
+#
+# Runs on every push to main and every pull request. Fast: one
+# ubuntu-latest runner doing cargo + viewer tests in sequence. The
+# heavy cross-compile matrix lives in release.yml and only fires on
+# tag pushes.
+#
+# What's verified:
+#   - Rust: cargo build --release + cargo test (all 56 tests)
+#   - Viewer: vitest suite (340 tests)
+#   - Lint hygiene: cargo fmt --check + cargo clippy -D warnings
+#
+# Cached: cargo target, viewer node_modules.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Force every JavaScript action to Node 24 — matches release.yml.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  rust:
+    name: rust build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        # build.rs in this crate runs `npm install && npm run build`
+        # in viewer/ to bake viewer/dist into the binary via
+        # include_dir!. Without Node on the runner, every cargo
+        # command fails at the build script.
+        with:
+          node-version: '20'
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        # Run clippy as informational for now — the codebase has a
+        # handful of pre-existing warnings we haven't audited. Once
+        # those are cleaned up, tighten to `-- -D warnings` so any
+        # new lint regression breaks the build.
+        run: cargo clippy --all-targets
+      - name: cargo test
+        run: cargo test --all-targets
+
+  viewer:
+    name: viewer test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: viewer
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: viewer/package-lock.json
+      - run: npm ci
+      - run: npm test

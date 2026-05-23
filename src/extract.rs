@@ -319,7 +319,15 @@ impl Ctx {
                 let name = f.sig.ident.to_string();
                 let visibility = vis_text(&f.vis);
                 let span = Some(fn_span_of(&self.file, &f.sig, Some(&f.block)));
-                let facts = build_fn_facts(&name, None, visibility, &f.sig, Some(&f.block), &f.attrs, span);
+                let facts = build_fn_facts(
+                    &name,
+                    None,
+                    visibility,
+                    &f.sig,
+                    Some(&f.block),
+                    &f.attrs,
+                    span,
+                );
                 let module_path = self.current_module_path();
                 self.ensure_module(&module_path).functions.push(facts);
             }
@@ -340,7 +348,13 @@ impl Ctx {
         let module_path = self.current_module_path();
         let use_span = span_of(&self.file, u.span());
         let mut leaves: Vec<PendingReExport> = Vec::new();
-        walk_use_tree(&u.tree, &mut Vec::new(), &visibility, Some(&use_span), &mut leaves);
+        walk_use_tree(
+            &u.tree,
+            &mut Vec::new(),
+            &visibility,
+            Some(&use_span),
+            &mut leaves,
+        );
         if !leaves.is_empty() {
             self.pending_re_exports
                 .entry(module_path)
@@ -422,7 +436,7 @@ impl Ctx {
                     lifetimes: vec![],
                     span: var_span,
                     prev_span: None,
-            change_kind: None,
+                    change_kind: None,
                     side: crate::model::Side::default(),
                 });
             } else {
@@ -511,7 +525,8 @@ impl Ctx {
                 let visibility = "pub".to_string();
                 let block_ref = f.default.as_ref();
                 let span = Some(fn_span_of(&self.file, &f.sig, block_ref));
-                let facts = build_fn_facts(&name, None, visibility, &f.sig, block_ref, &f.attrs, span);
+                let facts =
+                    build_fn_facts(&name, None, visibility, &f.sig, block_ref, &f.attrs, span);
                 methods.push(facts);
             }
         }
@@ -733,7 +748,11 @@ fn doc_first_line(attrs: &[syn::Attribute]) -> Option<String> {
 
 fn fields_from_struct(fields: &syn::Fields, file: &str) -> Vec<FieldFacts> {
     match fields {
-        syn::Fields::Named(named) => named.named.iter().map(|f| field_from_named(f, file)).collect(),
+        syn::Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|f| field_from_named(f, file))
+            .collect(),
         syn::Fields::Unnamed(unn) => unn
             .unnamed
             .iter()
@@ -750,7 +769,7 @@ fn fields_from_struct(fields: &syn::Fields, file: &str) -> Vec<FieldFacts> {
                     lifetimes,
                     span: Some(span_of(file, f.span())),
                     prev_span: None,
-            change_kind: None,
+                    change_kind: None,
                     side: crate::model::Side::default(),
                 }
             })
@@ -776,7 +795,7 @@ fn field_from_named(f: &syn::Field, file: &str) -> FieldFacts {
         lifetimes,
         span: Some(span_of(file, f.span())),
         prev_span: None,
-            change_kind: None,
+        change_kind: None,
         side: crate::model::Side::default(),
     }
 }
@@ -920,7 +939,7 @@ fn build_fn_facts(
         doc_first_line: doc_first_line(attrs),
         span,
         prev_span: None,
-            change_kind: None,
+        change_kind: None,
         side: crate::model::Side::default(),
     }
 }
@@ -1097,12 +1116,8 @@ fn resolve_re_export(
                 .map(|c| {
                     let cand_segs: Vec<&str> = c.split("::").collect();
                     let module_len = cand_segs.len().saturating_sub(1);
-                    let cand_mod_rev: Vec<&str> = cand_segs
-                        .iter()
-                        .take(module_len)
-                        .rev()
-                        .copied()
-                        .collect();
+                    let cand_mod_rev: Vec<&str> =
+                        cand_segs.iter().take(module_len).rev().copied().collect();
                     let score = hint_mod_rev
                         .iter()
                         .copied()
@@ -1400,7 +1415,10 @@ mod tests {
         let leaves = collect("pub use foo::Bar;");
         assert_eq!(leaves.len(), 1);
         assert_eq!(leaves[0].exposed_name, "Bar");
-        assert_eq!(leaves[0].segments, vec!["foo".to_string(), "Bar".to_string()]);
+        assert_eq!(
+            leaves[0].segments,
+            vec!["foo".to_string(), "Bar".to_string()]
+        );
         assert_eq!(leaves[0].visibility, "pub");
     }
 
@@ -1483,7 +1501,8 @@ mod tests {
         assert_eq!(leaves.len(), 1);
         let v = &leaves[0].visibility;
         assert!(
-            v.starts_with("pub(") && !matches!(v.as_str(), "pub(crate)" | "pub(super)" | "pub(self)"),
+            v.starts_with("pub(")
+                && !matches!(v.as_str(), "pub(crate)" | "pub(super)" | "pub(self)"),
             "unexpected vis token: {v}",
         );
     }
@@ -1517,8 +1536,7 @@ mod tests {
             visibility: "pub".into(),
             span: None,
         };
-        let re =
-            resolve_re_export(&pending, &reg, &Registry::new(), &kinds, "c::outer").unwrap();
+        let re = resolve_re_export(&pending, &reg, &Registry::new(), &kinds, "c::outer").unwrap();
         assert_eq!(re.target_path, "c::inner::Bar");
         assert_eq!(re.kind, ReExportKind::Type);
         assert_eq!(re.target_kind, Some(TypeKind::Struct));
@@ -1542,7 +1560,7 @@ mod tests {
                 exposed_name: "X".into(),
                 segments: vec!["m".into(), "X".into()],
                 visibility: "pub".into(),
-            span: None,
+                span: None,
             };
             let re = resolve_re_export(&pending, &reg, &Registry::new(), &kinds, "c::outer")
                 .expect("should resolve");
@@ -1582,16 +1600,14 @@ mod tests {
             visibility: "pub".into(),
             span: None,
         };
-        assert!(
-            resolve_re_export(
-                &pending,
-                &Registry::new(),
-                &Registry::new(),
-                &TypeKindByPath::new(),
-                "c::outer",
-            )
-            .is_none()
-        );
+        assert!(resolve_re_export(
+            &pending,
+            &Registry::new(),
+            &Registry::new(),
+            &TypeKindByPath::new(),
+            "c::outer",
+        )
+        .is_none());
     }
 
     #[test]
@@ -1610,8 +1626,7 @@ mod tests {
             visibility: "pub".into(),
             span: None,
         };
-        let re =
-            resolve_re_export(&pending, &reg, &Registry::new(), &kinds, "c::outer").unwrap();
+        let re = resolve_re_export(&pending, &reg, &Registry::new(), &kinds, "c::outer").unwrap();
         assert_eq!(re.target_path, "c::vm::wasm::Foo");
         // target_kind reflects the picked candidate's kind — not the
         // sibling's. Catches a regression where the kind lookup
@@ -1722,7 +1737,10 @@ mod tests {
         }
         // Inherent method has no impl_trait — preserves backward-
         // compatible id `${typePath}::inherent`.
-        let inherent = methods.iter().find(|m| m.name == "inherent").expect("inherent missing");
+        let inherent = methods
+            .iter()
+            .find(|m| m.name == "inherent")
+            .expect("inherent missing");
         assert_eq!(inherent.impl_trait, None);
     }
 

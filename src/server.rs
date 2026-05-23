@@ -22,30 +22,30 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
-    Json, Router,
     extract::{Query, State},
-    http::{StatusCode, header},
+    http::{header, StatusCode},
     response::{
-        IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
     },
     routing::{get, post},
+    Json, Router,
 };
 use futures::stream::{Stream, StreamExt};
+use include_dir::{include_dir, Dir};
+use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::time::Duration;
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
-use include_dir::{Dir, include_dir};
-use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
 
-use crate::diff::{DiffOutcome, diff_file};
+use crate::diff::{diff_file, DiffOutcome};
 use crate::git_view::{
-    RevSpec, find_repo_root, materialize_head, prune_worktrees, resolve_sha, show_blob,
+    find_repo_root, materialize_head, prune_worktrees, resolve_sha, show_blob, RevSpec,
 };
-use crate::tour::{IngestErr, IngestOk, ResolveError, SpanIndex, Tour, TourQueue, ingest};
-use crate::unified_facts::{Hunks, build_unified};
+use crate::tour::{ingest, IngestErr, IngestOk, ResolveError, SpanIndex, Tour, TourQueue};
+use crate::unified_facts::{build_unified, Hunks};
 
 // Embed the built viewer at compile time. `build.rs` checks that
 // `viewer/dist/index.html` exists and fails the build with a helpful
@@ -171,13 +171,14 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
         // hunkless merge: same-name entities collapse into Both
         // without split-on-change, which is the safer no-info default.
         eprintln!("Collecting diff hunks for split-on-change ...");
-        let hunks = match Hunks::collect(repo, bsha, head_sha.as_deref(), &workspace_root, &base_path) {
-            Ok(h) => Some(h),
-            Err(err) => {
-                eprintln!("(warning) hunk collection failed; merging without split: {err}");
-                None
-            }
-        };
+        let hunks =
+            match Hunks::collect(repo, bsha, head_sha.as_deref(), &workspace_root, &base_path) {
+                Ok(h) => Some(h),
+                Err(err) => {
+                    eprintln!("(warning) hunk collection failed; merging without split: {err}");
+                    None
+                }
+            };
         eprintln!("Merging base + head into union facts ...");
         let unified = build_unified(base_facts, head_facts, hunks.as_ref());
         (unified, Some(base_path))
@@ -573,16 +574,18 @@ enum TourResponse {
     },
 }
 
-async fn post_tour(
-    State(state): State<Arc<AppState>>,
-    Json(tour): Json<Tour>,
-) -> Response {
+async fn post_tour(State(state): State<Arc<AppState>>, Json(tour): Json<Tour>) -> Response {
     // Tour id is just a monotonic counter on the queue length; the
     // viewer's SSE consumer uses it to dedupe across reconnects.
     // Server restart resets the sequence — that's fine, we don't
     // persist tours.
     let tour_id = format!("tour:{}", state.tours.snapshot().len() + 1);
-    match ingest(tour, &state.span_index, &state.workspace_root, tour_id.clone()) {
+    match ingest(
+        tour,
+        &state.span_index,
+        &state.workspace_root,
+        tour_id.clone(),
+    ) {
         Ok(IngestOk { resolved }) => {
             state.tours.push(resolved.clone());
             // Send to any live SSE subscribers. `send` only errors
@@ -619,10 +622,7 @@ struct SourceQuery {
     side: Option<String>,
 }
 
-async fn get_source(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<SourceQuery>,
-) -> Response {
+async fn get_source(State(state): State<Arc<AppState>>, Query(q): Query<SourceQuery>) -> Response {
     // Base-side fetch: bypass the filesystem sandbox entirely and
     // ask git for the blob at the base sha. Path must be inside the
     // repo (we derive a repo-relative form from the workspace path
@@ -644,22 +644,17 @@ async fn get_source(
         // `span.file` without having to know which worktree it
         // belongs to.
         let rel = if Path::new(&q.path).is_absolute() {
-            let canon =
-                std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
+            let canon = std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
             let mut prefixes: Vec<PathBuf> = Vec::new();
             if let Some(base) = state.base_workspace_root.as_deref() {
-                prefixes.push(
-                    std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()),
-                );
+                prefixes.push(std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()));
             }
             prefixes.push(
                 std::fs::canonicalize(&state.workspace_root)
                     .unwrap_or_else(|_| state.workspace_root.clone()),
             );
-            prefixes.push(
-                std::fs::canonicalize(repo_root)
-                    .unwrap_or_else(|_| repo_root.to_owned()),
-            );
+            prefixes
+                .push(std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_owned()));
             let mut rel_opt: Option<String> = None;
             for p in &prefixes {
                 if let Ok(r) = canon.strip_prefix(p) {
@@ -677,11 +672,9 @@ async fn get_source(
             q.path.clone()
         };
         return match show_blob(repo_root, base_sha, &rel) {
-            Ok(bytes) => (
-                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                bytes,
-            )
-                .into_response(),
+            Ok(bytes) => {
+                ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response()
+            }
             Err(_) => (StatusCode::NOT_FOUND, "not in base snapshot").into_response(),
         };
     }
@@ -700,22 +693,17 @@ async fn get_source(
     // file the viewer has a path to, regardless of which snapshot
     // recorded that path.
     let rel: String = if Path::new(&q.path).is_absolute() {
-        let canon =
-            std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
+        let canon = std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
         let mut prefixes: Vec<PathBuf> = Vec::new();
         prefixes.push(
             std::fs::canonicalize(&state.workspace_root)
                 .unwrap_or_else(|_| state.workspace_root.clone()),
         );
         if let Some(base) = state.base_workspace_root.as_deref() {
-            prefixes.push(
-                std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()),
-            );
+            prefixes.push(std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()));
         }
         if let Some(repo) = state.repo_root.as_deref() {
-            prefixes.push(
-                std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned()),
-            );
+            prefixes.push(std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_owned()));
         }
         let mut found: Option<String> = None;
         for p in &prefixes {
@@ -747,11 +735,7 @@ async fn get_source(
         return (StatusCode::BAD_REQUEST, "not a file").into_response();
     }
     match std::fs::read(&real) {
-        Ok(bytes) => (
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("read error: {err}"),
@@ -765,10 +749,7 @@ struct DiffQuery {
     path: String,
 }
 
-async fn get_diff(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<DiffQuery>,
-) -> Response {
+async fn get_diff(State(state): State<Arc<AppState>>, Query(q): Query<DiffQuery>) -> Response {
     // The endpoint only exists logically when diff mode is on. We
     // still register the route unconditionally so the viewer doesn't
     // need to special-case URL construction; we just 404 here when
@@ -792,20 +773,16 @@ async fn get_diff(
     // the same strip ladder `/api/source?side=base` uses, lifted up
     // so /api/diff also accepts entity span paths regardless of which
     // worktree the extractor recorded them in.
-    let repo_canon =
-        std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_owned());
+    let repo_canon = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_owned());
     let rel = if Path::new(&q.path).is_absolute() {
-        let canon =
-            std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
+        let canon = std::fs::canonicalize(&q.path).unwrap_or_else(|_| PathBuf::from(&q.path));
         let mut prefixes: Vec<PathBuf> = Vec::new();
         prefixes.push(
             std::fs::canonicalize(&state.workspace_root)
                 .unwrap_or_else(|_| state.workspace_root.clone()),
         );
         if let Some(base) = state.base_workspace_root.as_deref() {
-            prefixes.push(
-                std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()),
-            );
+            prefixes.push(std::fs::canonicalize(base).unwrap_or_else(|_| base.to_owned()));
         }
         prefixes.push(repo_canon.clone());
         let mut found: Option<String> = None;
@@ -837,8 +814,7 @@ async fn get_diff(
     match diff_file(&repo_canon, base, state.head_sha.as_deref(), &rel) {
         Ok(DiffOutcome::Empty) => StatusCode::NO_CONTENT.into_response(),
         Ok(DiffOutcome::Changed(result)) => {
-            ([(header::CONTENT_TYPE, "application/json")], Json(result))
-                .into_response()
+            ([(header::CONTENT_TYPE, "application/json")], Json(result)).into_response()
         }
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -942,7 +918,10 @@ async fn get_changed_files(State(state): State<Arc<AppState>>) -> Response {
             dels,
         });
     }
-    ([(header::CONTENT_TYPE, "application/json")], Json(ChangedFilesBody { files }))
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        Json(ChangedFilesBody { files }),
+    )
         .into_response()
 }
 
@@ -986,9 +965,7 @@ fn mime_for(path: &str) -> &'static str {
 /// reload after a tour was posted doesn't lose the tour from the
 /// top bar — the SSE channel only broadcasts new tours; without
 /// this replay path, a refresh would orphan the queue.
-async fn get_tours(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<crate::tour::ResolvedTour>> {
+async fn get_tours(State(state): State<Arc<AppState>>) -> Json<Vec<crate::tour::ResolvedTour>> {
     Json(state.tours.snapshot())
 }
 

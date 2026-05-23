@@ -785,7 +785,7 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     // breadcrumb segment, which is both ugly and meaningless —
     // we're showing a diff, not a fixed snapshot. Filter out any
     // 40-char hex segment so the breadcrumb starts at the crate
-    // name (`sf-nano-core > src > ...`).
+    // name (e.g. `mind-expander > src > ...`).
     const isSha = (s: string): boolean => /^[0-9a-f]{40}$/.test(s);
     const segments = displaySegmentsFor(opts.fileTree, filePath).filter(
       (s) => !isSha(s.name),

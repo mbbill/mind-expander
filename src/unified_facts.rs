@@ -30,9 +30,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
-use crate::diff::{DiffOutcome, LineKind, diff_file};
+use crate::diff::{diff_file, DiffOutcome, LineKind};
 use crate::model::ChangeKind;
 use crate::model::{
     CallEdge, CrateFacts, Edge, EdgeProfile, FieldFacts, FnFacts, ModuleFacts, ReExport, Side,
@@ -341,8 +341,11 @@ fn merge_module(b: ModuleFacts, h: ModuleFacts, hunks: Option<&Hunks>) -> Module
     // mapping symmetric. Functions are matched by name only (free
     // fns can't share names in the same module).
     let mut functions: Vec<FnFacts> = Vec::new();
-    let mut b_fns: BTreeMap<String, FnFacts> =
-        b.functions.into_iter().map(|f| (f.name.clone(), f)).collect();
+    let mut b_fns: BTreeMap<String, FnFacts> = b
+        .functions
+        .into_iter()
+        .map(|f| (f.name.clone(), f))
+        .collect();
     for hf in h.functions {
         if let Some(bf) = b_fns.remove(&hf.name) {
             functions.extend(merge_fn(bf, hf, hunks));
@@ -403,8 +406,7 @@ fn merge_type(b: TypeFacts, h: TypeFacts, hunks: Option<&Hunks>) -> TypeFacts {
         b.fields.into_iter().map(|f| (f.name.clone(), f)).collect();
     for hf in h.fields {
         if let Some(bf) = b_fields.remove(&hf.name) {
-            let (side, change_kind) =
-                classify_change(hf.span.as_ref(), bf.span.as_ref(), hunks);
+            let (side, change_kind) = classify_change(hf.span.as_ref(), bf.span.as_ref(), hunks);
             if side == Side::Modified {
                 fields.push(FieldFacts {
                     side,
@@ -413,7 +415,10 @@ fn merge_type(b: TypeFacts, h: TypeFacts, hunks: Option<&Hunks>) -> TypeFacts {
                     ..hf
                 });
             } else {
-                fields.push(FieldFacts { side: Side::Both, ..hf });
+                fields.push(FieldFacts {
+                    side: Side::Both,
+                    ..hf
+                });
             }
         } else {
             let side = orphan_head_side(hf.span.as_ref(), hunks);
@@ -458,9 +463,12 @@ fn merge_type(b: TypeFacts, h: TypeFacts, hunks: Option<&Hunks>) -> TypeFacts {
     // carry the base location in `prev_span`. `change_kind` drives
     // the bar's colour: add-only → solid green, del-only → solid
     // red, mixed → dual.
-    let (side, change_kind) =
-        classify_change(h.span.as_ref(), b.span.as_ref(), hunks);
-    let prev_span = if side == Side::Modified { b.span.clone() } else { None };
+    let (side, change_kind) = classify_change(h.span.as_ref(), b.span.as_ref(), hunks);
+    let prev_span = if side == Side::Modified {
+        b.span.clone()
+    } else {
+        None
+    };
 
     TypeFacts {
         name: h.name,
@@ -487,8 +495,7 @@ fn merge_type(b: TypeFacts, h: TypeFacts, hunks: Option<&Hunks>) -> TypeFacts {
 /// `change_kind` is `Add` for additions only, `Del` for deletions only,
 /// `Mixed` for both.
 fn merge_fn(b: FnFacts, h: FnFacts, hunks: Option<&Hunks>) -> Vec<FnFacts> {
-    let (side, change_kind) =
-        classify_change(h.span.as_ref(), b.span.as_ref(), hunks);
+    let (side, change_kind) = classify_change(h.span.as_ref(), b.span.as_ref(), hunks);
     if side == Side::Modified {
         vec![FnFacts {
             side,
@@ -497,7 +504,10 @@ fn merge_fn(b: FnFacts, h: FnFacts, hunks: Option<&Hunks>) -> Vec<FnFacts> {
             ..h
         }]
     } else {
-        vec![FnFacts { side: Side::Both, ..h }]
+        vec![FnFacts {
+            side: Side::Both,
+            ..h
+        }]
     }
 }
 
@@ -642,27 +652,22 @@ fn merge_call_edges(base: &[CallEdge], head: &[CallEdge]) -> Vec<CallEdge> {
 // the merge so split decisions happen during `build_unified` instead
 // of in a separate post-pass.
 
-fn list_changed_files(
-    repo: &Path,
-    base: &str,
-    head: Option<&str>,
-) -> Result<Vec<String>> {
+fn list_changed_files(repo: &Path, base: &str, head: Option<&str>) -> Result<Vec<String>> {
     let mut cmd = Command::new("git");
-    cmd.args(["-C"]).arg(repo).args(["diff", "--name-only", base]);
+    cmd.args(["-C"])
+        .arg(repo)
+        .args(["diff", "--name-only", base]);
     if let Some(h) = head {
         cmd.arg(h);
     }
-    let out = cmd
-        .output()
-        .context("invoking `git diff --name-only`")?;
+    let out = cmd.output().context("invoking `git diff --name-only`")?;
     if !out.status.success() {
         bail!(
             "git diff --name-only failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let text =
-        String::from_utf8(out.stdout).context("git diff --name-only output not utf-8")?;
+    let text = String::from_utf8(out.stdout).context("git diff --name-only output not utf-8")?;
     Ok(text.lines().map(|s| s.to_string()).collect())
 }
 
@@ -833,8 +838,20 @@ mod tests {
     #[test]
     fn edge_in_both_snapshots_is_tagged_both() {
         // Same (from, to, kind, via) on both sides → one Both edge.
-        let e_base = mk_edge("c::A", "c::B", EdgeKind::Owns, ViaKind::StructField, "field f");
-        let e_head = mk_edge("c::A", "c::B", EdgeKind::Owns, ViaKind::StructField, "field f");
+        let e_base = mk_edge(
+            "c::A",
+            "c::B",
+            EdgeKind::Owns,
+            ViaKind::StructField,
+            "field f",
+        );
+        let e_head = mk_edge(
+            "c::A",
+            "c::B",
+            EdgeKind::Owns,
+            ViaKind::StructField,
+            "field f",
+        );
         let base = mk_facts_with_edges(vec![mk_crate("c", vec![])], vec![e_base]);
         let head = mk_facts_with_edges(vec![mk_crate("c", vec![])], vec![e_head]);
         let u = build_unified(base, head, None);
@@ -844,7 +861,13 @@ mod tests {
 
     #[test]
     fn edge_only_in_head_is_tagged_head() {
-        let e_head = mk_edge("c::A", "c::B", EdgeKind::Owns, ViaKind::StructField, "field f");
+        let e_head = mk_edge(
+            "c::A",
+            "c::B",
+            EdgeKind::Owns,
+            ViaKind::StructField,
+            "field f",
+        );
         let base = mk_facts_with_edges(vec![mk_crate("c", vec![])], vec![]);
         let head = mk_facts_with_edges(vec![mk_crate("c", vec![])], vec![e_head]);
         let u = build_unified(base, head, None);
@@ -854,7 +877,13 @@ mod tests {
 
     #[test]
     fn edge_only_in_base_is_tagged_base() {
-        let e_base = mk_edge("c::A", "c::B", EdgeKind::Owns, ViaKind::StructField, "field f");
+        let e_base = mk_edge(
+            "c::A",
+            "c::B",
+            EdgeKind::Owns,
+            ViaKind::StructField,
+            "field f",
+        );
         let base = mk_facts_with_edges(vec![mk_crate("c", vec![])], vec![e_base]);
         let head = mk_facts_with_edges(vec![mk_crate("c", vec![])], vec![]);
         let u = build_unified(base, head, None);
@@ -866,9 +895,20 @@ mod tests {
     fn edge_kind_change_emits_distinct_sided_entries() {
         // Same endpoints but different EdgeKind on each side → two
         // separate edges, each tagged with its own snapshot.
-        let e_base = mk_edge("c::A", "c::B", EdgeKind::Owns, ViaKind::StructField, "field f");
-        let e_head =
-            mk_edge("c::A", "c::B", EdgeKind::BorrowsImmut, ViaKind::StructField, "field f");
+        let e_base = mk_edge(
+            "c::A",
+            "c::B",
+            EdgeKind::Owns,
+            ViaKind::StructField,
+            "field f",
+        );
+        let e_head = mk_edge(
+            "c::A",
+            "c::B",
+            EdgeKind::BorrowsImmut,
+            ViaKind::StructField,
+            "field f",
+        );
         let base = mk_facts_with_edges(vec![mk_crate("c", vec![])], vec![e_base]);
         let head = mk_facts_with_edges(vec![mk_crate("c", vec![])], vec![e_head]);
         let u = build_unified(base, head, None);
@@ -960,7 +1000,14 @@ mod tests {
         let head = mk_facts(vec![mk_crate("c", vec![m_head])]);
         let hunks = mk_hunks(&[], &[]);
         let u = build_unified(base, head, Some(&hunks));
-        let fns = &u.crates.get("c").unwrap().modules.get("m").unwrap().functions;
+        let fns = &u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .functions;
         let foos: Vec<&FnFacts> = fns.iter().filter(|f| f.name == "foo").collect();
         assert_eq!(foos.len(), 1, "expected exactly one Both `foo`");
         assert_eq!(foos[0].side, Side::Both);
@@ -978,7 +1025,14 @@ mod tests {
         let head = mk_facts(vec![mk_crate("c", vec![m_head])]);
         let hunks = mk_hunks(&[("m.rs", &[(15, 16)])], &[("m.rs", &[(15, 16)])]);
         let u = build_unified(base, head, Some(&hunks));
-        let fns = &u.crates.get("c").unwrap().modules.get("m").unwrap().functions;
+        let fns = &u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .functions;
         let foos: Vec<&FnFacts> = fns.iter().filter(|f| f.name == "foo").collect();
         assert_eq!(foos.len(), 1, "expected one Modified record");
         assert_eq!(foos[0].side, Side::Modified);
@@ -1000,7 +1054,14 @@ mod tests {
         let head = mk_facts(vec![mk_crate("c", vec![m_head])]);
         let hunks = mk_hunks(&[("m.rs", &[(15, 16)])], &[]);
         let u = build_unified(base, head, Some(&hunks));
-        let fns = &u.crates.get("c").unwrap().modules.get("m").unwrap().functions;
+        let fns = &u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .functions;
         let foos: Vec<&FnFacts> = fns.iter().filter(|f| f.name == "foo").collect();
         assert_eq!(foos.len(), 1);
         assert_eq!(foos[0].side, Side::Modified);
@@ -1019,7 +1080,14 @@ mod tests {
         let head = mk_facts(vec![mk_crate("c", vec![m_head])]);
         let hunks = mk_hunks(&[], &[("m.rs", &[(15, 16)])]);
         let u = build_unified(base, head, Some(&hunks));
-        let fns = &u.crates.get("c").unwrap().modules.get("m").unwrap().functions;
+        let fns = &u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .functions;
         let foos: Vec<&FnFacts> = fns.iter().filter(|f| f.name == "foo").collect();
         assert_eq!(foos.len(), 1);
         assert_eq!(foos[0].side, Side::Modified);
@@ -1038,7 +1106,14 @@ mod tests {
         let base = mk_facts(vec![mk_crate("c", vec![m_base])]);
         let head = mk_facts(vec![mk_crate("c", vec![m_head])]);
         let u = build_unified(base, head, None);
-        let fns = &u.crates.get("c").unwrap().modules.get("m").unwrap().functions;
+        let fns = &u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .functions;
         let foos: Vec<&FnFacts> = fns.iter().filter(|f| f.name == "foo").collect();
         assert_eq!(foos.len(), 1);
         assert_eq!(foos[0].side, Side::Both);
@@ -1055,12 +1130,24 @@ mod tests {
         // With the heuristic, the lines are recognised as unchanged
         // and the method is promoted to Both.
         let mut empty_base = mk_type("AllocationHandle", TypeKind::Struct);
-        empty_base.span = Some(Span { file: "/b/lib.rs".into(), start_line: 436, end_line: 438 });
+        empty_base.span = Some(Span {
+            file: "/b/lib.rs".into(),
+            start_line: 436,
+            end_line: 438,
+        });
         let mut empty_head = mk_type("AllocationHandle", TypeKind::Struct);
-        empty_head.span = Some(Span { file: "/h/lib.rs".into(), start_line: 436, end_line: 438 });
+        empty_head.span = Some(Span {
+            file: "/h/lib.rs".into(),
+            start_line: 436,
+            end_line: 438,
+        });
 
         let mut new_method = mk_fn("new", "/h/lib.rs", 1308, 1310);
-        new_method.span = Some(Span { file: "/h/lib.rs".into(), start_line: 1308, end_line: 1310 });
+        new_method.span = Some(Span {
+            file: "/h/lib.rs".into(),
+            start_line: 1308,
+            end_line: 1310,
+        });
         empty_head.methods = vec![new_method];
 
         let m_base = mk_module("m", vec![empty_base]);
@@ -1070,9 +1157,22 @@ mod tests {
         // Hunks exist elsewhere in the file but NOT inside [1308,1310].
         let hunks = mk_hunks(&[("lib.rs", &[(53, 55)])], &[("lib.rs", &[(53, 55)])]);
         let u = build_unified(base, head, Some(&hunks));
-        let t = u.crates.get("c").unwrap().modules.get("m").unwrap().types.iter()
-            .find(|t| t.name == "AllocationHandle").unwrap();
-        let new_m = t.methods.iter().find(|m| m.name == "new").expect("`new` missing");
+        let t = u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .types
+            .iter()
+            .find(|t| t.name == "AllocationHandle")
+            .unwrap();
+        let new_m = t
+            .methods
+            .iter()
+            .find(|m| m.name == "new")
+            .expect("`new` missing");
         // Unchanged-line orphan → Both, NOT Head.
         assert_eq!(new_m.side, Side::Both);
     }
@@ -1084,11 +1184,23 @@ mod tests {
         // it Head, not Both. The heuristic only promotes orphans whose
         // lines are unchanged.
         let mut empty_base = mk_type("Foo", TypeKind::Struct);
-        empty_base.span = Some(Span { file: "/b/lib.rs".into(), start_line: 10, end_line: 12 });
+        empty_base.span = Some(Span {
+            file: "/b/lib.rs".into(),
+            start_line: 10,
+            end_line: 12,
+        });
         let mut head_type = mk_type("Foo", TypeKind::Struct);
-        head_type.span = Some(Span { file: "/h/lib.rs".into(), start_line: 10, end_line: 12 });
+        head_type.span = Some(Span {
+            file: "/h/lib.rs".into(),
+            start_line: 10,
+            end_line: 12,
+        });
         let mut new_method = mk_fn("new_method", "/h/lib.rs", 100, 110);
-        new_method.span = Some(Span { file: "/h/lib.rs".into(), start_line: 100, end_line: 110 });
+        new_method.span = Some(Span {
+            file: "/h/lib.rs".into(),
+            start_line: 100,
+            end_line: 110,
+        });
         head_type.methods = vec![new_method];
 
         let m_base = mk_module("m", vec![empty_base]);
@@ -1098,9 +1210,22 @@ mod tests {
         // Hunk overlaps the method's head span.
         let hunks = mk_hunks(&[("lib.rs", &[(100, 110)])], &[]);
         let u = build_unified(base, head, Some(&hunks));
-        let t = u.crates.get("c").unwrap().modules.get("m").unwrap().types.iter()
-            .find(|t| t.name == "Foo").unwrap();
-        let m = t.methods.iter().find(|m| m.name == "new_method").expect("missing");
+        let t = u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .types
+            .iter()
+            .find(|t| t.name == "Foo")
+            .unwrap();
+        let m = t
+            .methods
+            .iter()
+            .find(|m| m.name == "new_method")
+            .expect("missing");
         assert_eq!(m.side, Side::Head);
     }
 
@@ -1144,7 +1269,11 @@ mod tests {
         let head = mk_facts(vec![mk_crate("c", vec![m_head])]);
         let u = build_unified(base, head, None);
         let m = u.crates.get("c").unwrap().modules.get("m").unwrap();
-        let allocs: Vec<&TypeFacts> = m.types.iter().filter(|t| t.name == "AllocationHandle").collect();
+        let allocs: Vec<&TypeFacts> = m
+            .types
+            .iter()
+            .filter(|t| t.name == "AllocationHandle")
+            .collect();
         assert_eq!(allocs.len(), 2, "both variants must survive the merge");
         // Both pairs merged → both end up tagged Both (no hunks
         // supplied, so the bodies are considered identical).

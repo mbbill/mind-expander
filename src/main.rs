@@ -65,7 +65,7 @@ enum Cmd {
     },
     /// Print a human-readable digest filtered by module-path prefix.
     Digest {
-        /// Module path prefix, e.g. `sf-nano-core::vm::wasm`. Empty = all.
+        /// Module path prefix, e.g. `my-crate::vm::wasm`. Empty = all.
         #[arg(long, default_value = "")]
         module: String,
         /// Optional: read from previously-extracted JSON instead of re-parsing.

@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 
 /// Parsed `--at` value. Either side `None` means "the working tree."
 /// `diff_enabled` records whether the user wrote a `..` separator —
@@ -35,7 +35,11 @@ pub struct RevSpec {
 
 impl RevSpec {
     pub fn working_tree() -> Self {
-        Self { base: None, head: None, diff_enabled: false }
+        Self {
+            base: None,
+            head: None,
+            diff_enabled: false,
+        }
     }
 }
 
@@ -58,8 +62,16 @@ pub fn parse_revspec(s: &str) -> Result<RevSpec> {
             let base = &s[..i];
             let head = &s[i + 2..];
             Ok(RevSpec {
-                base: if base.is_empty() { None } else { Some(base.to_owned()) },
-                head: if head.is_empty() { None } else { Some(head.to_owned()) },
+                base: if base.is_empty() {
+                    None
+                } else {
+                    Some(base.to_owned())
+                },
+                head: if head.is_empty() {
+                    None
+                } else {
+                    Some(head.to_owned())
+                },
                 diff_enabled: true,
             })
         }
@@ -83,8 +95,7 @@ pub fn find_repo_root(path: &Path) -> Result<PathBuf> {
             stderr.trim()
         );
     }
-    let raw = String::from_utf8(out.stdout)
-        .context("git toplevel path is not utf-8")?;
+    let raw = String::from_utf8(out.stdout).context("git toplevel path is not utf-8")?;
     Ok(PathBuf::from(raw.trim()))
 }
 
@@ -107,8 +118,7 @@ pub fn resolve_sha(repo_root: &Path, refname: &str) -> Result<String> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let raw = String::from_utf8(out.stdout)
-        .context("git rev-parse output not utf-8")?;
+    let raw = String::from_utf8(out.stdout).context("git rev-parse output not utf-8")?;
     let sha = raw.trim();
     if sha.is_empty() {
         bail!("git resolved `{refname}` to an empty sha");
@@ -232,8 +242,7 @@ fn is_registered_worktree(repo_root: &Path, dest: &Path) -> Result<bool> {
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("worktree ") {
             let entry = PathBuf::from(rest);
-            let entry_canon =
-                std::fs::canonicalize(&entry).unwrap_or(entry);
+            let entry_canon = std::fs::canonicalize(&entry).unwrap_or(entry);
             if entry_canon == canon {
                 return Ok(true);
             }
@@ -260,8 +269,8 @@ fn dirs_cache_dir() -> Result<PathBuf> {
             return Ok(PathBuf::from(xdg));
         }
     }
-    let home = std::env::var("HOME")
-        .map_err(|_| anyhow!("HOME not set; cannot locate cache dir"))?;
+    let home =
+        std::env::var("HOME").map_err(|_| anyhow!("HOME not set; cannot locate cache dir"))?;
     Ok(PathBuf::from(home).join(".cache"))
 }
 

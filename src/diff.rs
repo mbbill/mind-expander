@@ -26,7 +26,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 /// Top-level result returned over `/api/diff`.
@@ -94,8 +94,7 @@ pub fn diff_file(
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let text = String::from_utf8(out.stdout)
-        .context("git diff output not utf-8")?;
+    let text = String::from_utf8(out.stdout).context("git diff output not utf-8")?;
     if text.trim().is_empty() {
         return Ok(DiffOutcome::Empty);
     }
@@ -198,7 +197,11 @@ pub fn parse_unified(text: &str) -> Result<DiffResult> {
     if let Some(h) = cur.take() {
         hunks.push(h);
     }
-    Ok(DiffResult { file_old, file_new, hunks })
+    Ok(DiffResult {
+        file_old,
+        file_new,
+        hunks,
+    })
 }
 
 fn parse_header_path(rest: &str) -> Option<String> {
@@ -221,8 +224,12 @@ fn parse_hunk_header(rest: &str) -> Result<(u32, u32, u32, u32)> {
     let end = rest.find(" @@").unwrap_or(rest.len());
     let head = &rest[..end];
     let mut it = head.split_whitespace();
-    let old = it.next().ok_or_else(|| anyhow::anyhow!("hunk header missing old span"))?;
-    let new = it.next().ok_or_else(|| anyhow::anyhow!("hunk header missing new span"))?;
+    let old = it
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("hunk header missing old span"))?;
+    let new = it
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("hunk header missing new span"))?;
     let (os, oc) = parse_span(old.strip_prefix('-').unwrap_or(old))?;
     let (ns, nc) = parse_span(new.strip_prefix('+').unwrap_or(new))?;
     Ok((os, oc, ns, nc))

@@ -8,13 +8,13 @@ import {
 } from '../src/view/arrow_disambig.ts';
 
 // Real `qualifiedTypePath` keeps the crate prefix on the display path
-// (e.g., `sf-nano-core::vm::instance::Instance`). Crate stripping is
+// (e.g., `example-core::vm::instance::Instance`). Crate stripping is
 // the disambig's own responsibility — it compares each endpoint's
 // crate against the row's anchor crate and strips only when they
 // match, so cross-crate hops stay visible.
 const qualifiedTypePath = (fullPath: string): string => {
   const labels: Record<string, string> = {
-    'sf-nano-core::vm::store::__fn_pub': 'sf-nano-core::vm::store',
+    'example-core::vm::store::__fn_pub': 'example-core::vm::store',
   };
   return labels[fullPath] ?? fullPath;
 };
@@ -24,17 +24,17 @@ describe('arrowDisambigRowModel', () => {
     const hits = [
       hit(
         callArrow(
-          'sf-nano-core::vm::instance::Instance',
+          'example-core::vm::instance::Instance',
           'from_module_with_registry',
-          'sf-nano-core::vm::store::Store',
+          'example-core::vm::store::Store',
           'global_mut',
         ),
       ),
       hit(
         callArrow(
-          'sf-nano-core::vm::instance::Instance',
+          'example-core::vm::instance::Instance',
           'set_global',
-          'sf-nano-core::vm::store::Store',
+          'example-core::vm::store::Store',
           'global_mut',
         ),
       ),
@@ -53,15 +53,15 @@ describe('arrowDisambigRowModel', () => {
   });
 
   it('keeps the crate prefix when the target lives in a different crate', () => {
-    // Anchor = source's crate (`sf-nano-cli`). The target is in
-    // `sf-nano-core`, so the cross-crate hop must stay visible on the
+    // Anchor = source's crate (`example-cli`). The target is in
+    // `example-core`, so the cross-crate hop must stay visible on the
     // target prefix even though the source's own crate is stripped.
     const model = arrowDisambigRowModel(
       hit(
         callArrow(
-          'sf-nano-cli::cmd::Runner',
+          'example-cli::cmd::Runner',
           'invoke',
-          'sf-nano-core::vm::store::Store',
+          'example-core::vm::store::Store',
           'global_mut',
         ),
       ),
@@ -76,7 +76,7 @@ describe('arrowDisambigRowModel', () => {
     // so the popup can paint it in the accent color, separate from the
     // dim module prefix and the main label.
     expect(model.target).toEqual({
-      crateName: 'sf-nano-core',
+      crateName: 'example-core',
       prefix: 'vm::store::',
       main: 'Store.global_mut()',
     });
@@ -86,9 +86,9 @@ describe('arrowDisambigRowModel', () => {
     const model = arrowDisambigRowModel(
       hit(
         callArrow(
-          'sf-nano-core::vm::store::__fn_pub',
+          'example-core::vm::store::__fn_pub',
           'register_gc_ref',
-          'sf-nano-core::vm::store::Store',
+          'example-core::vm::store::Store',
           'global_mut',
           'function',
         ),

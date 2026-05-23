@@ -32,10 +32,10 @@ use walkdir::WalkDir;
 
 use swc_common::{sync::Lrc, FileName, SourceMap};
 use swc_ecma_ast::{
-    ClassDecl, ClassMember, Decl, DefaultDecl, EsVersion, ExportDecl, ExportDefaultDecl,
-    FnDecl, ModuleDecl, ModuleItem, Stmt, TsArrayType, TsEntityName, TsEnumDecl, TsInterfaceDecl,
-    TsKeywordType, TsKeywordTypeKind, TsType, TsTypeAliasDecl, TsTypeAnn, TsTypeElement,
-    TsTypeRef, TsUnionType,
+    ClassDecl, ClassMember, Decl, DefaultDecl, EsVersion, ExportDecl, ExportDefaultDecl, FnDecl,
+    ModuleDecl, ModuleItem, Stmt, TsArrayType, TsEntityName, TsEnumDecl, TsInterfaceDecl,
+    TsKeywordType, TsKeywordTypeKind, TsType, TsTypeAliasDecl, TsTypeAnn, TsTypeElement, TsTypeRef,
+    TsUnionType,
 };
 use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 
@@ -100,7 +100,10 @@ fn discover_packages(root: &Path) -> Vec<PackageRoot> {
         .into_iter()
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
-            !matches!(name.as_ref(), "target" | "node_modules" | ".git" | "dist" | "build")
+            !matches!(
+                name.as_ref(),
+                "target" | "node_modules" | ".git" | "dist" | "build"
+            )
         })
         .filter_map(|e| e.ok())
     {
@@ -120,7 +123,11 @@ fn discover_packages(root: &Path) -> Vec<PackageRoot> {
             None => continue,
         };
         let src = pkg_dir.join("src");
-        let src_root = if src.is_dir() { src } else { pkg_dir.to_path_buf() };
+        let src_root = if src.is_dir() {
+            src
+        } else {
+            pkg_dir.to_path_buf()
+        };
         // For package.json-only directories, require at least one .ts
         // file under src_root before claiming this as a TS package.
         if !is_tsconfig && !has_ts_files(&src_root) {
@@ -213,12 +220,7 @@ fn parse_file(crate_name: &str, module_path: &str, path: &Path) -> Result<Module
         no_early_errors: true,
         disallow_ambiguous_jsx_like: false,
     });
-    let lexer = Lexer::new(
-        syntax,
-        EsVersion::Es2022,
-        StringInput::from(&*fm),
-        None,
-    );
+    let lexer = Lexer::new(syntax, EsVersion::Es2022, StringInput::from(&*fm), None);
     let mut parser = Parser::new_from(lexer);
     let module = parser
         .parse_module()
@@ -589,7 +591,11 @@ impl Ctx {
             is_const: false,
             is_async: function.is_async,
             lifetime_params: Vec::new(),
-            params: function.params.iter().map(|p| self.param_facts(&p.pat)).collect(),
+            params: function
+                .params
+                .iter()
+                .map(|p| self.param_facts(&p.pat))
+                .collect(),
             return_ty_text: type_info(function.return_type.as_deref(), false).0,
             return_ownership: Ownership::Owned,
             return_referenced: type_info(function.return_type.as_deref(), false).1,
@@ -626,7 +632,11 @@ impl Ctx {
             is_const: false,
             is_async: function.is_async,
             lifetime_params: Vec::new(),
-            params: function.params.iter().map(|p| self.param_facts(&p.pat)).collect(),
+            params: function
+                .params
+                .iter()
+                .map(|p| self.param_facts(&p.pat))
+                .collect(),
             return_ty_text: ret_text,
             return_ownership: Ownership::Owned,
             return_referenced: ret_refs,
@@ -692,16 +702,17 @@ fn accessibility_to_vis(a: Option<swc_ecma_ast::Accessibility>) -> &'static str 
 
 /// Pretty-print a TS type, plus extract referenced names and per-ref
 /// cardinality. `optional` is set by the caller (e.g. `x?: T`).
-fn type_info(
-    ann: Option<&TsTypeAnn>,
-    optional: bool,
-) -> (String, Vec<String>, Vec<Cardinality>) {
+fn type_info(ann: Option<&TsTypeAnn>, optional: bool) -> (String, Vec<String>, Vec<Cardinality>) {
     let Some(ann) = ann else {
         return (String::new(), Vec::new(), Vec::new());
     };
     let mut refs: Vec<String> = Vec::new();
     let mut cards: Vec<Cardinality> = Vec::new();
-    let base_card = if optional { Cardinality::Optional } else { Cardinality::One };
+    let base_card = if optional {
+        Cardinality::Optional
+    } else {
+        Cardinality::One
+    };
     classify_ts_type(&ann.type_ann, base_card, &mut refs, &mut cards);
     let text = render_ts_type(&ann.type_ann);
     (text, refs, cards)
@@ -720,11 +731,16 @@ fn classify_ts_type(
         TsType::TsUnionOrIntersectionType(u) => {
             // `T | undefined` / `T | null` → optional; otherwise treat
             // members independently with the inherited cardinality.
-            if let swc_ecma_ast::TsUnionOrIntersectionType::TsUnionType(TsUnionType { types, .. }) =
-                u
+            if let swc_ecma_ast::TsUnionOrIntersectionType::TsUnionType(TsUnionType {
+                types, ..
+            }) = u
             {
                 let has_nullish = types.iter().any(|t| is_nullish_keyword(t));
-                let inner_card = if has_nullish { Cardinality::Optional } else { card };
+                let inner_card = if has_nullish {
+                    Cardinality::Optional
+                } else {
+                    card
+                };
                 for t in types {
                     if is_nullish_keyword(t) {
                         continue;
@@ -733,7 +749,11 @@ fn classify_ts_type(
                 }
             }
         }
-        TsType::TsTypeRef(TsTypeRef { type_name, type_params, .. }) => {
+        TsType::TsTypeRef(TsTypeRef {
+            type_name,
+            type_params,
+            ..
+        }) => {
             let name = entity_name_to_string(type_name);
             // Container-aware cardinality for well-known generics.
             let (effective_card, descend_args): (Cardinality, bool) =
@@ -900,14 +920,14 @@ fn resolve_ref(name: &str, registry: &std::collections::BTreeMap<String, Vec<Str
     }
 }
 
-fn build_registry(
-    ws: &WorkspaceFacts,
-) -> std::collections::BTreeMap<String, Vec<String>> {
+fn build_registry(ws: &WorkspaceFacts) -> std::collections::BTreeMap<String, Vec<String>> {
     let mut reg: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for cf in ws.crates.values() {
         for m in cf.modules.values() {
             for t in &m.types {
-                reg.entry(t.name.clone()).or_default().push(t.full_path.clone());
+                reg.entry(t.name.clone())
+                    .or_default()
+                    .push(t.full_path.clone());
             }
         }
     }
@@ -972,9 +992,7 @@ fn build_edges(ws: &WorkspaceFacts) -> Vec<Edge> {
     edges
 }
 
-fn build_profiles(
-    edges: &[Edge],
-) -> std::collections::BTreeMap<String, crate::model::EdgeProfile> {
+fn build_profiles(edges: &[Edge]) -> std::collections::BTreeMap<String, crate::model::EdgeProfile> {
     use crate::model::EdgeProfile;
     let mut out: std::collections::BTreeMap<String, EdgeProfile> = Default::default();
     for e in edges {

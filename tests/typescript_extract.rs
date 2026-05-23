@@ -43,10 +43,8 @@ fn ts_fixture_extracts_all_kinds() {
     let module = &crate_facts["modules"][""];
     let types = module["types"].as_array().expect("types array");
 
-    let kinds_present: std::collections::BTreeSet<&str> = types
-        .iter()
-        .filter_map(|t| t["kind"].as_str())
-        .collect();
+    let kinds_present: std::collections::BTreeSet<&str> =
+        types.iter().filter_map(|t| t["kind"].as_str()).collect();
     for expected in ["class", "interface", "type_alias", "enum"] {
         assert!(
             kinds_present.contains(expected),
@@ -80,7 +78,11 @@ fn ts_fixture_emits_extends_and_implements_edges() {
     );
     // interface extends interface → kind=trait_impl (shape merge)
     assert!(
-        has("ts-fixture::AdminHandler", "ts-fixture::Handler", "trait_impl"),
+        has(
+            "ts-fixture::AdminHandler",
+            "ts-fixture::Handler",
+            "trait_impl"
+        ),
         "missing trait_impl edge AdminHandler → Handler"
     );
 }

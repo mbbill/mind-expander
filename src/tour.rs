@@ -308,9 +308,9 @@ impl SpanIndex {
         // the smallest containing interval wins on a linear scan.
         for sites in callsites_by_file.values_mut() {
             sites.sort_by(|a, b| {
-                a.start_line.cmp(&b.start_line).then_with(|| {
-                    (a.end_line - a.start_line).cmp(&(b.end_line - b.start_line))
-                })
+                a.start_line
+                    .cmp(&b.start_line)
+                    .then_with(|| (a.end_line - a.start_line).cmp(&(b.end_line - b.start_line)))
             });
         }
         Self {
@@ -348,11 +348,7 @@ impl SpanIndex {
     /// Resolve one reference, prepending `workspace_root` to its file
     /// path. Returns a concise message on failure that the CLI can
     /// surface verbatim.
-    pub fn resolve(
-        &self,
-        r: &Reference,
-        workspace_root: &Path,
-    ) -> Result<ResolvedRef, String> {
+    pub fn resolve(&self, r: &Reference, workspace_root: &Path) -> Result<ResolvedRef, String> {
         let abs = workspace_root.join(&r.file);
         // canonicalize so the path matches what `mod.file` recorded
         // (the extractor canonicalizes too). Missing files fall through
@@ -512,8 +508,10 @@ pub fn ingest(
         return Err(IngestErr { errors });
     }
 
-    let subject = tour.subject.as_ref().and_then(|r| {
-        match index.resolve(r, workspace_root) {
+    let subject = tour
+        .subject
+        .as_ref()
+        .and_then(|r| match index.resolve(r, workspace_root) {
             Ok(rr) => Some(rr),
             Err(msg) => {
                 errors.push(ResolveError {
@@ -523,8 +521,7 @@ pub fn ingest(
                 });
                 None
             }
-        }
-    });
+        });
 
     // Resolve each step into its explicit shape. The three step
     // shapes are mutually exclusive — `ref` XOR `arrow` XOR neither —
@@ -610,10 +607,7 @@ pub fn ingest(
                     errors.push(ResolveError {
                         step: si + 1,
                         r#ref: 0,
-                        msg: format!(
-                            "no directed edge from `{}` to `{}`{hint}",
-                            from.id, to.id
-                        ),
+                        msg: format!("no directed edge from `{}` to `{}`{hint}", from.id, to.id),
                     });
                     continue;
                 }

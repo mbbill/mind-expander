@@ -3,8 +3,13 @@ name = "mind-expander"
 version = "0.1.3"
 edition = "2021"
 authors = ["Bill Ming <mbbill@gmail.com>"]
-description = "Codebase fact extractor for Silverfir-nano (per-type ownership facts + cross-type edge graph)"
+description = "A human-AI collaboration tool for large codebases."
 license = "Apache-2.0"
+repository = "https://github.com/mbbill/mind-expander"
+homepage = "https://github.com/mbbill/mind-expander"
+readme = "README.md"
+keywords = ["ai", "codebase", "visualization", "code-review", "diagram"]
+categories = ["development-tools", "visualization", "command-line-utilities"]
 
 [[bin]]
 name = "mind-expander"

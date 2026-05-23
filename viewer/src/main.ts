@@ -269,7 +269,6 @@ async function main(): Promise<void> {
   tourEvents.addEventListener('tour', (e) => {
     try {
       const tour = JSON.parse((e as MessageEvent).data) as ResolvedTour;
-      console.log('[tour received]', tour);
       onNewTour(tour);
     } catch (err) {
       console.error('[tour] failed to parse SSE payload', err);

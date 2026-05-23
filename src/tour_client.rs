@@ -12,7 +12,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
 pub fn send(file: &Path, host: &str) -> Result<()> {
@@ -40,8 +40,7 @@ fn read_body(file: &Path) -> Result<String> {
             .context("reading tour from stdin")?;
         return Ok(buf);
     }
-    std::fs::read_to_string(file)
-        .with_context(|| format!("reading tour from {}", file.display()))
+    std::fs::read_to_string(file).with_context(|| format!("reading tour from {}", file.display()))
 }
 
 #[derive(Deserialize)]
@@ -75,9 +74,8 @@ fn handle_response(status: u16, body: String) -> Result<()> {
         return Ok(());
     }
     if status == 422 {
-        let err: ErrBody = serde_json::from_str(&body).with_context(|| {
-            format!("server returned 422 but body wasn't ErrBody: {body}")
-        })?;
+        let err: ErrBody = serde_json::from_str(&body)
+            .with_context(|| format!("server returned 422 but body wasn't ErrBody: {body}"))?;
         for e in &err.errors {
             eprintln!("err: step={} ref={} {}", e.step, e.r#ref, e.msg);
         }
