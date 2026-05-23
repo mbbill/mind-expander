@@ -86,6 +86,39 @@ const result = spawnSync(binaryPath, process.argv.slice(2), {
   stdio: 'inherit',
 });
 
+// If the spawn itself failed (EACCES, ENOEXEC, ENOENT) `result.error`
+// is set and `result.status` is null. With `stdio: 'inherit'` and no
+// explicit error handling, these failures silently exit with status
+// 1 — which is exactly how v0.1.0 shipped invisibly broken when the
+// binary lost its +x bit in the artifact round-trip. Surface a
+// targeted message instead.
+if (result.error) {
+  const err = result.error;
+  let hint = '';
+  if (err.code === 'EACCES') {
+    hint =
+      `\n  The binary exists but isn't executable. Try:\n` +
+      `    chmod +x "${binaryPath}"\n` +
+      `  If that fixes it, the package install is bugged — please file an issue.`;
+  } else if (err.code === 'ENOENT') {
+    hint =
+      `\n  The binary path doesn't exist. The platform package may have been\n` +
+      `  installed incompletely. Try reinstalling:\n` +
+      `    npm install --force mind-expander`;
+  } else if (err.code === 'ENOEXEC') {
+    hint =
+      `\n  The binary isn't a valid executable for this OS. This package was\n` +
+      `  built for ${key} — check that matches your machine.`;
+  }
+  process.stderr.write(
+    `mind-expander: failed to launch ${binaryPath}\n` +
+      `  ${err.code ?? 'error'}: ${err.message}` +
+      hint +
+      `\n`,
+  );
+  process.exit(1);
+}
+
 // Bubble up signal exits so e.g. Ctrl+C in `mind-expander view`
 // returns the conventional 130 instead of `null`.
 if (result.signal) {

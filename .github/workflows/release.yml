@@ -35,6 +35,17 @@ permissions:
   # Harmless to leave on for v0.x — npm just ignores it until enabled.
   id-token: write
 
+env:
+  # Force every JavaScript action in this workflow to run on Node 24,
+  # regardless of what each action's own action.yml declares. Each
+  # action ships its own runtime declaration; some (e.g.
+  # actions/upload-artifact@v5 as of mid-2026) still pin to Node 20
+  # which triggers GitHub's deprecation warning on every run. Forcing
+  # 24 here silences the warning today and future-proofs against any
+  # other action lagging behind. Our action set is conservative
+  # enough that Node-24 compatibility isn't a concern.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   build:
     name: build ${{ matrix.target }}
@@ -147,12 +158,29 @@ jobs:
         # The artifacts arrive as `npm-artifacts/<pkg>/...` which
         # mirrors the layout we already have under `npm/`. Copy each
         # bin/ over so the package-as-published has its binary.
+        #
+        # CRITICAL: actions/upload-artifact@v5 strips file mode bits
+        # during the tarball round-trip. The binaries built on the
+        # native runners were chmod +x, but the downloaded artifacts
+        # arrive without the executable bit. Without the chmod step
+        # below, all 4 unix binaries publish as `-rw-r--r--`, the
+        # launcher's spawnSync fails silently with EACCES on every
+        # Mac and Linux install, and v0.1.0 ships completely broken.
+        # Re-apply +x here so the published tarball is correct.
         shell: bash
         run: |
           set -eux
           for pkg in binary-darwin-arm64 binary-darwin-x64 binary-linux-x64-gnu binary-linux-arm64-gnu binary-win32-x64-msvc; do
             cp -r "npm-artifacts/$pkg/bin/." "npm/$pkg/bin/"
           done
+          # Unix binaries only — Windows .exe doesn't use the +x bit.
+          chmod +x \
+            npm/binary-darwin-arm64/bin/mind-expander \
+            npm/binary-darwin-x64/bin/mind-expander \
+            npm/binary-linux-x64-gnu/bin/mind-expander \
+            npm/binary-linux-arm64-gnu/bin/mind-expander
+          # Sanity-print modes so the workflow log shows the fix.
+          ls -la npm/binary-*/bin/mind-expander*
 
       - name: Publish platform packages first
         # Platform packages must be live BEFORE the main package
