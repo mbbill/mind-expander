@@ -1,13 +1,9 @@
-//! Integration test for the TypeScript frontend. Gated behind the
-//! `typescript` feature so default `cargo test` runs skip it.
+//! Integration test for the TypeScript frontend.
 //!
 //! Drives the binary end-to-end against `tests/fixtures/typescript/`
 //! and asserts on the extracted JSON. This is intentionally a black-box
 //! test — it shells out to the binary the user actually runs, so a
-//! regression in CLI wiring, feature gating, or output format also
-//! gets caught here.
-
-#![cfg(feature = "typescript")]
+//! regression in CLI wiring or output format also gets caught here.
 
 use std::process::Command;
 

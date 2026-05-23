@@ -128,7 +128,7 @@ rm -f npm/mind-expander/package.json.bak
 
 # Refresh Cargo.lock so the version bump is reflected and the commit
 # is reproducible.
-cargo build --features typescript >/dev/null
+cargo build >/dev/null
 
 echo
 echo "Files changed:"

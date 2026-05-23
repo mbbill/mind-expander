@@ -1,4 +1,4 @@
-//! TypeScript frontend. Feature-gated behind `--features typescript`.
+//! TypeScript frontend.
 //!
 //! Mirrors the Rust extractor's shape: walks the filesystem under a
 //! package root, parses each `.ts` / `.tsx` file with swc, and emits

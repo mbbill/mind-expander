@@ -105,11 +105,9 @@ jobs:
           node-version: '20'
 
       - name: Build release binary
-        # --features typescript pulls in the swc-based TS frontend so
-        # the published binary can extract polyglot repos. Skipping it
-        # would ship a Rust-only build, which is not what we want for
-        # the npm package.
-        run: cargo build --release --features typescript --target ${{ matrix.target }}
+        # TS frontend (swc) is built in unconditionally — see
+        # Cargo.toml. No feature flags to manage.
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Stage binary into platform package
         # Copy the built binary into npm/binary-<triple>/bin/ so the

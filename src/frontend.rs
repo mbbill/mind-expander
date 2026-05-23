@@ -15,13 +15,11 @@ use anyhow::Result;
 use crate::model::WorkspaceFacts;
 
 pub mod rust;
-
-#[cfg(feature = "typescript")]
 pub mod typescript;
 
 /// Pluggable per-language extractor. One implementation per source
-/// language (rust today, typescript planned). The dispatcher fans out
-/// to every registered frontend and merges their results.
+/// language. The dispatcher fans out to every registered frontend and
+/// merges their results.
 pub trait LanguageFrontend {
     /// Short identifier — used in error messages and diagnostics.
     fn name(&self) -> &'static str;
@@ -36,24 +34,17 @@ pub trait LanguageFrontend {
 /// All frontends compiled into this build. Order matters only for
 /// diagnostic output; the dispatcher merges results regardless.
 fn registered() -> Vec<Box<dyn LanguageFrontend>> {
-    // The `mut` is only used in the typescript-feature branch; an
-    // attribute on the let-binding sidesteps the default-build
-    // `unused_mut` lint without conditional compilation noise.
-    #[cfg_attr(not(feature = "typescript"), allow(unused_mut))]
-    let mut v: Vec<Box<dyn LanguageFrontend>> = vec![Box::new(rust::RustFrontend)];
-    #[cfg(feature = "typescript")]
-    {
-        v.push(Box::new(typescript::TypeScriptFrontend));
-    }
-    v
+    vec![
+        Box::new(rust::RustFrontend),
+        Box::new(typescript::TypeScriptFrontend),
+    ]
 }
 
 /// Top-level extraction entry point. With `only = None`, runs every
 /// registered frontend and merges any non-empty results into a single
 /// [`WorkspaceFacts`]; with `only = Some(name)`, restricts extraction
 /// to the named frontend (`"rust"` / `"typescript"`). Errors if the
-/// requested frontend is not compiled into this build (e.g.
-/// `Some("typescript")` without `--features typescript`).
+/// requested frontend isn't registered.
 pub fn dispatch_with(root: &Path, only: Option<&str>) -> Result<WorkspaceFacts> {
     let frontends = registered();
     if let Some(name) = only {

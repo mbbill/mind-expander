@@ -29,7 +29,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(
     name = "mind-expander",
     version,
-    about = "Extract ownership facts from a workspace (Rust by default; TypeScript with --features typescript)"
+    about = "Extract ownership facts from a workspace (Rust + TypeScript)"
 )]
 struct Cli {
     /// Workspace root (defaults to current directory).
