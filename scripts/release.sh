@@ -96,10 +96,19 @@ read -r -p "Bump $CURRENT → $NEW? (yes/no) " confirm
 
 bump_version() {
   local file="$1"
+  # NOTE: we deliberately avoid the `0,/pattern/s//repl/` "first
+  # match only" idiom because BSD sed (the macOS default) silently
+  # no-ops on the `0,` address — that bug shipped a half-bumped
+  # release commit once. Plain substitution is safe here because:
+  #   - package.json: the `"version":` key only appears at the top
+  #     level; deps use `"@scope/name":` as their key, not
+  #     `"version":`, so a global substitute won't touch them.
+  #   - Cargo.toml: anchor on `^version[[:space:]]*=` and there's
+  #     only one `[package].version` line in our manifest.
   if [[ "$file" == *.json ]]; then
-    sed -i.bak -E "0,/\"version\":[[:space:]]*\"[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?\"/s//\"version\": \"$NEW\"/" "$file"
+    sed -i.bak -E "s/(\"version\":[[:space:]]*)\"[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?\"/\1\"$NEW\"/" "$file"
   else
-    sed -i.bak -E "0,/^version[[:space:]]*=[[:space:]]*\"[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?\"/s//version = \"$NEW\"/" "$file"
+    sed -i.bak -E "s/^(version[[:space:]]*=[[:space:]]*)\"[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?\"/\1\"$NEW\"/" "$file"
   fi
   rm -f "$file.bak"
 }
