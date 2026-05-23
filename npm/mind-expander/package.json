@@ -1,6 +1,6 @@
 {
   "name": "mind-expander",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A human-AI collaboration tool for large codebases.",
   "license": "Apache-2.0",
   "author": "Bill Ming <mbbill@gmail.com>",
@@ -37,10 +37,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@mind-expander/binary-darwin-arm64": "0.1.2",
-    "@mind-expander/binary-darwin-x64": "0.1.2",
-    "@mind-expander/binary-linux-x64-gnu": "0.1.2",
-    "@mind-expander/binary-linux-arm64-gnu": "0.1.2",
-    "@mind-expander/binary-win32-x64-msvc": "0.1.2"
+    "@mind-expander/binary-darwin-arm64": "0.1.3",
+    "@mind-expander/binary-darwin-x64": "0.1.3",
+    "@mind-expander/binary-linux-x64-gnu": "0.1.3",
+    "@mind-expander/binary-linux-arm64-gnu": "0.1.3",
+    "@mind-expander/binary-win32-x64-msvc": "0.1.3"
   }
 }

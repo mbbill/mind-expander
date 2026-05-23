@@ -1,6 +1,6 @@
 {
   "name": "@mind-expander/binary-linux-arm64-gnu",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Linux aarch64 (glibc) binary for mind-expander.",
   "license": "Apache-2.0",
   "author": "Bill Ming <mbbill@gmail.com>",
