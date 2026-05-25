@@ -17,23 +17,6 @@
 
 const { spawnSync } = require('node:child_process');
 
-// `install-skill` is a pure-Node command — it copies the bundled
-// skill file into the user's AI agent config directory. We intercept
-// it BEFORE the platform-binary detection below so it works on every
-// platform (including ones without a prebuilt binary, where the only
-// reason to install this package is to grab the skill). The handler
-// lives in a sibling module so this launcher stays tiny.
-if (process.argv[2] === 'install-skill') {
-  require('./install-skill')().then(
-    () => process.exit(0),
-    (err) => {
-      process.stderr.write(`install-skill: ${err.message}\n`);
-      process.exit(1);
-    },
-  );
-  return;
-}
-
 // Maps `${process.platform}-${process.arch}` to the npm package that
 // ships the binary. Add new entries here as we expand target
 // coverage (e.g. musl Linux, Windows ARM). Keep in sync with the

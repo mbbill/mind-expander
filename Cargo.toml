@@ -37,7 +37,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs"] }
 include_dir = "0.7"
-opener = "0.7"
+# opener removed — agents open the browser themselves (see --help)
 # Tiny sync HTTP client for the `tour` subcommand. Stays under the
 # tokio/axum stack so we don't pull a second async runtime just to
 # POST a JSON.

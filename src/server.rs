@@ -95,9 +95,6 @@ pub struct RunArgs<'a> {
     pub revspec: RevSpec,
     /// `None` → bind to port 0 and let the OS pick a free port.
     pub port: Option<u16>,
-    /// User-supplied `--no-open`. Final open decision combines this
-    /// with TTY detection (see `run`).
-    pub no_open: bool,
     /// User-supplied `--foreground`. Disables self-daemonize on ready.
     pub foreground: bool,
     /// Frontend filter: `None` = run every registered frontend,
@@ -112,7 +109,6 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
         workspace,
         revspec,
         port,
-        no_open,
         foreground,
         lang,
     } = args;
@@ -246,18 +242,6 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
     let actual_addr = std_listener.local_addr()?;
     let actual_port = actual_addr.port();
     let url = format!("http://{actual_addr}/");
-
-    // Open-browser decision: explicit --no-open suppresses; otherwise
-    // open only when stdout is a TTY (interactive human use). Agents
-    // capture stdout to read the ready block, so their stdout is not
-    // a TTY and the browser stays closed.
-    use std::io::IsTerminal;
-    let open_browser = !no_open && std::io::stdout().is_terminal();
-    if open_browser {
-        if let Err(err) = opener::open_browser(&url) {
-            eprintln!("(could not auto-open browser: {err})");
-        }
-    }
 
     // Decide pid to advertise BEFORE the optional fork. The
     // ready-block pid must match the surviving process (the child
