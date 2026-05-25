@@ -5,10 +5,11 @@ Single source of truth for all permissions — never falls through to allow/deny
 
 Rules:
   1. ALLOW read-only git commands (status, log, diff, show, branch --list, etc.)
-  2. DENY  mutating git commands (commit, push, rebase, reset, etc.) unless targeting /tmp
-  3. ASK   for gh (GitHub CLI) invocations
+  2. ALLOW feature-branch workflow ops: checkout, switch, branch, add, commit,
+         restore, push (but NEVER to main/master), within the workspace
+  3. DENY  destructive git: reset --hard, clean -f, rebase, push to main/master
   4. DENY  file operations outside workspace and /tmp
-  5. ALLOW everything else
+  5. ALLOW everything else (including gh — CI inspection and PR ops are routine)
 """
 
 import json
@@ -138,6 +139,37 @@ _GIT_SAFE_SUBCMDS = frozenset({
     "help", "version", "whatchanged", "cherry",
 })
 
+# Mutating subcommands needed for a feature-branch workflow. Each is
+# allowed with per-command guards in _check_git_command below.
+_GIT_LOOP_SUBCMDS = frozenset({
+    "checkout", "switch", "restore",
+    "add", "commit", "push",
+})
+
+# Branches that must never be the push target.
+_PROTECTED_REFS = frozenset({"main", "master"})
+
+
+def _push_targets_protected_ref(tokens, push_idx):
+    """Scan a `git push ...` arg list for a protected destination ref.
+
+    Detects: `push origin main`, `push -u origin main`, `push origin HEAD:main`,
+    `push origin :main` (delete-via-push), `push origin main:main`, etc.
+    """
+    for tok in tokens[push_idx + 1:]:
+        if tok.startswith("-"):
+            continue
+        # `local:remote` or `:remote` form — only the remote side matters.
+        if ":" in tok:
+            remote = tok.rsplit(":", 1)[1]
+            if remote in _PROTECTED_REFS:
+                return True
+            continue
+        # Bare ref form.
+        if tok in _PROTECTED_REFS:
+            return True
+    return False
+
 
 def _check_git_command(tokens, start_idx):
     """Classify a git invocation as allow/deny.
@@ -167,7 +199,24 @@ def _check_git_command(tokens, start_idx):
             sub_sub = rest[0] if rest else None
             if sub_sub is None or sub_sub not in {"list", "show"}:
                 return ("deny", f"git stash (mutating) blocked: {' '.join(tokens)[:80]}")
+        # 'git branch -D/--delete <ref>' is destructive
+        if subcmd == "branch":
+            for tok in tokens[start_idx:]:
+                if tok in {"-D", "--delete", "-d"} or tok.startswith("--delete="):
+                    return ("deny", f"git branch delete blocked: {' '.join(tokens)[:80]}")
         return ("allow", f"git {subcmd} (read-only)")
+
+    # Feature-branch workflow: allow with per-subcommand guards.
+    if subcmd in _GIT_LOOP_SUBCMDS:
+        # `git push` must not target main/master.
+        if subcmd == "push":
+            push_idx = tokens.index("push")
+            if _push_targets_protected_ref(tokens, push_idx):
+                return ("deny", f"git push to protected ref blocked: {' '.join(tokens)[:80]}")
+            return ("allow", f"git push (non-protected ref)")
+        # `git checkout -- <path>` and `git restore` can throw away working
+        # changes; allow because the user opted in to feature-branch ops.
+        return ("allow", f"git {subcmd} (feature-branch op)")
 
     # Allow any git command if a positional argument is an absolute /tmp path
     for tok in tokens[start_idx:]:
@@ -200,32 +249,26 @@ def find_blocked_command(command):
     if _command_is_tmp_scoped(command):
         return ("allow", "command scoped to /tmp")
 
-    ASK_CMDS = {"gh"}
+    ASK_CMDS: set[str] = set()
 
     # ── Command substitutions: $(cmd ...) or `cmd ...` ────────────────────
-    # Parse git commands inside substitutions and apply the same safe-subcmd rules
-    for m in re.finditer(r'\$\(([^)]*?\bgit\b[^)]*)', command):
+    # Only treat a substitution as a git invocation when git is the FIRST
+    # token after the opening delimiter. Otherwise we get false positives
+    # from prose like `$(cat <<EOF ... git ... EOF)` in commit messages.
+    for m in re.finditer(r'\$\(\s*(git\b[^)]*)', command):
         inner_tokens = m.group(1).split()
-        try:
-            git_idx = next(i for i, t in enumerate(inner_tokens) if t.rsplit("/", 1)[-1] == "git")
-            result = _check_git_command(inner_tokens, git_idx + 1)
-            if result[0] != "allow":
-                return result
-        except StopIteration:
-            pass
-    for m in re.finditer(r'`([^`]*?\bgit\b[^`]*)`', command):
+        result = _check_git_command(inner_tokens, 1)
+        if result[0] != "allow":
+            return result
+    for m in re.finditer(r'`\s*(git\b[^`]*)`', command):
         inner_tokens = m.group(1).split()
-        try:
-            git_idx = next(i for i, t in enumerate(inner_tokens) if t.rsplit("/", 1)[-1] == "git")
-            result = _check_git_command(inner_tokens, git_idx + 1)
-            if result[0] != "allow":
-                return result
-        except StopIteration:
-            pass
+        result = _check_git_command(inner_tokens, 1)
+        if result[0] != "allow":
+            return result
     for name in ASK_CMDS:
-        if re.search(rf'\$\([^)]*\b{name}\b', command):
+        if re.search(rf'\$\(\s*{name}\b', command):
             return ("ask", f"{name} requires approval: {command[:80]}")
-        if re.search(rf'`[^`]*\b{name}\b', command):
+        if re.search(rf'`\s*{name}\b', command):
             return ("ask", f"{name} requires approval: {command[:80]}")
 
     # ── Split on shell operators: ;  &&  ||  |  (  ) ─────────────────────
