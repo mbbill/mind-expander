@@ -43,10 +43,7 @@ pub fn run(yes: bool) -> anyhow::Result<()> {
         agents.push(Agent {
             name: "Cursor",
             scope: "project",
-            dest: cwd
-                .join(".cursor")
-                .join("rules")
-                .join("mind-expander.mdc"),
+            dest: cwd.join(".cursor").join("rules").join("mind-expander.mdc"),
         });
     }
 
@@ -71,7 +68,12 @@ pub fn run(yes: bool) -> anyhow::Result<()> {
         if agents.len() == 1 { "" } else { "s" }
     );
     for a in &agents {
-        println!("  \u{2022} {} ({}) \u{2192} {}", a.name, a.scope, a.dest.display());
+        println!(
+            "  \u{2022} {} ({}) \u{2192} {}",
+            a.name,
+            a.scope,
+            a.dest.display()
+        );
     }
     println!();
 
