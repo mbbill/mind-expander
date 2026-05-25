@@ -55,7 +55,7 @@ MODE — DIFF VS FULL-REPO
 
 SETUP
 
-  mind-expander view <workspace> [--at <revspec>]
+  npx mind-expander view <workspace> [--at <revspec>]
 
   Self-daemonizes on Unix: foreground exits 0 once ready, the server
   keeps running. Stdout block:
@@ -75,8 +75,8 @@ POSTING A TOUR
 
   Launch a fresh server with the tour (most common):
 
-    mind-expander view <repo> [--at <revspec>]   # prints pid + port
-    mind-expander tour - --host 127.0.0.1:<port> <<'EOF'
+    npx mind-expander view <repo> [--at <revspec>]   # prints pid + port
+    npx mind-expander tour - --host 127.0.0.1:<port> <<'EOF'
     { "schema_version": 2, "steps": [ ... ] }
     EOF
 
@@ -241,7 +241,7 @@ PITFALLS
 
 LIFECYCLE
 
-  mind-expander list       enumerate running instances + pids
+  npx mind-expander list   enumerate running instances + pids
   kill <pid>               stop a server
   Auto-daemonize is Unix-only. Pass --foreground on Windows or in CI.
 "####;
