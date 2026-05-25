@@ -1,6 +1,6 @@
 [package]
 name = "mind-expander"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["Bill Ming <mbbill@gmail.com>"]
 description = "A human-AI collaboration tool for large codebases."

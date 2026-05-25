@@ -1,6 +1,6 @@
 {
   "name": "@mind-expander/binary-darwin-arm64",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "macOS aarch64 (Apple Silicon) binary for mind-expander.",
   "license": "Apache-2.0",
   "author": "Bill Ming <mbbill@gmail.com>",
