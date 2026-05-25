@@ -53,52 +53,43 @@ MODE — DIFF VS FULL-REPO
   Lean diff. If genuinely ambiguous, ask one short question before
   starting — restarting in the other mode is wasted work.
 
-SETUP
+WORKFLOW
 
-  npx mind-expander view <workspace> [--at <revspec>]
+  Start the server (once per session):
 
-  Self-daemonizes on Unix: foreground exits 0 once ready, the server
-  keeps running. Stdout block:
+    npx mind-expander view <workspace> [--at <revspec>]
+
+  Self-daemonizes on Unix: foreground exits 0 once ready, the
+  server keeps running. Stdout block:
 
     mind-expander: ready
     pid: 12345
     port: 5180
     url: http://127.0.0.1:5180/
 
-  Save the port (for the tour POST) and pid (to kill when done).
-  Multiple concurrent sessions pick their own port if --port is omitted.
-  Pass --foreground to stay in the foreground (useful for CI or
-  debugging). The server does not open the browser — see POSTING A
-  TOUR for when to open it.
+  Save the port and pid. Multiple concurrent sessions pick their
+  own port if --port is omitted. Pass --foreground to stay in the
+  foreground (useful for CI or debugging).
 
-POSTING A TOUR
+  Send a tour (optional — skip if the user just wants to browse):
 
-  Launch a fresh server with the tour (most common):
-
-    npx mind-expander view <repo> [--at <revspec>]   # prints pid + port
     npx mind-expander tour - --host 127.0.0.1:<port> <<'EOF'
     { "schema_version": 2, "steps": [ ... ] }
     EOF
 
-  Then open the browser (after the tour is posted, not before):
+  Prints "ok (tour:N)" on success. Returns 422 with per-step
+  errors on failure — fix and resend.
+
+  Open the browser (AFTER posting the tour, if any — so the user
+  sees the tour right away):
 
     macOS:   open <url>
     Linux:   xdg-open <url>
     Windows: start <url>
 
-  Follow-up — post to a server that's already running. If the user is
-  mid-conversation and still has the webpage open, do NOT restart the
-  server. Reuse the existing port:
-
-    curl -sS -X POST http://127.0.0.1:<port>/api/tour \
-      -H 'content-type: application/json' --data-binary @- <<'EOF'
-    { "schema_version": 2, "steps": [ ... ] }
-    EOF
-
-  Fall back to a /tmp/tour.json file only if the tour is enormous.
-
-  Success returns {status: "ok", tour_id}. Failure returns 422 with
-  {errors: [{step, ref, msg}]} — fix and resend.
+  For follow-up tours in the same session, run the tour command
+  again — the viewer picks up the new tour automatically. Do NOT
+  restart the server.
 
 TOUR SCHEMA (v2)
 
