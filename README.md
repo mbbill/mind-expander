@@ -58,16 +58,23 @@ source-backed tour.
 
 mind-expander is designed to be driven by an AI coding agent.
 
-1. **Install the skill in your agent.** One command:
+1. **Install the skill in your agent.** Copy this into your AI coding
+   agent:
+
+   ```text
+   Install the mind-expander skill by downloading the raw file at:
+   https://raw.githubusercontent.com/mbbill/mind-expander/refs/heads/main/skill/mind-expander.md
+
+   Install the exact downloaded contents as the skill file. Do not
+   summarize, rewrite, or paraphrase the file.
+   ```
+
+   If you prefer a local installer, run:
 
    ```sh
    npx mind-expander install-skill
    ```
 
-   Detects whichever AI coding agents you have installed (Claude
-   Code, Codex, Cursor), then writes the skill to each user / project
-   config directory. Idempotent — re-run after upgrading the package
-   to refresh the installed skill.
 
 2. **Ask naturally.** Examples:
 
