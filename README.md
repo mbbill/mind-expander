@@ -127,10 +127,6 @@ npx mind-expander view /path/to/workspace --at main..
 npx mind-expander list
 ```
 
-First run downloads ~3 KB of launcher plus the ~20 MB prebuilt binary
-matching your platform (macOS arm64/x64, Linux x64/arm64, Windows x64).
-Cached after.
-
 ### Build from source
 
 For unsupported platforms (musl Linux, BSD) or developing on the tool
