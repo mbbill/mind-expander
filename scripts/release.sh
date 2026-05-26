@@ -35,8 +35,8 @@ fi
 BRANCH="$(git branch --show-current)"
 if [ "$BRANCH" != "main" ]; then
   echo "warning: you're on branch '$BRANCH', not 'main'."
-  read -r -p "continue anyway? (yes/no) " ack
-  [ "$ack" = "yes" ] || exit 1
+  read -r -p "continue anyway? [Y/n] " ack
+  case "$ack" in ""|y|Y|yes|YES|Yes) ;; *) exit 1 ;; esac
 fi
 
 # ────────────────────────────────────────────────────────────────────
@@ -87,8 +87,8 @@ if [ "$(printf '%s\n%s\n' "$CURRENT" "$NEW" | sort -V | tail -n1)" != "$NEW" ]; 
 fi
 
 echo
-read -r -p "Bump $CURRENT → $NEW? (yes/no) " confirm
-[ "$confirm" = "yes" ] || { echo "aborted, no changes made"; exit 1; }
+read -r -p "Bump $CURRENT → $NEW? [Y/n] " confirm
+case "${confirm,,}" in ""|y|yes) ;; *) echo "aborted, no changes made"; exit 1 ;; esac
 
 # ────────────────────────────────────────────────────────────────────
 # 3. Bump versions
@@ -139,11 +139,11 @@ git diff --stat
 # ────────────────────────────────────────────────────────────────────
 
 echo
-read -r -p "Commit and tag v$NEW? (yes/no) " confirm
-if [ "$confirm" != "yes" ]; then
-  echo "aborted. Revert with: git checkout ."
-  exit 1
-fi
+read -r -p "Commit and tag v$NEW? [Y/n] " confirm
+case "${confirm,,}" in
+  ""|y|yes) ;;
+  *) echo "aborted. Revert with: git checkout ."; exit 1 ;;
+esac
 
 git add -A
 git commit -m "release: v$NEW"
@@ -160,9 +160,10 @@ echo "  - 5 parallel builds (macOS arm/x64, Linux x64/arm, Windows x64)"
 echo "  - publishes all 6 npm packages"
 echo "  - ~7-10 min total"
 echo
-read -r -p "Push to origin now? (yes/no) " confirm
+read -r -p "Push to origin now? [Y/n] " confirm
 
-if [ "$confirm" = "yes" ]; then
+case "${confirm,,}" in ""|y|yes) PUSH=1 ;; *) PUSH=0 ;; esac
+if [ "$PUSH" = 1 ]; then
   git push origin "$BRANCH" "v$NEW"
   echo
   echo "  ✓ pushed. CI is running."
