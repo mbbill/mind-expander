@@ -160,7 +160,7 @@ pub fn prune_worktrees(repo_root: &Path) -> Result<()> {
     if !out.status.success() {
         // Only warn — pruning is hygiene, not correctness.
         eprintln!(
-            "(warning) git worktree prune failed: {}",
+            "[mind-expander] (warning) git worktree prune failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }

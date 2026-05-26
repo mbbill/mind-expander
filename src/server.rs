@@ -95,8 +95,6 @@ pub struct RunArgs<'a> {
     pub revspec: RevSpec,
     /// `None` → bind to port 0 and let the OS pick a free port.
     pub port: Option<u16>,
-    /// User-supplied `--foreground`. Disables self-daemonize on ready.
-    pub foreground: bool,
     /// Frontend filter: `None` = run every registered frontend,
     /// `Some(name)` = restrict to the named frontend (`"rust"` /
     /// `"typescript"`). Passed straight through to
@@ -109,7 +107,6 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
         workspace,
         revspec,
         port,
-        foreground,
         lang,
     } = args;
     let user_workspace = std::fs::canonicalize(workspace)
@@ -136,7 +133,7 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
             };
             let parsed_path = match &head_sha {
                 Some(sha) => {
-                    eprintln!("Materializing worktree at {sha} ...");
+                    eprintln!("[mind-expander] Materializing worktree at {sha} ...");
                     materialize_head(&repo, sha)?
                 }
                 None => user_workspace.clone(),
@@ -144,7 +141,10 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
             (parsed_path, Some(repo), base_sha, head_sha)
         };
 
-    eprintln!("Extracting facts from {} ...", workspace_root.display());
+    eprintln!(
+        "[mind-expander] Extracting facts from {} ...",
+        workspace_root.display()
+    );
     let head_facts = crate::frontend::dispatch_with(&workspace_root, lang)?;
 
     // When diff mode is on AND a base sha is set, materialize the
@@ -156,9 +156,12 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
     let (facts, base_workspace_root) = if let (Some(repo), Some(bsha)) =
         (repo_root.as_deref(), base_sha.as_deref())
     {
-        eprintln!("Materializing base worktree at {bsha} ...");
+        eprintln!("[mind-expander] Materializing base worktree at {bsha} ...");
         let base_path = materialize_head(repo, bsha)?;
-        eprintln!("Extracting base facts from {} ...", base_path.display());
+        eprintln!(
+            "[mind-expander] Extracting base facts from {} ...",
+            base_path.display()
+        );
         let base_facts = crate::frontend::dispatch_with(&base_path, lang)?;
         // Precompute base+head hunk ranges per file before the merge
         // so the union pass can decide split-vs-Both per entity in a
@@ -166,16 +169,23 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
         // collection fails (transient git error), fall back to
         // hunkless merge: same-name entities collapse into Both
         // without split-on-change, which is the safer no-info default.
-        eprintln!("Collecting diff hunks for split-on-change ...");
-        let hunks =
-            match Hunks::collect(repo, bsha, head_sha.as_deref(), &workspace_root, &base_path) {
-                Ok(h) => Some(h),
-                Err(err) => {
-                    eprintln!("(warning) hunk collection failed; merging without split: {err}");
-                    None
-                }
-            };
-        eprintln!("Merging base + head into union facts ...");
+        eprintln!("[mind-expander] Collecting diff hunks for split-on-change ...");
+        let hunks = match Hunks::collect(
+            repo,
+            bsha,
+            head_sha.as_deref(),
+            &workspace_root,
+            &base_path,
+        ) {
+            Ok(h) => Some(h),
+            Err(err) => {
+                eprintln!(
+                        "[mind-expander] (warning) hunk collection failed; merging without split: {err}"
+                    );
+                None
+            }
+        };
+        eprintln!("[mind-expander] Merging base + head into union facts ...");
         let unified = build_unified(base_facts, head_facts, hunks.as_ref());
         (unified, Some(base_path))
     } else {
@@ -191,7 +201,7 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
     let span_index = SpanIndex::build(&facts);
     let facts_json = serde_json::to_string(&facts)?;
     eprintln!(
-        "Extracted {} types from {} crate(s).",
+        "[mind-expander] Extracted {} types from {} crate(s).",
         type_count,
         facts.crates.len()
     );
@@ -243,154 +253,67 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
     let actual_port = actual_addr.port();
     let url = format!("http://{actual_addr}/");
 
-    // Decide pid to advertise BEFORE the optional fork. The
-    // ready-block pid must match the surviving process (the child
-    // after daemonize, or our own pid if --foreground). The child's
-    // pid is known only post-fork; the parent prints the ready
-    // block AFTER the fork to capture it correctly.
-    let url_for_serve = url.clone();
-    let serve = move |listener: std::net::TcpListener| -> Result<()> {
-        let pid = std::process::id();
-        emit_ready_block(pid, actual_port, &url_for_serve);
-        // Drop an instance-record file so `mind-expander list` can
-        // enumerate background servers. Best-effort: any IO error
-        // is non-fatal — the server still runs.
-        let _ = write_instance_record(pid, actual_port, &workspace_for_record);
-        let _cleanup = InstanceRecordGuard(pid);
-        listener.set_nonblocking(true)?;
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async move {
-            let tokio_listener = TcpListener::from_std(listener)?;
-            axum::serve(tokio_listener, app).await?;
-            Ok::<_, anyhow::Error>(())
-        })?;
-        Ok(())
-    };
-
-    if foreground {
-        // Foreground mode: parent serves directly. Useful for
-        // `cargo run`, CI, and interactive debugging where the
-        // user wants Ctrl+C to stop the server.
-        return serve(std_listener);
-    }
-
-    #[cfg(unix)]
-    {
-        // Self-daemonize: parent exits cleanly, child continues
-        // serving. Stdout/stderr are detached so the foreground
-        // command returns EOF and the agent's wait completes.
-        // working dir stays put so the server can resolve relative
-        // paths the user passed.
-        use daemonize::{Daemonize, Outcome};
-        // Flush parent's stderr extraction logs before the fork so
-        // the agent sees them attached to the foreground command.
-        let _ = std::io::Write::flush(&mut std::io::stderr());
-        let cwd = std::env::current_dir()?;
-        let daemonize = Daemonize::new()
-            .working_directory(&cwd)
-            .stdout(std::fs::File::create("/dev/null").context("open /dev/null")?)
-            .stderr(std::fs::File::create("/dev/null").context("open /dev/null")?);
-        match daemonize.execute() {
-            Outcome::Parent(Ok(_)) => {
-                // The child is now alive. Print the ready block
-                // from the parent so the agent reads it before the
-                // foreground command returns. The pid we report
-                // is the CHILD's pid (Daemonize::execute() returns
-                // it on the parent side); print and exit.
-                // NOTE: daemonize 0.5 doesn't expose the child's
-                // pid through Outcome — workaround: the child
-                // writes a temp file with its pid, parent reads it.
-                // (We accept a small race here: the parent loops
-                // briefly waiting for the file.) See README.
-                emit_parent_ready_block(actual_port, &url);
-                Ok(())
-            }
-            Outcome::Parent(Err(err)) => {
-                anyhow::bail!("daemonize parent failed: {err}");
-            }
-            Outcome::Child(Ok(_)) => serve(std_listener),
-            Outcome::Child(Err(err)) => {
-                anyhow::bail!("daemonize child failed: {err}");
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        // Non-Unix platforms don't have fork. Fall back to
-        // foreground for now — Windows support pending.
-        serve(std_listener)
-    }
+    // Always run in the foreground. The agent backgrounds us via
+    // its own primitive (Claude Code's Monitor tool, Codex's
+    // long-lived PTY session with stdin-poll, or `&` for a shell
+    // user). Stdout starts with the ready block, then carries
+    // future event lines (tour acks, user questions from the chat
+    // UI, etc.) so the agent can react to each event live without
+    // polling our HTTP API.
+    let pid = std::process::id();
+    emit_ready_block(pid, actual_port, &url);
+    // Drop an instance-record file so `mind-expander list` can
+    // enumerate running servers. Best-effort: any IO error is
+    // non-fatal — the server still runs.
+    let _ = write_instance_record(pid, actual_port, &workspace_for_record);
+    let _cleanup = InstanceRecordGuard(pid);
+    std_listener.set_nonblocking(true)?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async move {
+        let tokio_listener = TcpListener::from_std(std_listener)?;
+        axum::serve(tokio_listener, app).await?;
+        Ok::<_, anyhow::Error>(())
+    })?;
+    Ok(())
 }
 
-/// Emit the machine-readable ready block to stdout. Format:
-///   mind-expander: ready
-///   pid: <pid>
-///   port: <port>
-///   url: <url>
-/// Followed by a blank line so an agent reading line-by-line can
-/// detect end-of-block via the empty line.
+/// Emit the ready event as a single JSON line on stdout. This is the
+/// first event in the server→agent stream — every subsequent stdout
+/// line is also a JSON event object, all sharing the same
+/// `{"event":"…", …}` shape. See `emit_event` below.
 fn emit_ready_block(pid: u32, port: u16, url: &str) {
-    use std::io::Write;
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "mind-expander: ready");
-    let _ = writeln!(out, "pid: {pid}");
-    let _ = writeln!(out, "port: {port}");
-    let _ = writeln!(out, "url: {url}");
-    let _ = writeln!(out);
-    let _ = out.flush();
+    emit_event(serde_json::json!({
+        "event": "ready",
+        "pid": pid,
+        "port": port,
+        "url": url,
+    }));
 }
 
-/// Parent-side ready block when daemonizing. The pid we want to
-/// advertise is the CHILD's, which we don't get directly from
-/// `daemonize::execute()`. The child writes
-/// `~/.cache/mind-expander/run/<pid>.json` on startup; the parent
-/// waits briefly for ANY file mentioning `port == actual_port` and
-/// reads the pid from there. If the wait times out (extremely
-/// unlikely), the parent prints `pid: -` and the agent can fall
-/// back to `mind-expander list` or `lsof -i :PORT`.
-fn emit_parent_ready_block(port: u16, url: &str) {
+/// Write a single JSON event line to stdout — the canonical
+/// server→agent channel. Every meaningful server-side action emits
+/// one of these so an agent's stdout monitor (Claude Code's Monitor
+/// tool, Codex's PTY-poll, shell `tail -f`) sees a chronological
+/// event log it can react to live.
+///
+/// Format invariants:
+///   - One JSON object per line, no embedded newlines, trailing `\n`.
+///   - Every object has an `event` field (a short string like
+///     "ready", "tour_received", "tour_rejected").
+///   - Object payload fields are event-specific; unrelated events do
+///     not need to share schemas.
+///   - Best-effort: any IO failure is silently swallowed (the server
+///     keeps running even if its stdout is closed — e.g. when the
+///     agent's monitor is detached).
+pub(crate) fn emit_event(value: serde_json::Value) {
     use std::io::Write;
-    let pid = wait_for_child_pid(port).unwrap_or(0);
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "mind-expander: ready");
-    if pid != 0 {
-        let _ = writeln!(out, "pid: {pid}");
-    } else {
-        let _ = writeln!(out, "pid: -");
+    if let Ok(line) = serde_json::to_string(&value) {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{line}");
+        let _ = out.flush();
     }
-    let _ = writeln!(out, "port: {port}");
-    let _ = writeln!(out, "url: {url}");
-    let _ = writeln!(out);
-    let _ = out.flush();
-}
-
-/// Poll `~/.cache/mind-expander/run/*.json` for an entry advertising
-/// `port`. Returns the pid from the first match. Times out after
-/// 5 seconds.
-fn wait_for_child_pid(port: u16) -> Option<u32> {
-    let dir = instance_record_dir();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                    continue;
-                }
-                if let Ok(text) = std::fs::read_to_string(&path) {
-                    if let Ok(rec) = serde_json::from_str::<InstanceRecord>(&text) {
-                        if rec.port == port {
-                            return Some(rec.pid);
-                        }
-                    }
-                }
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    None
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -564,6 +487,8 @@ async fn post_tour(State(state): State<Arc<AppState>>, Json(tour): Json<Tour>) -
     // Server restart resets the sequence — that's fine, we don't
     // persist tours.
     let tour_id = format!("tour:{}", state.tours.snapshot().len() + 1);
+    let tour_title = tour.title.clone();
+    let step_count = tour.steps.len();
     match ingest(
         tour,
         &state.span_index,
@@ -577,6 +502,16 @@ async fn post_tour(State(state): State<Arc<AppState>>, Json(tour): Json<Tour>) -
             // viewer is open; the queue still holds the tour for
             // when one connects.
             let _ = state.tour_tx.send(resolved);
+            // Mirror the event onto stdout so the agent's monitor
+            // session sees a complete chronological record of what
+            // happened on this server — even though the tour came
+            // in via HTTP from a sibling subprocess.
+            emit_event(serde_json::json!({
+                "event": "tour_received",
+                "tour_id": tour_id,
+                "title": tour_title,
+                "step_count": step_count,
+            }));
             (
                 StatusCode::OK,
                 Json(TourResponse::Ok {
@@ -586,14 +521,23 @@ async fn post_tour(State(state): State<Arc<AppState>>, Json(tour): Json<Tour>) -
             )
                 .into_response()
         }
-        Err(IngestErr { errors }) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(TourResponse::Err {
-                status: "err",
-                errors,
-            }),
-        )
-            .into_response(),
+        Err(IngestErr { errors }) => {
+            emit_event(serde_json::json!({
+                "event": "tour_rejected",
+                "tour_id": tour_id,
+                "title": tour_title,
+                "step_count": step_count,
+                "error_count": errors.len(),
+            }));
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(TourResponse::Err {
+                    status: "err",
+                    errors,
+                }),
+            )
+                .into_response()
+        }
     }
 }
 

@@ -31,45 +31,53 @@ mind-expander is designed to be driven by an AI coding agent.
 
 MODE — DIFF VS FULL-REPO
 
-  Decide BEFORE running `view`. The --at flag selects diff mode.
-  Getting this wrong requires restarting the server.
+  Decide BEFORE running `view`. Wrong mode = restart the server.
 
-  Diff mode (--at base..head) — highlights only entities touched
-  in the revspec. Use whenever the request is scoped to changes:
-  - "review this PR", "code review", "review the diff"
-  - "what changed", "the changes", "what's new since X"
-  - "walk me through the last N commits / recent work"
-  - An explicit revspec, commit range, or PR number
-  - The user just finished work and is asking you to look at it
+  Diff mode (--at <revspec>) — for any request scoped to changes:
+  PR review, "what changed", "the last N commits", "my recent
+  edits", "what I just did", "uncommitted changes", explicit
+  ranges, or any case where the user just finished work and asks
+  you to look at it. Triggers: "changes", "commits", "diff", "PR",
+  "recent", "last", "uncommitted", "what I/you did".
 
-  Full-repo mode (no --at) — the whole crate graph. Use when the
-  request is about the codebase as a system, not a specific delta:
-  - "tour of this codebase", "explain how X works", "architecture"
-  - Planning a refactor or new feature (changes don't exist yet)
-  - General orientation / onboarding
+  Pick the --at value:
 
-  Tiebreaker: "changes" / "commits" / "diff" / "PR" / "recent" is
-  a strong diff-mode signal even when paired with walkthrough language.
-  Lean diff. If genuinely ambiguous, ask one short question before
-  starting — restarting in the other mode is wasted work.
+    "uncommitted" / "last change" / dirty tree  →  --at HEAD..
+    "the last committed change" / clean tree    →  --at HEAD~1..HEAD
+    "last N commits"                            →  --at HEAD~N..HEAD
+    "my branch" / "vs main"                     →  --at main..HEAD
+    explicit range given                        →  use it verbatim
+
+  Empty-side trick: `<base>..` (no head) = diff working tree vs
+  <base>. That's why uncommitted changes use --at HEAD..
+
+  Full-repo mode (no --at) — codebase as a system, not a delta:
+  "tour of this codebase", "how X works", "architecture",
+  refactor planning (changes don't exist yet), onboarding.
+
+  Tiebreaker: lean diff. If dirty-tree and ambiguous, default
+  --at HEAD.. — restart cost is symmetric but full-repo is more
+  often the wrong guess here.
 
 WORKFLOW
 
-  Start the server (once per session):
+  Start the server (once per session). It stays in the foreground;
+  run it via your background-process primitive (Claude Code's
+  Monitor with persistent=true, Codex's long-lived PTY +
+  write_stdin polling — note: Codex's default sandbox blocks the
+  127.0.0.1 bind AND the tour POST, request elevation for both
+  upfront, or shell `&` + tail).
 
     npx mind-expander view <workspace> [--at <revspec>]
 
-  Self-daemonizes on Unix: foreground exits 0 once ready, the
-  server keeps running. Stdout block:
+  Save port and pid from the first stdout line:
 
-    mind-expander: ready
-    pid: 12345
-    port: 5180
-    url: http://127.0.0.1:5180/
+    {"event":"ready","pid":12345,"port":5180,"url":"http://..."}
 
-  Save the port and pid. Multiple concurrent sessions pick their
-  own port if --port is omitted. Pass --foreground to stay in the
-  foreground (useful for CI or debugging).
+  Every subsequent stdout line is also a JSON event — react to
+  each. Stderr is separate (extraction progress, prefixed
+  `[mind-expander]`); ignore for protocol parsing. Stop the server
+  with Ctrl+C, your task-stop primitive, or `kill <pid>`.
 
   Send a tour (optional — skip if the user just wants to browse):
 
@@ -90,6 +98,18 @@ WORKFLOW
   For follow-up tours in the same session, run the tour command
   again — the viewer picks up the new tour automatically. Do NOT
   restart the server.
+
+PROTOCOL
+
+  Agent → server:  short-lived subprocess (e.g. `mind-expander tour`)
+                   that POSTs HTTP and exits with the ack on its stdout.
+  Server → agent:  JSON event stream on the view process's stdout.
+                   One object per line: {"event":"<name>", ...}.
+
+  Events today:
+    ready           pid, port, url                     (once, at startup)
+    tour_received   tour_id, title, step_count         (valid tour POST)
+    tour_rejected   tour_id, title, step_count, error_count
 
 TOUR SCHEMA (v2)
 
@@ -116,8 +136,11 @@ TOUR SCHEMA (v2)
     ordered + unordered lists, tables, links, ## headings. Keep tight
     for reviews and walkthroughs (one bubble = one observation); planning
     steps can be longer — see use cases below.
-  - ref — optional { file, line? }. file is repo-relative. Omitting
-    line references the whole module.
+  - ref — optional { file, line? }. file is repo-relative AND must
+    be an indexed source file (.rs / .ts / .tsx today; more
+    languages later). Cargo.toml, README, JSON, etc. are NOT
+    extracted and refs to them are rejected with "file not in
+    index". Omitting line references the whole module.
 
 USE CASES
 
@@ -233,8 +256,9 @@ PITFALLS
 LIFECYCLE
 
   npx mind-expander list   enumerate running instances + pids
-  kill <pid>               stop a server
-  Auto-daemonize is Unix-only. Pass --foreground on Windows or in CI.
+  kill <pid>               stop a server (Ctrl+C in the foreground
+                           process also works, as does your agent's
+                           task-stop primitive)
 "####;
 
 #[derive(Parser, Debug)]
@@ -250,13 +274,14 @@ struct Cli {
     #[arg(long, default_value = ".")]
     root: PathBuf,
 
-    /// Restrict extraction to a single language frontend. Omit the
-    /// flag (the default) to run every frontend compiled into this
-    /// build and merge results — so a polyglot repo (Cargo.toml +
-    /// tsconfig.json) automatically extracts both. Pass `--lang
-    /// rust` or `--lang typescript` to filter in a polyglot repo
-    /// when you only want one language's facts, or in CI for
-    /// deterministic output.
+    /// Almost always omit this. The default runs every registered
+    /// frontend and merges results, which is what you want for
+    /// `view` and most extract calls — a polyglot repo (Cargo.toml
+    /// + tsconfig.json) extracts both languages automatically.
+    /// Only pass `--lang rust` / `--lang typescript` when the user
+    /// explicitly asks for a single-language view. Filtering
+    /// here will exclude code from the diagram that the user may
+    /// expect to see.
     #[arg(long, value_enum, global = true)]
     lang: Option<LangSelector>,
 
@@ -347,35 +372,29 @@ enum Cmd {
     /// Node toolchain needed. Workspace path is the same `--root` as
     /// other subcommands, but accepted positionally here for ergonomics.
     ///
-    /// Server lifecycle (Unix): after extraction finishes and the
-    /// server has bound its port, a machine-readable ready block is
-    /// printed to stdout and the process forks itself into the
-    /// background. The foreground command exits 0 so an agent can
-    /// run this synchronously without trailing `&`. Stop the
-    /// background server with `kill <pid>` (the pid is printed in
-    /// the ready block; `mind-expander list` enumerates running
-    /// instances). Pass `--foreground` to disable daemonization
-    /// (useful for `cargo run`, CI, and interactive debugging).
+    /// Lifecycle: stays in the foreground forever. After extraction,
+    /// prints a machine-readable ready block to stdout (pid, port,
+    /// url) and keeps serving until Ctrl+C / SIGTERM. Future events
+    /// (tour acks, user questions from the chat UI) arrive on stdout
+    /// as JSON lines, so an AI agent can react to each event live.
+    /// Background it via your agent's primitive — Claude Code's
+    /// Monitor tool, Codex's PTY-poll, or shell `&`.
     View {
         /// Workspace root to extract and visualize. Defaults to the
         /// global `--root` if omitted.
         workspace: Option<PathBuf>,
-        /// Revision (or revision range) to view and diff against.
-        /// Uses git range syntax: `<ref>` to view that revision,
-        /// `<base>..<head>` to view <head> with the code panel
-        /// showing diffs against <base>. Empty side = working tree
-        /// (e.g. `main..` diffs working tree vs main). Default:
-        /// working tree, no diff.
+        /// Revision (or revision range) for diff mode. Common
+        /// values: `HEAD..` (uncommitted vs last commit),
+        /// `HEAD~1..HEAD` (the last committed change),
+        /// `main..HEAD` (branch vs main). Full grammar + recipe
+        /// table in the top-level help (`mind-expander --help`).
+        /// Default: full-repo, no diff.
         #[arg(long)]
         at: Option<String>,
         /// Port to bind the local server to. Omit to auto-pick a free
         /// port (recommended for agents running multiple sessions).
         #[arg(long)]
         port: Option<u16>,
-        /// Stay in the foreground instead of self-daemonizing on ready.
-        /// Useful for `cargo run`, CI, and debugging.
-        #[arg(long)]
-        foreground: bool,
     },
     /// List background `mind-expander view` instances currently
     /// running on this machine. Reads `~/.cache/mind-expander/run/*.json`
@@ -504,7 +523,6 @@ fn main() -> anyhow::Result<()> {
             workspace,
             at,
             port,
-            foreground,
         } => {
             let path = workspace.unwrap_or(cli.root);
             let revspec = match at {
@@ -515,7 +533,6 @@ fn main() -> anyhow::Result<()> {
                 workspace: &path,
                 revspec,
                 port,
-                foreground,
                 lang: lang_filter,
             })?;
         }

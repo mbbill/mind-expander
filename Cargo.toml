@@ -48,11 +48,7 @@ futures = "0.3"
 # Cross-platform user-cache resolution for the instance-record file
 # at `~/.cache/mind-expander/run/<pid>.json`.
 dirs = "5"
-
-# Agentic UX: self-daemonize after the server is ready so an LLM
-# agent can run `mind-expander view ...` synchronously and detect
-# completion via stdout EOF, while the server keeps running in the
-# background. Unix only — Windows path will be added later via a
-# different mechanism (CreateProcess + DETACHED_PROCESS).
-[target.'cfg(unix)'.dependencies]
-daemonize = "0.5"
+# Note: self-daemonize was dropped — `view` stays in the foreground
+# and the agent backgrounds it via Monitor (Claude Code) or PTY-poll
+# (Codex). Removing `daemonize` also drops a Unix-only dep, so the
+# crate now builds cleanly for Windows without a separate code path.

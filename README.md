@@ -7,8 +7,8 @@
     Pair-programming with an AI falls apart on large codebases — the AI
     can't see what you see, you can't see what it's reasoning about.
     mind-expander is the shared workspace that closes that gap. Today
-    it's a live, tourable diagram of any codebase; the goal is the full
-    surface for human-AI software engineering.
+    it's a live, tourable diagram of Rust and TypeScript codebase; the
+    goal is the full surface for human-AI software engineering.
   </p>
   <p>
     <a href="#why-it-exists">Why It Exists</a>
