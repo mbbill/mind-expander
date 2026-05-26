@@ -1,14 +1,18 @@
 <div align="center">
   <h1>mind-expander</h1>
   <p>
-    <strong>A human-AI collaboration tool for large codebases.</strong>
+    <strong>A shared visual workspace for understanding and steering code with AI agents.</strong>
   </p>
   <p>
-    Pair-programming with an AI falls apart on large codebases — the AI
-    can't see what you see, you can't see what it's reasoning about.
-    mind-expander is the shared workspace that closes that gap. Today
-    it's a live, tourable diagram of Rust and TypeScript codebase; the
-    goal is the full surface for human-AI software engineering.
+    mind-expander turns a codebase into an interactive code map for
+    developers working with AI agents. Instead of reading another long
+    explanation, you and the agent can look at the same source-backed
+    graph: modules, types, calls, dependencies, ownership-like
+    relationships, and the parts of the system changed by a refactor or
+    PR. It supports Rust and TypeScript today, with more language
+    frontends planned. The goal is a shared visual workspace for
+    understanding, reviewing, and steering code that is increasingly
+    written with AI.
   </p>
   <p>
     <a href="#why-it-exists">Why It Exists</a>
@@ -28,17 +32,27 @@ https://github.com/user-attachments/assets/0bb41ece-a493-4596-9c34-22d9c4e6dbea
 
 <p align="center">
   <a href="docs/demo-videos.md"><strong>Browse all demo videos</strong></a>
+  —
+  code maps · caller/callee chains · diff review · planning tours
 </p>
 
 ## Why It Exists
 
-AI coding tools can edit quickly, but collaboration breaks down when the
-human and the agent do not share the same model of the system.
+Code review and design work are rarely about one file. The hard part is
+usually the shape of the system: who owns what, which API boundary is
+moving, which function calls which, and whether a change crosses the
+wrong module boundary.
 
-mind-expander gives both sides a shared architecture surface. Instead of
-passing long markdown explanations back and forth, the agent opens a live
-diagram, shows the source behind its claims, and guides the human through
-the exact modules, symbols, relationships, and changes that matter.
+That is especially true when an AI agent is involved. Agents are good at
+producing code and long explanations, but long markdown is a poor medium
+for checking architecture. You need to see the same structure the agent
+is talking about, inspect the source behind each claim, and decide
+whether the plan is actually right.
+
+mind-expander gives you that shared surface. It extracts structural
+facts from Rust and TypeScript, renders them as an interactive browser
+diagram, and lets an agent turn a review, plan, or walkthrough into a
+source-backed tour.
 
 ## How To Use It
 
@@ -77,16 +91,18 @@ mind-expander is designed to be driven by an AI coding agent.
 
 ## Typical Use Cases
 
-- **Codebase orientation:** build a map of the important modules before
-  making changes.
-- **Architectural planning:** turn a refactor plan into a navigable,
-  source-backed walkthrough.
-- **Code review:** inspect changed entities in their structural context
-  instead of reading hunks in isolation.
-- **Agent handoff:** let an AI agent explain what it found with
-  pointers, arrows, and source locations.
-- **Design discussion:** use the same visual workspace while deciding
-  where a behavior belongs.
+- **AI-guided PR review.** Open a diff view and ask your agent to walk
+  through the changed entities in structural context instead of reading
+  isolated hunks.
+- **Refactor planning.** Turn an agent's plan into an interactive tour
+  where every step points to the source it depends on.
+- **Codebase orientation.** Give yourself or a teammate a guided map of
+  the important modules, types, functions, and relationships.
+- **Architecture discussions.** Use the same visual context while
+  deciding where behavior belongs or how a boundary should move.
+- **Language-aware details.** Use Rust ownership/lifetime signals and
+  TypeScript class/interface/module relationships where available, with
+  more language frontends planned.
 
 ## CLI
 

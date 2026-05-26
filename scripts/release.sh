@@ -88,7 +88,7 @@ fi
 
 echo
 read -r -p "Bump $CURRENT → $NEW? [Y/n] " confirm
-case "${confirm,,}" in ""|y|yes) ;; *) echo "aborted, no changes made"; exit 1 ;; esac
+case "$confirm" in ""|y|Y|yes|YES|Yes) ;; *) echo "aborted, no changes made"; exit 1 ;; esac
 
 # ────────────────────────────────────────────────────────────────────
 # 3. Bump versions
@@ -140,8 +140,8 @@ git diff --stat
 
 echo
 read -r -p "Commit and tag v$NEW? [Y/n] " confirm
-case "${confirm,,}" in
-  ""|y|yes) ;;
+case "$confirm" in
+  ""|y|Y|yes|YES|Yes) ;;
   *) echo "aborted. Revert with: git checkout ."; exit 1 ;;
 esac
 
@@ -162,7 +162,7 @@ echo "  - ~7-10 min total"
 echo
 read -r -p "Push to origin now? [Y/n] " confirm
 
-case "${confirm,,}" in ""|y|yes) PUSH=1 ;; *) PUSH=0 ;; esac
+case "$confirm" in ""|y|Y|yes|YES|Yes) PUSH=1 ;; *) PUSH=0 ;; esac
 if [ "$PUSH" = 1 ]; then
   git push origin "$BRANCH" "v$NEW"
   echo
