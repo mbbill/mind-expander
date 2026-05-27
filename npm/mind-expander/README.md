@@ -1,12 +1,12 @@
 # mind-expander
 
-A human-AI collaboration tool for large codebases.
+An infinite-canvas workspace for coding with AI agents.
 
 Pair-programming with an AI falls apart on large codebases — the AI
 can't see what you see, you can't see what it's reasoning about.
-mind-expander is the shared workspace that closes that gap. Today
-it's a live, tourable diagram of any codebase; the goal is the full
-surface for human-AI software engineering.
+mind-expander is the infinite-canvas workspace that closes that gap.
+Today it's a live, tourable diagram of any codebase; the goal is the
+full workspace for coding with AI agents.
 
 ## Usage
 

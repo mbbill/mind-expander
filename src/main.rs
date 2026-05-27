@@ -265,7 +265,7 @@ LIFECYCLE
 #[command(
     name = "mind-expander",
     version,
-    about = "A human-AI collaboration tool for large codebases",
+    about = "An infinite-canvas workspace for coding with AI agents",
     after_long_help = HELP_GUIDE,
     disable_help_subcommand = true,
 )]

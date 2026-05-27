@@ -1,7 +1,7 @@
 {
   "name": "mind-expander",
   "version": "0.1.7",
-  "description": "A human-AI collaboration tool for large codebases.",
+  "description": "An infinite-canvas workspace for coding with AI agents.",
   "license": "Apache-2.0",
   "author": "Bill Ming <mbbill@gmail.com>",
   "homepage": "https://github.com/mbbill/mind-expander",

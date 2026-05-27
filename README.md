@@ -1,18 +1,18 @@
 <div align="center">
   <h1>mind-expander</h1>
   <p>
-    <strong>A shared visual workspace for understanding and steering code with AI agents.</strong>
+    <strong>An infinite-canvas workspace for coding with AI agents.</strong>
   </p>
   <p>
-    mind-expander turns a codebase into an interactive code map for
-    developers working with AI agents. Instead of reading another long
-    explanation, you and the agent can look at the same source-backed
+    mind-expander turns a codebase into an infinite-canvas workspace for
+    developers coding with AI agents. Instead of reading another long
+    explanation, you and the agent can work on the same source-backed
     graph: modules, types, calls, dependencies, ownership-like
     relationships, and the parts of the system changed by a refactor or
     PR. It supports Rust and TypeScript today, with more language
-    frontends planned. The goal is a shared visual workspace for
-    understanding, reviewing, and steering code that is increasingly
-    written with AI.
+    frontends planned. The goal is a better workspace for understanding
+    architecture, planning changes, reviewing PRs, and steering code
+    that is increasingly written with AI.
   </p>
   <p>
     <a href="#why-it-exists">Why It Exists</a>
@@ -49,10 +49,10 @@ for checking architecture. You need to see the same structure the agent
 is talking about, inspect the source behind each claim, and decide
 whether the plan is actually right.
 
-mind-expander gives you that shared surface. It extracts structural
-facts from Rust and TypeScript, renders them as an interactive browser
-diagram, and lets an agent turn a review, plan, or walkthrough into a
-source-backed tour.
+mind-expander gives you that infinite-canvas surface. It extracts
+structural facts from Rust and TypeScript, renders them as an
+interactive browser diagram, and lets an agent turn a review, plan, or
+walkthrough into a source-backed tour.
 
 ## How To Use It
 
