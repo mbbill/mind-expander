@@ -323,21 +323,21 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
     // UI, etc.) so the agent can react to each event live without
     // polling our HTTP API.
     let pid = std::process::id();
-    emit_ready_block(pid, actual_port, &url);
-    // Drop an instance-record file so `mind-expander list` can
-    // enumerate running servers. Best-effort: any IO error is
-    // non-fatal — the server still runs.
-    let _ = write_instance_record(pid, actual_port, &workspace_for_record);
-    let _cleanup = InstanceRecordGuard(pid);
-    std_listener.set_nonblocking(true)?;
 
-    // Start the working-tree watcher BEFORE serving so the `Watcher`
-    // outlives the server loop. The bound `_watcher` must stay alive for
-    // the rest of `run` (which blocks forever in `rt.block_on`); dropping
-    // it closes the mpsc channel, which is the worker's shutdown signal.
-    // Held outside the diff-mode/watch-enabled branch as `None` so the
-    // type is uniform and the worker simply never spawns when watching
-    // is disabled (committed-head form).
+    // Install the working-tree watcher BEFORE emitting `ready`. inotify
+    // (Linux) only reports events that occur AFTER the watch is
+    // registered, so an agent that reacts to `ready` with an immediate
+    // edit would have that first edit silently dropped if the watch were
+    // installed later. (FSEvents on macOS happens to mask this with its
+    // latency buffer, which is why the race only ever surfaced on Linux
+    // CI.) `ready` therefore means "bound AND watching".
+    //
+    // The bound `_watcher` must stay alive for the rest of `run` (which
+    // blocks forever in `rt.block_on`); dropping it closes the mpsc
+    // channel, which is the worker's shutdown signal. Held outside the
+    // diff-mode/watch-enabled branch as `None` so the type is uniform and
+    // the worker simply never spawns when watching is disabled
+    // (committed-head form).
     let _watcher = if watch_enabled {
         let (tx, rx) = std::sync::mpsc::channel();
         // The Sender lives ONLY inside this watcher callback, so when the
@@ -364,6 +364,14 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
     } else {
         None
     };
+
+    emit_ready_block(pid, actual_port, &url);
+    // Drop an instance-record file so `mind-expander list` can
+    // enumerate running servers. Best-effort: any IO error is
+    // non-fatal — the server still runs.
+    let _ = write_instance_record(pid, actual_port, &workspace_for_record);
+    let _cleanup = InstanceRecordGuard(pid);
+    std_listener.set_nonblocking(true)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
