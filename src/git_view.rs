@@ -263,15 +263,19 @@ fn repo_hash(repo_root: &Path) -> String {
     format!("{h:016x}")
 }
 
-fn dirs_cache_dir() -> Result<PathBuf> {
+/// Shared cache-root resolver for everything mind-expander persists
+/// (worktrees AND the facts cache), so they live under one root and
+/// "clear the cache" is a single `rm -rf`. `XDG_CACHE_HOME` wins when
+/// set (honored on every platform, which the bare `dirs` crate does
+/// not do on macOS/Windows); otherwise we defer to the platform cache
+/// dir (`~/Library/Caches`, `%LOCALAPPDATA%`, or `~/.cache`).
+pub(crate) fn dirs_cache_dir() -> Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
         if !xdg.is_empty() {
             return Ok(PathBuf::from(xdg));
         }
     }
-    let home =
-        std::env::var("HOME").map_err(|_| anyhow!("HOME not set; cannot locate cache dir"))?;
-    Ok(PathBuf::from(home).join(".cache"))
+    dirs::cache_dir().ok_or_else(|| anyhow!("cannot locate a cache directory"))
 }
 
 #[cfg(test)]

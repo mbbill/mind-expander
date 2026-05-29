@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::model::WorkspaceFacts;
@@ -188,102 +189,47 @@ pub struct SpanIndex {
 
 impl SpanIndex {
     pub fn build(facts: &WorkspaceFacts) -> Self {
+        // Per-crate partial maps built in parallel. Each crate's
+        // entry/module assignments are independent of every other
+        // crate's because IDs are namespaced by crate name and span
+        // files don't overlap across crates. We merge into the
+        // canonical maps sequentially below — the merge step is O(N)
+        // BTreeMap pushes, cheap next to the per-entity sweep.
+        let crates: Vec<_> = facts.crates.values().collect();
+        let partials: Vec<(
+            BTreeMap<PathBuf, Vec<IndexedEntry>>,
+            BTreeMap<PathBuf, String>,
+        )> = crates
+            .par_iter()
+            .map(|krate| build_crate_partial(krate))
+            .collect();
+
         let mut by_file: BTreeMap<PathBuf, Vec<IndexedEntry>> = BTreeMap::new();
         let mut module_by_file: BTreeMap<PathBuf, String> = BTreeMap::new();
-        let push = |by_file: &mut BTreeMap<PathBuf, Vec<IndexedEntry>>,
-                    file: &str,
-                    entry: IndexedEntry| {
-            by_file
-                .entry(canonical_or_owned(file))
-                .or_default()
-                .push(entry);
-        };
-        for krate in facts.crates.values() {
-            for module in krate.modules.values() {
-                let module_id = if module.path.is_empty() {
-                    krate.name.clone()
-                } else {
-                    format!("{}::{}", krate.name, module.path)
-                };
+        for (part_by_file, part_module_by_file) in partials {
+            for (file, entries) in part_by_file {
+                by_file.entry(file).or_default().extend(entries);
+            }
+            for (file, module_id) in part_module_by_file {
                 // First module that points at a given file wins —
                 // inline `mod foo { ... }` modules share their
                 // parent's file, and the parent (registered first by
                 // BTreeMap iteration on the empty/shorter path) is
                 // the right "owner" to fall back to.
-                module_by_file
-                    .entry(canonical_or_owned(&module.file))
-                    .or_insert_with(|| module_id.clone());
-
-                for t in &module.types {
-                    if let Some(span) = &t.span {
-                        push(
-                            &mut by_file,
-                            &span.file,
-                            IndexedEntry {
-                                element_id: t.full_path.clone(),
-                                kind: ElementKind::Type,
-                                start_line: span.start_line,
-                                end_line: span.end_line,
-                            },
-                        );
-                    }
-                    for f in &t.fields {
-                        if let Some(span) = &f.span {
-                            push(
-                                &mut by_file,
-                                &span.file,
-                                IndexedEntry {
-                                    element_id: format!("{}::{}", t.full_path, f.name),
-                                    kind: ElementKind::Field,
-                                    start_line: span.start_line,
-                                    end_line: span.end_line,
-                                },
-                            );
-                        }
-                    }
-                    for m in &t.methods {
-                        if let Some(span) = &m.span {
-                            push(
-                                &mut by_file,
-                                &span.file,
-                                IndexedEntry {
-                                    element_id: format!("{}::{}", t.full_path, m.name),
-                                    kind: ElementKind::Method,
-                                    start_line: span.start_line,
-                                    end_line: span.end_line,
-                                },
-                            );
-                        }
-                    }
-                }
-                for fn_facts in &module.functions {
-                    if let Some(span) = &fn_facts.span {
-                        let id = if module.path.is_empty() {
-                            format!("{}::{}", krate.name, fn_facts.name)
-                        } else {
-                            format!("{}::{}::{}", krate.name, module.path, fn_facts.name)
-                        };
-                        push(
-                            &mut by_file,
-                            &span.file,
-                            IndexedEntry {
-                                element_id: id,
-                                kind: ElementKind::Function,
-                                start_line: span.start_line,
-                                end_line: span.end_line,
-                            },
-                        );
-                    }
-                }
+                module_by_file.entry(file).or_insert(module_id);
             }
         }
-        for entries in by_file.values_mut() {
+
+        // Per-file entry sort runs in parallel — each file is
+        // independent, so the rayon overhead pays back on workspaces
+        // with thousands of files.
+        by_file.par_iter_mut().for_each(|(_, entries)| {
             entries.sort_by(|a, b| {
                 a.start_line
                     .cmp(&b.start_line)
                     .then_with(|| (a.end_line - a.start_line).cmp(&(b.end_line - b.start_line)))
             });
-        }
+        });
         let mut directed_edges: std::collections::BTreeSet<(String, String)> =
             std::collections::BTreeSet::new();
         for edge in &facts.edges {
@@ -442,6 +388,88 @@ impl SpanIndex {
             })
             .ok_or_else(|| format!("no resolvable element near {}:{}", r.file, line))
     }
+}
+
+/// Build one crate's contribution to `SpanIndex.by_file` and
+/// `SpanIndex.module_by_file`. Pure function — no cross-crate state —
+/// so the caller can run this in parallel across crates.
+fn build_crate_partial(
+    krate: &crate::model::CrateFacts,
+) -> (
+    BTreeMap<PathBuf, Vec<IndexedEntry>>,
+    BTreeMap<PathBuf, String>,
+) {
+    let mut by_file: BTreeMap<PathBuf, Vec<IndexedEntry>> = BTreeMap::new();
+    let mut module_by_file: BTreeMap<PathBuf, String> = BTreeMap::new();
+    for module in krate.modules.values() {
+        let module_id = if module.path.is_empty() {
+            krate.name.clone()
+        } else {
+            format!("{}::{}", krate.name, module.path)
+        };
+        module_by_file
+            .entry(canonical_or_owned(&module.file))
+            .or_insert_with(|| module_id.clone());
+
+        for t in &module.types {
+            if let Some(span) = &t.span {
+                by_file
+                    .entry(canonical_or_owned(&span.file))
+                    .or_default()
+                    .push(IndexedEntry {
+                        element_id: t.full_path.clone(),
+                        kind: ElementKind::Type,
+                        start_line: span.start_line,
+                        end_line: span.end_line,
+                    });
+            }
+            for f in &t.fields {
+                if let Some(span) = &f.span {
+                    by_file
+                        .entry(canonical_or_owned(&span.file))
+                        .or_default()
+                        .push(IndexedEntry {
+                            element_id: format!("{}::{}", t.full_path, f.name),
+                            kind: ElementKind::Field,
+                            start_line: span.start_line,
+                            end_line: span.end_line,
+                        });
+                }
+            }
+            for m in &t.methods {
+                if let Some(span) = &m.span {
+                    by_file
+                        .entry(canonical_or_owned(&span.file))
+                        .or_default()
+                        .push(IndexedEntry {
+                            element_id: format!("{}::{}", t.full_path, m.name),
+                            kind: ElementKind::Method,
+                            start_line: span.start_line,
+                            end_line: span.end_line,
+                        });
+                }
+            }
+        }
+        for fn_facts in &module.functions {
+            if let Some(span) = &fn_facts.span {
+                let id = if module.path.is_empty() {
+                    format!("{}::{}", krate.name, fn_facts.name)
+                } else {
+                    format!("{}::{}::{}", krate.name, module.path, fn_facts.name)
+                };
+                by_file
+                    .entry(canonical_or_owned(&span.file))
+                    .or_default()
+                    .push(IndexedEntry {
+                        element_id: id,
+                        kind: ElementKind::Function,
+                        start_line: span.start_line,
+                        end_line: span.end_line,
+                    });
+            }
+        }
+    }
+    (by_file, module_by_file)
 }
 
 fn find_caller_file(

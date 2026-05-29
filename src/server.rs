@@ -141,28 +141,56 @@ pub fn run(args: RunArgs<'_>) -> Result<()> {
             (parsed_path, Some(repo), base_sha, head_sha)
         };
 
+    // Materialize the base worktree (if diff mode with a base ref)
+    // BEFORE forking the extract threads — git plumbing is sequential
+    // and cheap when the worktree is already cached. After this point
+    // both sides have a parsed source root, so the two extracts can
+    // run concurrently.
+    let base_path_opt =
+        if let (Some(repo), Some(bsha)) = (repo_root.as_deref(), base_sha.as_deref()) {
+            eprintln!("[mind-expander] Materializing base worktree at {bsha} ...");
+            Some(materialize_head(repo, bsha)?)
+        } else {
+            None
+        };
+
     eprintln!(
         "[mind-expander] Extracting facts from {} ...",
         workspace_root.display()
     );
-    let head_facts = crate::frontend::dispatch_with(&workspace_root, lang)?;
+    // Run head and (optional) base extracts in parallel. Each side
+    // is independent until `build_unified`, so a scoped thread pair
+    // halves the wall-clock cost of diff mode on big workspaces.
+    let (head_facts, base_facts_opt) = std::thread::scope(|s| {
+        let head_handle = s.spawn(|| crate::frontend::dispatch_with(&workspace_root, lang));
+        let base_facts_opt = if let Some(base_path) = base_path_opt.as_deref() {
+            eprintln!(
+                "[mind-expander] Extracting base facts from {} ...",
+                base_path.display()
+            );
+            Some(crate::frontend::dispatch_with(base_path, lang)?)
+        } else {
+            None
+        };
+        let head_facts = head_handle.join().expect("head extract thread panicked")?;
+        Ok::<_, anyhow::Error>((head_facts, base_facts_opt))
+    })?;
 
-    // When diff mode is on AND a base sha is set, materialize the
-    // base worktree too and parse it as a separate snapshot. We then
-    // merge both into the union facts the viewer renders. The base
-    // worktree path is held in AppState so /api/source?side=base can
-    // service files via `git show` (no need to read from the
-    // worktree once parsed).
-    let (facts, base_workspace_root) = if let (Some(repo), Some(bsha)) =
-        (repo_root.as_deref(), base_sha.as_deref())
-    {
-        eprintln!("[mind-expander] Materializing base worktree at {bsha} ...");
-        let base_path = materialize_head(repo, bsha)?;
-        eprintln!(
-            "[mind-expander] Extracting base facts from {} ...",
-            base_path.display()
-        );
-        let base_facts = crate::frontend::dispatch_with(&base_path, lang)?;
+    // When diff mode is on AND a base sha is set, merge head + base
+    // into the union facts the viewer renders. The base worktree path
+    // is held in AppState so /api/source?side=base can service files
+    // via `git show` (no need to read from the worktree once parsed).
+    let (facts, base_workspace_root) = if let (
+        Some(repo),
+        Some(bsha),
+        Some(base_facts),
+        Some(base_path),
+    ) = (
+        repo_root.as_deref(),
+        base_sha.as_deref(),
+        base_facts_opt,
+        base_path_opt,
+    ) {
         // Precompute base+head hunk ranges per file before the merge
         // so the union pass can decide split-vs-Both per entity in a
         // single sweep — no second post-pass needed. If hunk

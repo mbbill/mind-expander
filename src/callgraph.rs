@@ -6,65 +6,59 @@
 //! semantics later without making ownership edges carry executable behavior.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use rayon::prelude::*;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
     Expr, ExprCall, ExprMethodCall, File, FnArg, ImplItem, Item, ItemImpl, ItemMod, ItemTrait, Pat,
     TraitItem, Type,
 };
-use walkdir::WalkDir;
 
+use crate::extract::SourceFile;
 use crate::model::{
     CallEdge, CallKind, CallResolution, CrateFacts, ModuleFacts, TypeFacts, WorkspaceFacts,
 };
 
-pub trait CallGraphProvider {
-    fn extract_call_edges(&self, workspace: &WorkspaceFacts) -> Result<Vec<CallEdge>>;
-}
-
 pub struct SynCallGraphProvider;
 
-impl CallGraphProvider for SynCallGraphProvider {
-    fn extract_call_edges(&self, workspace: &WorkspaceFacts) -> Result<Vec<CallEdge>> {
+impl SynCallGraphProvider {
+    /// Visit every source file in parallel to collect call edges.
+    /// Each thread reads + parses + visits one file at a time; the
+    /// per-file `seen` set folds repeated calls within a file (e.g.
+    /// three call sites to `foo()`) into one edge, and cross-file
+    /// duplicates collapse during the final `sort + dedup`.
+    ///
+    /// Files are re-parsed here even though the entity pass also
+    /// parsed them — see the comment on `SourceFile` for why the
+    /// AST cannot be cached across passes.
+    pub fn extract_call_edges_from_source(
+        &self,
+        workspace: &WorkspaceFacts,
+        source_files: &[SourceFile],
+    ) -> Result<Vec<CallEdge>> {
         let registry = FunctionRegistry::from_workspace(workspace);
-        let mut out = Vec::new();
-        let mut seen = BTreeSet::new();
-
-        for krate in workspace.crates.values() {
-            let src_root = PathBuf::from(&krate.root);
-            for entry in WalkDir::new(&src_root)
-                .into_iter()
-                .filter_entry(|e| {
-                    let name = e.file_name().to_string_lossy();
-                    !matches!(name.as_ref(), "target" | "tmp" | ".git" | "node_modules")
-                })
-                .filter_map(|e| e.ok())
-            {
-                if !entry.file_type().is_file()
-                    || !entry.path().extension().map(|e| e == "rs").unwrap_or(false)
-                {
-                    continue;
+        let mut out: Vec<CallEdge> = source_files
+            .par_iter()
+            .flat_map_iter(|sf| {
+                let mut file_out = Vec::new();
+                let mut file_seen = BTreeSet::new();
+                if let Ok(src) = std::fs::read_to_string(&sf.file) {
+                    if let Ok(ast) = syn::parse_file(&src) {
+                        collect_file_call_edges(
+                            &sf.crate_name,
+                            &sf.module_path,
+                            &ast,
+                            &registry,
+                            &mut file_out,
+                            &mut file_seen,
+                        );
+                    }
                 }
-                let src = std::fs::read_to_string(entry.path())?;
-                let ast: File = match syn::parse_file(&src) {
-                    Ok(f) => f,
-                    Err(_) => continue,
-                };
-                let module_path = derive_module_path(&src_root, entry.path());
-                collect_file_call_edges(
-                    &krate.name,
-                    &module_path,
-                    &ast,
-                    &registry,
-                    &mut out,
-                    &mut seen,
-                );
-            }
-        }
-
+                file_out.into_iter()
+            })
+            .collect();
         out.sort_by(|a, b| {
             (&a.caller, &a.callee, a.kind, a.resolution, &a.origin).cmp(&(
                 &b.caller,
@@ -73,6 +67,13 @@ impl CallGraphProvider for SynCallGraphProvider {
                 b.resolution,
                 &b.origin,
             ))
+        });
+        out.dedup_by(|a, b| {
+            a.caller == b.caller
+                && a.callee == b.callee
+                && a.kind == b.kind
+                && a.resolution == b.resolution
+                && a.origin == b.origin
         });
         Ok(out)
     }
@@ -711,21 +712,6 @@ fn module_full_path(crate_name: &str, module_path: &str) -> String {
     } else {
         format!("{crate_name}::{module_path}")
     }
-}
-
-fn derive_module_path(src_root: &Path, file: &Path) -> String {
-    let rel = file.strip_prefix(src_root).unwrap_or(file);
-    let mut parts: Vec<String> = rel
-        .with_extension("")
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().to_string())
-        .collect();
-    if let Some(last) = parts.last() {
-        if last == "mod" || last == "lib" || last == "main" {
-            parts.pop();
-        }
-    }
-    parts.join("::")
 }
 
 fn push_unique_map(map: &mut BTreeMap<String, Vec<String>>, key: &str, value: String) {

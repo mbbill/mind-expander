@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{
@@ -12,7 +13,7 @@ use syn::{
 };
 use walkdir::WalkDir;
 
-use crate::callgraph::{CallGraphProvider, SynCallGraphProvider};
+use crate::callgraph::SynCallGraphProvider;
 use crate::model::{
     CrateFacts, Edge, EdgeKind, EdgeProfile, FieldFacts, FnFacts, ModuleFacts, Ownership,
     ParamFacts, ReExport, ReExportKind, SelfKind, Span, TypeFacts, TypeKind, ViaKind,
@@ -24,6 +25,187 @@ use crate::model::{
 /// canonical's `TypeKind` onto each `ReExport` it produces.
 type TypeKindByPath = BTreeMap<String, TypeKind>;
 use crate::resolve::{classify, type_text};
+
+/// Cache schema version. Bump whenever any of `ModuleFacts`,
+/// `PendingReExport`, `Span`, or other serialized fields change
+/// in a way that would make older cache files mis-deserialize.
+/// Cache files with a different version are silently discarded
+/// and rebuilt — no migration logic.
+const FACTS_CACHE_VERSION: u32 = 1;
+
+/// Per-file slice of pass-1 entity extraction. Keyed by absolute
+/// file path; validated by `(mtime_ns, size)` on read so an edit
+/// that changes a file's contents always misses the cache.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedFile {
+    mtime_ns: i128,
+    size: u64,
+    crate_name: String,
+    module_path: String,
+    modules: BTreeMap<String, ModuleFacts>,
+    pending_re_exports: BTreeMap<String, Vec<PendingReExport>>,
+}
+
+/// One workspace's on-disk facts cache. The `cargo install` location
+/// of the binary changes between releases, so a release with a
+/// changed extractor would still mis-deserialize old cache files —
+/// `version` defends against that.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FactsCache {
+    version: u32,
+    /// Pass-1 cache, file-by-file. Keyed by absolute file path as a
+    /// string so the on-disk representation is portable.
+    files: BTreeMap<String, CachedFile>,
+    /// Pass-2 (call graph) cache + the per-entity edge list. These
+    /// depend on the whole-workspace registry, so they're only valid
+    /// when every entry in `files` produced a cache hit (i.e. nothing
+    /// changed since the previous run).
+    workspace_signature: u64,
+    call_edges: Vec<crate::model::CallEdge>,
+    edges: Vec<Edge>,
+    edge_profiles: BTreeMap<String, EdgeProfile>,
+}
+
+/// Stable hash of (file path, mtime, size) for every source file —
+/// distinguishes "the workspace is exactly as it was last run" from
+/// "one file changed." If this matches the cache's value, the cached
+/// `call_edges` / `edges` / `edge_profiles` can be reused wholesale;
+/// otherwise the registry might have shifted underneath them.
+///
+/// Takes the `(path, mtime_ns, size)` tuples already gathered during
+/// pass 1 (each file is stat'd exactly once, there) rather than
+/// re-stat'ing — sorts them for order-independence, then folds them
+/// into the hash behind the cache version.
+fn workspace_signature(entries: &mut [(String, i128, u64)]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    FACTS_CACHE_VERSION.hash(&mut h);
+    entries.sort();
+    for e in entries.iter() {
+        e.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Root directory holding every workspace's facts cache. Shares the
+/// cache root with the git worktrees (`crate::git_view`) so all of
+/// mind-expander's on-disk state lives under one tree.
+fn facts_cache_base() -> Option<PathBuf> {
+    crate::git_view::dirs_cache_dir()
+        .ok()
+        .map(|base| base.join("mind-expander").join("facts"))
+}
+
+/// Workspace cache file path. Workspaces are keyed by a hash of
+/// their absolute root path so two projects don't share a cache. For
+/// a materialized worktree the root path already embeds the commit
+/// SHA, so each git revision gets its own cache file automatically.
+fn cache_file_path(workspace_root: &Path) -> Option<PathBuf> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    workspace_root.display().to_string().hash(&mut h);
+    let key = format!("{:016x}", h.finish());
+    Some(
+        facts_cache_base()?
+            .join(key)
+            .join(format!("v{FACTS_CACHE_VERSION}.json")),
+    )
+}
+
+/// Best-effort GC of the facts cache. Keeps the `keep` most-recently
+/// written workspace caches (by the cache file's mtime) and removes
+/// the rest. Never touches `current` (the cache about to be used) and
+/// never fails extraction — disk hygiene only.
+///
+/// SHA-keyed worktree caches are immutable single-use artifacts
+/// (reviewed once, rarely again) so their mtimes age out first; the
+/// live working-tree cache is rewritten whenever files change, so it
+/// stays recent and survives. That's the eviction order we want.
+fn prune_facts_cache(keep: usize, current: Option<&Path>) {
+    let Some(base) = facts_cache_base() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return;
+    };
+    // Each workspace cache is `<base>/<hash>/vN.json`. Collect the
+    // workspace dirs paired with their cache file's mtime.
+    let mut dirs: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let cache_file = dir.join(format!("v{FACTS_CACHE_VERSION}.json"));
+        let mtime = std::fs::metadata(&cache_file)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        dirs.push((mtime, dir));
+    }
+    if dirs.len() <= keep {
+        return;
+    }
+    // Newest first; drop everything past `keep` except the current one.
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    let current_dir = current.and_then(|p| p.parent());
+    for (_, dir) in dirs.into_iter().skip(keep) {
+        if Some(dir.as_path()) == current_dir {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+fn load_cache(path: &Path) -> Option<FactsCache> {
+    // JSON (not bincode) because `ModuleFacts` and its transitive
+    // fields use `#[serde(skip_serializing_if = ...)]`, which bincode
+    // and other binary formats cannot reliably round-trip — a skipped
+    // field on serialize is read as the *next* field's discriminant
+    // on deserialize, producing "tag for enum is not valid" errors.
+    // JSON is bigger and slower to parse but the only format that
+    // honors `skip_serializing_if` natively.
+    let bytes = std::fs::read(path).ok()?;
+    let cache: FactsCache = serde_json::from_slice(&bytes).ok()?;
+    if cache.version != FACTS_CACHE_VERSION {
+        return None;
+    }
+    Some(cache)
+}
+
+fn save_cache(path: &Path, cache: &FactsCache) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec(cache) {
+        // Atomic-ish write: tmp + rename. Best-effort — a failure
+        // here just means the next run rebuilds from scratch.
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, &bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}
+
+/// Per-file metadata used to drive both the entity extractor and
+/// the call-graph extractor. Holds only `Send` data so the parallel
+/// passes can each `par_iter` over a shared `&[SourceFile]`.
+///
+/// We don't cache the parsed `syn::File` across passes because syn
+/// ASTs aren't `Send` (proc-macro2 bridges to the compiler's
+/// non-thread-safe `Span` type whenever the `proc-macro` feature is
+/// enabled, which Cargo's feature unification forces on for any
+/// workspace that pulls in syn-using proc-macros — async-trait,
+/// clap_derive, etc.). The two passes therefore re-parse per file,
+/// but each pass runs `par_iter`, so the wall-clock cost on an
+/// 8-core machine still beats a sequential single-parse pipeline by
+/// a wide margin.
+pub(crate) struct SourceFile {
+    pub(crate) crate_name: String,
+    pub(crate) file: PathBuf,
+    pub(crate) module_path: String,
+}
 
 pub fn extract_workspace(root: &Path) -> Result<WorkspaceFacts> {
     let crates = discover_crates(root)?;
@@ -40,9 +222,142 @@ pub fn extract_workspace(root: &Path) -> Result<WorkspaceFacts> {
     // resolved entries back to the right `ModuleFacts`.
     let mut pending_re_exports: BTreeMap<(String, String), Vec<PendingReExport>> = BTreeMap::new();
 
-    for (name, crate_root) in crates {
-        let cf = extract_crate(&name, &crate_root, &mut pending_re_exports)?;
-        workspace.crates.insert(name, cf);
+    // Discover every .rs source file across every crate (sequential,
+    // tiny cost). Parsing + visiting happens in parallel below.
+    let mut source_files: Vec<SourceFile> = Vec::new();
+    for (name, crate_root) in &crates {
+        for path in discover_rs_files(crate_root) {
+            let module_path = derive_module_path(crate_root, &path);
+            source_files.push(SourceFile {
+                crate_name: name.clone(),
+                file: path,
+                module_path,
+            });
+        }
+        workspace
+            .crates
+            .insert(name.clone(), empty_crate_facts(name, crate_root));
+    }
+
+    // Load the cross-session cache. (The workspace signature is
+    // computed *after* pass 1 from the per-file stats it already
+    // gathers — see below — so we don't stat every file twice.)
+    let cache_path = cache_file_path(root);
+    let cache: Option<FactsCache> = cache_path.as_deref().and_then(load_cache);
+
+    // GC old workspace caches (best-effort, never touches the current
+    // one). Cheap directory scan; only deletes when over budget.
+    prune_facts_cache(24, cache_path.as_deref());
+
+    // Pass 1 — for each file, stat it ONCE, then return either the
+    // cached pass-1 output (mtime + size match) or a freshly parsed
+    // one. Run in parallel. Each result carries `(path, mtime, size)`
+    // for the workspace signature plus an optional `CachedFile`
+    // (`None` when the file failed to parse — it still contributes to
+    // the signature so a fix that makes it parseable busts the cache).
+    type PassOne = (String, i128, u64, Option<CachedFile>);
+    let per_file: Vec<PassOne> = source_files
+        .par_iter()
+        .map(|sf| -> Result<PassOne> {
+            let path_key = sf.file.display().to_string();
+            let meta = std::fs::metadata(&sf.file)
+                .with_context(|| format!("stat {}", sf.file.display()))?;
+            let size = meta.len();
+            let mtime_ns: i128 = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as i128)
+                .unwrap_or(0);
+
+            // Cache hit — same file content as last run.
+            if let Some(cached) = cache.as_ref().and_then(|c| c.files.get(&path_key)) {
+                if cached.mtime_ns == mtime_ns
+                    && cached.size == size
+                    && cached.crate_name == sf.crate_name
+                    && cached.module_path == sf.module_path
+                {
+                    let row = CachedFile {
+                        mtime_ns,
+                        size,
+                        crate_name: cached.crate_name.clone(),
+                        module_path: cached.module_path.clone(),
+                        modules: cached.modules.clone(),
+                        pending_re_exports: cached.pending_re_exports.clone(),
+                    };
+                    return Ok((path_key, mtime_ns, size, Some(row)));
+                }
+            }
+
+            // Cache miss — parse + visit.
+            let src = std::fs::read_to_string(&sf.file)
+                .with_context(|| format!("reading {}", sf.file.display()))?;
+            let ast: File = match syn::parse_file(&src) {
+                Ok(f) => f,
+                Err(_) => return Ok((path_key, mtime_ns, size, None)),
+            };
+            let mut ctx = Ctx {
+                crate_name: sf.crate_name.clone(),
+                file: sf.file.display().to_string(),
+                module_stack: vec![sf.module_path.clone()],
+                modules: BTreeMap::new(),
+                pending_re_exports: BTreeMap::new(),
+            };
+            ctx.ensure_module(&sf.module_path);
+            for item in &ast.items {
+                ctx.visit_item(item);
+            }
+            let row = CachedFile {
+                mtime_ns,
+                size,
+                crate_name: sf.crate_name.clone(),
+                module_path: sf.module_path.clone(),
+                modules: ctx.modules,
+                pending_re_exports: ctx.pending_re_exports,
+            };
+            Ok((path_key, mtime_ns, size, Some(row)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Workspace signature from the stats pass 1 already gathered (one
+    // stat per file, no second sweep). If it matches the cached one,
+    // every file is byte-identical to the previous run, so the cache
+    // on disk is already exactly what we'd write back — we can reuse
+    // the cached call graph and skip the multi-MB rewrite.
+    let mut sig_entries: Vec<(String, i128, u64)> = per_file
+        .iter()
+        .map(|(path, mtime, size, _)| (path.clone(), *mtime, *size))
+        .collect();
+    let signature = workspace_signature(&mut sig_entries);
+    let signature_matches = cache
+        .as_ref()
+        .map(|c| c.workspace_signature == signature)
+        .unwrap_or(false);
+
+    // Merge per-file outputs into the workspace AND collect the new
+    // cache index in one pass. We clone the maps off the row so the
+    // row itself can move into `new_cache_files` for later write-back.
+    let mut new_cache_files: BTreeMap<String, CachedFile> = BTreeMap::new();
+    for (path_key, _, _, row) in per_file {
+        let Some(row) = row else { continue };
+        let crate_name = row.crate_name.clone();
+        let cf = workspace
+            .crates
+            .get_mut(&crate_name)
+            .expect("crate registered above");
+        for (path, m) in &row.modules {
+            cf.modules
+                .entry(path.clone())
+                .and_modify(|existing| merge_module(existing, m))
+                .or_insert_with(|| m.clone());
+        }
+        for (mod_path, pendings_list) in &row.pending_re_exports {
+            pending_re_exports
+                .entry((crate_name.clone(), mod_path.clone()))
+                .or_default()
+                .extend(pendings_list.iter().cloned());
+        }
+        new_cache_files.insert(path_key, row);
     }
 
     // Build the global type registry: short-name -> set of canonical paths.
@@ -91,7 +406,39 @@ pub fn extract_workspace(root: &Path) -> Result<WorkspaceFacts> {
 
     workspace.edge_profiles = build_profiles(&edges);
     workspace.edges = edges;
-    workspace.call_edges = SynCallGraphProvider.extract_call_edges(&workspace)?;
+
+    // Pass 2 — call graph. If the workspace signature matches the
+    // cached one, NOTHING has changed since the previous run, so
+    // every call edge's resolution is identical and we can use the
+    // cached vector. Otherwise re-run the (parallel) call-graph pass.
+    if signature_matches {
+        // Safe to unwrap — `signature_matches` implies cache is Some.
+        let c = cache.as_ref().unwrap();
+        workspace.call_edges = c.call_edges.clone();
+        // edges/edge_profiles were just rebuilt from cached modules,
+        // which should be identical to the cached snapshot. We could
+        // assert equality, but the rebuild is cheap so we just trust it.
+    } else {
+        workspace.call_edges =
+            SynCallGraphProvider.extract_call_edges_from_source(&workspace, &source_files)?;
+    }
+
+    // Write-back, unless the on-disk cache is already current. When
+    // `signature_matches`, the file we'd write is byte-for-byte what's
+    // already there, so skipping it avoids a pointless multi-MB
+    // serialize+write on the hot reload path. Failures elsewhere are
+    // best-effort — the next run just rebuilds.
+    if let (Some(path), false) = (cache_path, signature_matches) {
+        let new_cache = FactsCache {
+            version: FACTS_CACHE_VERSION,
+            files: new_cache_files,
+            workspace_signature: signature,
+            call_edges: workspace.call_edges.clone(),
+            edges: workspace.edges.clone(),
+            edge_profiles: workspace.edge_profiles.clone(),
+        };
+        save_cache(&path, &new_cache);
+    }
 
     Ok(workspace)
 }
@@ -153,12 +500,8 @@ fn parse_crate_name(toml: &str) -> Option<String> {
     None
 }
 
-fn extract_crate(
-    name: &str,
-    src_root: &Path,
-    pending_re_exports: &mut BTreeMap<(String, String), Vec<PendingReExport>>,
-) -> Result<CrateFacts> {
-    let mut crate_facts = CrateFacts {
+fn empty_crate_facts(name: &str, src_root: &Path) -> CrateFacts {
+    CrateFacts {
         name: name.to_string(),
         root: src_root.display().to_string(),
         modules: BTreeMap::new(),
@@ -167,24 +510,25 @@ fn extract_crate(
         // this path without the wrapper too.
         language: crate::model::Language::default(),
         side: crate::model::Side::default(),
-    };
-    for entry in WalkDir::new(src_root).into_iter().filter_map(|e| e.ok()) {
-        if entry.file_type().is_file()
-            && entry.path().extension().map(|e| e == "rs").unwrap_or(false)
-        {
-            let module_path = derive_module_path(src_root, entry.path());
-            extract_file(
-                name,
-                src_root,
-                entry.path(),
-                &module_path,
-                &mut crate_facts,
-                pending_re_exports,
-            )
-            .with_context(|| format!("parsing {}", entry.path().display()))?;
-        }
     }
-    Ok(crate_facts)
+}
+
+/// Walk one crate's src/ tree and return every `.rs` file path,
+/// sorted deterministically. Tiny cost (sequential `WalkDir` over a
+/// small tree); the heavy lifting — read, parse, visit — happens in
+/// parallel in the caller.
+fn discover_rs_files(src_root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = WalkDir::new(src_root)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|entry| {
+            entry.file_type().is_file()
+                && entry.path().extension().map(|e| e == "rs").unwrap_or(false)
+        })
+        .map(|entry| entry.path().to_path_buf())
+        .collect();
+    out.sort();
+    out
 }
 
 /// Translate a file path under src/ to a "::"-delimited module path.
@@ -202,49 +546,6 @@ fn derive_module_path(src_root: &Path, file: &Path) -> String {
         }
     }
     parts.join("::")
-}
-
-fn extract_file(
-    crate_name: &str,
-    src_root: &Path,
-    file: &Path,
-    module_path: &str,
-    crate_facts: &mut CrateFacts,
-    pending_re_exports: &mut BTreeMap<(String, String), Vec<PendingReExport>>,
-) -> Result<()> {
-    let _ = src_root;
-    let src = std::fs::read_to_string(file)?;
-    let ast: File = match syn::parse_file(&src) {
-        Ok(f) => f,
-        Err(_) => return Ok(()), // Tolerate unparseable files (macros, etc.).
-    };
-
-    let mut ctx = Ctx {
-        crate_name: crate_name.to_string(),
-        file: file.display().to_string(),
-        module_stack: vec![module_path.to_string()],
-        modules: BTreeMap::new(),
-        pending_re_exports: BTreeMap::new(),
-    };
-    ctx.ensure_module(module_path);
-    for item in &ast.items {
-        ctx.visit_item(item);
-    }
-
-    for (path, m) in ctx.modules {
-        crate_facts
-            .modules
-            .entry(path.clone())
-            .and_modify(|existing| merge_module(existing, &m))
-            .or_insert(m);
-    }
-    for (mod_path, pendings) in ctx.pending_re_exports {
-        pending_re_exports
-            .entry((crate_name.to_string(), mod_path))
-            .or_default()
-            .extend(pendings);
-    }
-    Ok(())
 }
 
 fn merge_module(into: &mut ModuleFacts, from: &ModuleFacts) {
@@ -272,7 +573,7 @@ struct Ctx {
 /// containing leading `crate`/`self`/`super` if the user wrote them. We
 /// resolve it against the global type/function registry at the workspace
 /// level — by name, scored by prefix similarity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PendingReExport {
     exposed_name: String,
     segments: Vec<String>,
