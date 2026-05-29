@@ -65,6 +65,19 @@ impl Hunks {
         let changed = list_changed_files(repo_root, base_sha, head_sha)?;
         let mut head_map: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
         let mut base_map: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
+        // When head is the live working tree, `git diff <base>` omits
+        // UNTRACKED files, so a freshly-created source file's entities
+        // would hit `orphan_head_side` with no head hunk and be mis-
+        // tagged `Both` instead of `Head`. Inject a full-file head-add
+        // range for every untracked source file so those entities
+        // resolve to `Head`. Gated strictly on `head_sha.is_none()`:
+        // a committed head is an immutable worktree whose untracked
+        // files are irrelevant to the diff.
+        if head_sha.is_none() {
+            for rel in list_untracked_source_files(repo_root)? {
+                head_map.insert(rel, vec![(1, u32::MAX)]);
+            }
+        }
         for rel in &changed {
             if let Ok(DiffOutcome::Changed(d)) = diff_file(repo_root, base_sha, head_sha, rel) {
                 // Build per-side ranges from the ACTUAL `+` and `−` lines
@@ -669,6 +682,38 @@ fn list_changed_files(repo: &Path, base: &str, head: Option<&str>) -> Result<Vec
     }
     let text = String::from_utf8(out.stdout).context("git diff --name-only output not utf-8")?;
     Ok(text.lines().map(|s| s.to_string()).collect())
+}
+
+/// Repo-relative paths of UNTRACKED source files (`.rs`/`.ts`/`.tsx`),
+/// honoring `.gitignore`. Only called in head-is-working-tree mode to
+/// inject full-file head-add ranges for newly-created files — see
+/// `Hunks::collect`.
+fn list_untracked_source_files(repo: &Path) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .args(["-C"])
+        .arg(repo)
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output()
+        .context("invoking `git ls-files --others`")?;
+    if !out.status.success() {
+        bail!(
+            "git ls-files --others failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let text = String::from_utf8(out.stdout).context("git ls-files --others output not utf-8")?;
+    Ok(text
+        .lines()
+        .filter(|p| is_source_path(p))
+        .map(|s| s.to_string())
+        .collect())
+}
+
+/// True when `path` ends in one of the indexed source extensions.
+/// Shared by the untracked-file scan here and the watcher's event
+/// filter so both layers agree on "what is a source file."
+pub(crate) fn is_source_path(path: &str) -> bool {
+    path.ends_with(".rs") || path.ends_with(".ts") || path.ends_with(".tsx")
 }
 
 #[cfg(test)]
@@ -1291,6 +1336,81 @@ mod tests {
             .collect();
         assert!(starts.contains(&436));
         assert!(starts.contains(&1241));
+    }
+
+    #[test]
+    fn untracked_new_file_orphan_promotes_to_head() {
+        // Repro for the live-edit-creates-a-new-file mistag. In
+        // head-is-working-tree mode `git diff <base>` omits untracked
+        // files, so `Foo`'s span never intersects a tracked head hunk.
+        // Hunks::collect injects a full-file head range (1..u32::MAX)
+        // for the untracked file; that promotes the head-orphan `Foo`
+        // to Side::Head instead of the no-info Both default.
+        let mut t = mk_type("Foo", TypeKind::Struct);
+        t.span = Some(Span {
+            file: "/h/newfile.rs".into(),
+            start_line: 1,
+            end_line: 5,
+        });
+        let m_base = mk_module("m", vec![]);
+        let m_head = mk_module("m", vec![t]);
+        let base = mk_facts(vec![mk_crate("c", vec![m_base])]);
+        let head = mk_facts(vec![mk_crate("c", vec![m_head])]);
+        // Mirror the injection Hunks::collect performs for an untracked
+        // source file: a full-file head-add range keyed by repo-rel path.
+        let hunks = mk_hunks(&[("newfile.rs", &[(1, u32::MAX)])], &[]);
+        let u = build_unified(base, head, Some(&hunks));
+        let t = u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .types
+            .iter()
+            .find(|t| t.name == "Foo")
+            .unwrap();
+        assert_eq!(t.side, Side::Head);
+    }
+
+    #[test]
+    fn orphan_head_type_unchanged_lines_with_base_match_stays_both() {
+        // Control for the fix above: a head type whose file has NO entry
+        // in either hunk map AND which IS structurally present in base
+        // must collapse to Both — the merge pairs it with its base twin,
+        // so it never reaches the orphan path.
+        let mut bt = mk_type("Bar", TypeKind::Struct);
+        bt.span = Some(Span {
+            file: "/b/m.rs".into(),
+            start_line: 10,
+            end_line: 14,
+        });
+        let mut ht = mk_type("Bar", TypeKind::Struct);
+        ht.span = Some(Span {
+            file: "/h/m.rs".into(),
+            start_line: 10,
+            end_line: 14,
+        });
+        let m_base = mk_module("m", vec![bt]);
+        let m_head = mk_module("m", vec![ht]);
+        let base = mk_facts(vec![mk_crate("c", vec![m_base])]);
+        let head = mk_facts(vec![mk_crate("c", vec![m_head])]);
+        // Hunks exist for some other file; m.rs has no head/base range.
+        let hunks = mk_hunks(&[("other.rs", &[(1, 3)])], &[("other.rs", &[(1, 3)])]);
+        let u = build_unified(base, head, Some(&hunks));
+        let t = u
+            .crates
+            .get("c")
+            .unwrap()
+            .modules
+            .get("m")
+            .unwrap()
+            .types
+            .iter()
+            .find(|t| t.name == "Bar")
+            .unwrap();
+        assert_eq!(t.side, Side::Both);
     }
 
     #[test]

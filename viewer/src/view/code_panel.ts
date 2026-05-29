@@ -176,6 +176,18 @@ export interface CodePanel {
     span: { start_line: number; end_line: number },
     prev_span?: { start_line: number; end_line: number },
   ) => void;
+  /** Re-fetch the displayed source after a live-reload facts swap. The
+   *  on-disk file changed under us, so the same-file text cache is now
+   *  stale and MUST be dropped (a plain `show()` of the same file would
+   *  re-render the cached bytes). Two modes:
+   *    • `args` given — the host re-resolved the still-selected element's
+   *      (possibly line-shifted) span; re-fetch and scroll to its new
+   *      location, exactly like `show`.
+   *    • `args` omitted — a file-only view (breadcrumb / openEmpty, no
+   *      live selection); re-fetch the current file and KEEP the user's
+   *      scroll position and existing highlight.
+   *  No-op when the panel is closed or nothing has been shown yet. */
+  refresh: (args?: CodePanelShowArgs) => void;
   /** Current on-screen rect of the panel (window coords), or null when
    *  hidden. Lets the tour bubble avoid landing on top of the panel
    *  (it floats above all elements regardless of layout). */
@@ -196,6 +208,9 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
 
   let currentFile: string | null = null;
   let currentFileText: string | null = null;
+  // Last args passed to `show()`, so `refresh()` can re-fetch the same
+  // file with the same highlight (the file-only live-reload case).
+  let lastArgs: CodePanelShowArgs | null = null;
   // In diff mode the panel knows BOTH absolute paths for the file
   // it's currently showing — `file_new` (head workspace) and
   // `file_old` (base workspace), both supplied by `/api/diff`. The
@@ -304,7 +319,12 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     opts.onLineNavigate(currentFile, coords);
   });
 
-  const render = (text: string, startLine: number, endLine: number): void => {
+  const render = (
+    text: string,
+    startLine: number,
+    endLine: number,
+    preserveScrollTop?: number,
+  ): void => {
     // Highlight the whole file once with Prism (Rust grammar), then
     // split the resulting HTML on \n. Splitting after highlighting is
     // what keeps multi-line block comments and raw strings rendering
@@ -335,6 +355,13 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       frag.appendChild(lineEl);
     }
     bodyEl.replaceChildren(frag);
+    // A live-reload refresh of a file-only view passes the pre-reload
+    // scrollTop so the user stays where they were reading; otherwise we
+    // scroll the focused entity into view.
+    if (preserveScrollTop !== undefined) {
+      bodyEl.scrollTop = preserveScrollTop;
+      return;
+    }
     const target = bodyEl.querySelector<HTMLElement>('.code-panel-line.entity-row');
     if (target !== null) {
       // Position the focus ~25% from the top of the panel body so
@@ -527,15 +554,16 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     }
   };
 
-  const show = (args: CodePanelShowArgs): void => {
+  const show = (args: CodePanelShowArgs, preserveScrollTop?: number): void => {
     root.hidden = false;
+    lastArgs = args;
     renderTitle(args.file);
     // Source-mode reuse: same-file clicks just re-highlight. Diff mode
     // doesn't share this cache because the line stream is hunk-driven,
     // not file-driven; re-fetch is cheap (entity-scoped) so we skip
     // the optimization for now.
     if (!opts.diffEnabled && currentFile === args.file && currentFileText !== null) {
-      render(currentFileText, args.startLine, args.endLine);
+      render(currentFileText, args.startLine, args.endLine, preserveScrollTop);
       return;
     }
     bodyEl.replaceChildren(
@@ -613,7 +641,7 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       // to currentFile for either side via the host's resolver.
       currentHeadFile = null;
       currentBaseFile = null;
-      render(text, args.startLine, args.endLine);
+      render(text, args.startLine, args.endLine, preserveScrollTop);
     };
 
     loadAndRender().catch((err) => {
@@ -625,6 +653,22 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
         }),
       );
     });
+  };
+
+  // Live-reload re-fetch. Drops the same-file text cache (the file
+  // changed on disk) and re-renders. With `args` the host has the
+  // selected element's fresh span → behave like `show` (scroll to the
+  // entity's new location). Without `args` keep the user's scroll and
+  // existing highlight (file-only view).
+  const refresh = (args?: CodePanelShowArgs): void => {
+    if (root.hidden) return;
+    currentFileText = null; // bust the stale cache so show() re-fetches
+    if (args !== undefined) {
+      show(args);
+      return;
+    }
+    if (lastArgs === null) return;
+    show(lastArgs, bodyEl.scrollTop);
   };
 
   // Open the split with no file loaded. If a file was previously
@@ -861,6 +905,7 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     hide,
     isOpen: () => !root.hidden,
     setHighlight,
+    refresh,
     getScreenRect,
   };
 }

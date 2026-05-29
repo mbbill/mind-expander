@@ -54,7 +54,25 @@ futures = "0.3"
 # Cross-platform user-cache resolution for the instance-record file
 # at `~/.cache/mind-expander/run/<pid>.json`.
 dirs = "5"
+# Server-side working-tree watcher. Spawned IFF head_sha.is_none()
+# (the parsed head IS the live working tree), so a source edit
+# re-extracts head and broadcasts `facts_updated`. Default features
+# pull the OS-native backend (FSEvents on macOS); the ~300ms debounce
+# is hand-rolled on the worker thread so we don't add
+# notify-debouncer-full.
+notify = "6"
+# Atomic paired swap of the (facts_json, span_index) snapshot. The two
+# MUST swap together as one immutable Arc<FactsSnapshot> so a concurrent
+# /api/facts read or tour resolution never observes a torn pair
+# (new facts_json + old span_index).
+arc-swap = "1"
 # Note: self-daemonize was dropped — `view` stays in the foreground
 # and the agent backgrounds it via Monitor (Claude Code) or PTY-poll
 # (Codex). Removing `daemonize` also drops a Unix-only dep, so the
 # crate now builds cleanly for Windows without a separate code path.
+
+[dev-dependencies]
+# Isolated temp workspaces for the live-reload integration test, so it
+# never mutates the git-tracked fixtures shared with the byte-identity
+# test (cargo test runs in parallel).
+tempfile = "3"

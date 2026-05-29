@@ -39,6 +39,8 @@ import { signatureExpansionId } from './layout/geometry.ts';
 import { buildLayout } from './layout/pipeline.ts';
 import { buildPlacementLayoutPlan } from './layout/placement_plan.ts';
 import { ViewState } from './state/view_state.ts';
+import { buildIdUniverse, pruneStaleState } from './state/prune_stale.ts';
+import { anchorScreenPoint, nearestToCenter } from './view/reload_anchor.ts';
 import { anchorTranslation } from './view/anchor.ts';
 import { arrowDisambigViewportAction, createArrowDisambig } from './view/arrow_disambig.ts';
 import { type EdgeEntry, createEdgePicker } from './view/edge_picker.ts';
@@ -178,6 +180,14 @@ interface RenderCtx {
 
 let currentCtx: RenderCtx | null = null;
 
+// Live-reload wiring. `liveReloadEnabled` is the explicit gate read from
+// /api/health's `live_reload` field (set only when a server-side watcher is
+// active). `requestReload` is assigned at the end of main() once the rebuild
+// machinery exists; it stays a no-op until then so the SSE listener registered
+// early in main() can fire harmlessly before setup completes.
+let liveReloadEnabled = false;
+let requestReload: () => void = () => {};
+
 void main();
 
 async function main(): Promise<void> {
@@ -274,9 +284,42 @@ async function main(): Promise<void> {
       console.error('[tour] failed to parse SSE payload', err);
     }
   });
+  // facts_updated: the server swapped in a fresh facts snapshot. The payload
+  // is a signal only (counts, or {} on a Lagged-converted synthetic resync) —
+  // we never parse it for layout data, we just re-fetch /api/facts. Gate on
+  // the named live_reload flag (unknown until the health fetch below resolves)
+  // so a signal that arrives before the gate is set is harmlessly ignored; the
+  // reconnect-resync path covers any update missed during that window.
+  tourEvents.addEventListener('facts_updated', () => {
+    if (!liveReloadEnabled) return;
+    requestReload();
+  });
+  // Reconnect resync. The SSE 'error' fires on every transport hiccup, so we
+  // do NOT reload per error — that would storm relayouts. Instead we track a
+  // disconnect->reconnect EDGE: 'error' sets `wasErrored`, and the NEXT 'open'
+  // (only after an error) schedules ONE debounced reload. This recovers both
+  // (a) a FactsUpdated dropped before this connection subscribed and (b) a
+  // server-restart swap missed while disconnected.
+  let wasErrored = false;
+  let resyncTimer: number | null = null;
+  const scheduleResync = (): void => {
+    if (!liveReloadEnabled) return;
+    if (resyncTimer !== null) clearTimeout(resyncTimer);
+    resyncTimer = window.setTimeout(() => {
+      resyncTimer = null;
+      requestReload();
+    }, 500);
+  };
+  tourEvents.addEventListener('open', () => {
+    if (wasErrored) {
+      wasErrored = false;
+      scheduleResync();
+    }
+  });
   tourEvents.addEventListener('error', () => {
-    // SSE auto-reconnects; just log so we know the channel hiccuped.
+    // SSE auto-reconnects; log + mark the edge so the next 'open' resyncs.
     console.warn('[tour] SSE error (auto-reconnects)');
+    wasErrored = true;
   });
 
   // Per-step diagram dispatcher. Centralises the "what does the
@@ -537,8 +580,11 @@ async function main(): Promise<void> {
   // `snapshot` field lives at both line 411 in the non-memprof variant
   // and line 626 in the memprof variant; only the canonicalized fact
   // keeps one).
-  const facts = factsBundle.canonical;
-  const rawFacts = factsBundle.raw;
+  // `let`, not `const`: reloadWorkspace() reassigns these from a freshly
+  // fetched bundle on a facts_updated event. Closures over them (setupWorkspace
+  // body, the diff-map block) read the live binding so they see the new facts.
+  let facts = factsBundle.canonical;
+  let rawFacts = factsBundle.raw;
 
   // Read /api/health once at startup. Tells us whether the server was
   // launched with `--at <base>..<head>` (diff mode). The code panel
@@ -557,11 +603,16 @@ async function main(): Promise<void> {
         unified_mode?: boolean;
         workspace_root?: string;
         base_workspace_root?: string;
+        live_reload?: boolean;
       };
       diffEnabled = body.diff_enabled === true;
       unifiedMode = body.unified_mode === true;
       workspaceRoot = body.workspace_root ?? '';
       baseWorkspaceRoot = body.base_workspace_root ?? '';
+      // Gate live-reload wiring on the server's explicit flag (true iff a
+      // working-tree watcher is active). Set after the SSE listeners are
+      // registered so they early-return until the server confirms support.
+      liveReloadEnabled = body.live_reload === true;
     }
   } catch {
     /* keep default */
@@ -610,7 +661,17 @@ async function main(): Promise<void> {
     for (let i = 1; i <= parts.length; i++) acc.push(parts.slice(0, i).join('::'));
     return acc;
   };
-  if (unifiedMode) {
+  // Repopulate the head-derived diff side maps from the LIVE `facts`. Run on
+  // boot AND on every reload, synchronously and BEFORE the redraw, so an entity
+  // whose side FLIPS without an id change (Both->Modified after a body edit, or
+  // a revert) recolors correctly — stale-id pruning never touches surviving ids,
+  // so without this re-derivation a flipped entity would keep its old bar.
+  const rebuildDiffMapsSync = (): void => {
+    if (!unifiedMode) return;
+    sideByModule.clear();
+    sideByElementId.clear();
+    changeKindByElementId.clear();
+    typeBarStateById.clear();
     const barStateFor = (adds: number, dels: number): TypeBarState | null =>
       adds > 0 && dels > 0
         ? 'split'
@@ -712,7 +773,8 @@ async function main(): Promise<void> {
         }
       }
     }
-  }
+  };
+  rebuildDiffMapsSync();
 
   const svg = document.querySelector<SVGSVGElement>('#tree');
   const canvasScroll = document.querySelector<HTMLElement>('#canvas-scroll');
@@ -746,11 +808,17 @@ async function main(): Promise<void> {
   // member variants both land in `byFile` — the canonicalize layer dedups
   // by full_path for layout uniqueness, but byFile needs to know every
   // source-line range where any cfg branch's field/method lives.
-  const spanIndex = buildSpanIndex(rawFacts);
+  // `let`: rebuilt from the new rawFacts on reload and swapped together with
+  // `facts` in one synchronous step (client mirror of the server's atomic
+  // FactsSnapshot pair). Closures over `spanIndex` read this live binding so
+  // they see the new index with no rewiring.
+  let spanIndex = buildSpanIndex(rawFacts);
   // Directory tree built from every `mod.file` the extractor saw.
   // Powers the code panel's breadcrumb popup: clicking a path segment
   // lists the folders/files known at that depth without us needing a
-  // backend filesystem-browse endpoint.
+  // backend filesystem-browse endpoint. Phase A keeps this `const`: a
+  // new/deleted source file won't appear in the breadcrumb after reload,
+  // an accepted limitation (rebuilding codePanel would lose open/scroll state).
   const fileTree = buildFileTree(Array.from(spanIndex.moduleByFile.keys()));
 
   // LoC rollup: in unified mode, fetch `git diff --numstat` from the
@@ -758,7 +826,11 @@ async function main(): Promise<void> {
   // owning module (and propagate to its ancestors). The `+N -M` chip
   // on each module row in the left tree then reads as lines —
   // matching the GitHub PR convention — instead of entity counts.
-  if (unifiedMode) {
+  // Awaited (the only async part of the rebuild), so reloadWorkspace runs it
+  // BEFORE the synchronous facts swap to avoid the LoC chips flashing.
+  const rebuildDiffRollup = async (): Promise<void> => {
+    if (!unifiedMode) return;
+    rollupByModule.clear();
     try {
       const res = await fetch('/api/changed-files');
       if (res.ok) {
@@ -798,7 +870,8 @@ async function main(): Promise<void> {
     } catch {
       /* leave rollups empty on fetch failure */
     }
-  }
+  };
+  await rebuildDiffRollup();
   // Resolve an entity's union-diff side from the id-side lookup. For
   // entities populated by the merge as Base or Head only, the map
   // stores their side directly. Everything else (Both entities,
@@ -817,6 +890,28 @@ async function main(): Promise<void> {
   // struct field and a like-named method don't collide.
   let selectedElementId: string | null = null;
   let selectedElementKind: ElementKind | null = null;
+
+  // Persistent UI state, HOISTED out of setupWorkspace so it survives a
+  // facts_updated reload. setupWorkspace used to create these fresh on every
+  // call, which would wipe the user's expansion / selection / arrow state on
+  // each reload. Declared once here; rebuildFromFacts references these refs
+  // instead of constructing its own. Stale ids are pruned (never wiped
+  // wholesale) before each redraw via pruneStaleState.
+  const viewState = new ViewState([]);
+  const selectedFields = new Set<string>();
+  const incomingCallTargetsShown = new Set<string>();
+  // Per-edge call arrow visibility. Each entry is a
+  // specificCallArrowKey(callerFullPath, calleeFullPath); routing composes
+  // this with the row-level show-all sets so picking one callee reveals only
+  // that single edge.
+  const specificCallArrowsShown = new Set<string>();
+  // Per-crate set of ghost ids whose violet re-export arrow the user has
+  // opted to display. Default empty: arrows are off until the user clicks the
+  // corresponding ghost row. Cleared by resetAll.
+  const ghostArrowsShown = new Set<string>();
+  // First-boot guard: the workspace-root expand + indicator reset run only on
+  // the initial build, not on reload (reload preserves the user's view).
+  let bootstrapped = false;
   // Split-on-change pairs (Base + Head) share an elementId by
   // design — that id identifies the conceptual entity. To highlight
   // ONLY the clicked half on the diagram, record the side too;
@@ -1379,7 +1474,12 @@ async function main(): Promise<void> {
     }, 100);
   });
 
-  const setupWorkspace = (): void => {
+  // Rebuild every facts-DERIVED index from the live `facts`, then (re)build
+  // the draw + navigation closures over those indexes plus the HOISTED
+  // persistent UI-state refs. Called on boot and after each facts swap. The
+  // persistent sets (viewState/selectedFields/*Shown) are NOT created here —
+  // they live at outer scope so they survive reload.
+  const rebuildFromFacts = (): void => {
     const staticRoot = buildWorkspaceTree(facts);
     const ownership = buildOwnershipIndex(facts);
     const calls = buildFunctionCallIndex(facts, staticRoot);
@@ -1391,23 +1491,17 @@ async function main(): Promise<void> {
     const typeIdSet = new Set(allTypeIds);
     const typeInfo = collectTypeInfo(staticRoot);
 
+    // The hoisted ViewState is shared across rebuilds. Local `state` alias
+    // keeps the rest of this closure (and the draw/navigation handlers)
+    // reading the same persistent expansion set.
+    const state = viewState;
     // Default expand: workspace root only — the user lands on a list of
-    // collapsed crate bands and picks which one(s) to expand. The viewer
-    // intentionally has no notion of a "primary" crate; this codebase is
-    // a general-purpose multi-crate viewer, not a single-project frontend.
-    const initialExpanded: string[] = [staticRoot.id];
-    const state = new ViewState(initialExpanded);
-    const selectedFields = new Set<string>();
-    const incomingCallTargetsShown = new Set<string>();
-    // Per-edge call arrow visibility. Each entry is a
-    // specificCallArrowKey(callerFullPath, calleeFullPath); routing
-    // composes this with the row-level show-all sets so picking one
-    // callee from the picker reveals only that single edge.
-    const specificCallArrowsShown = new Set<string>();
-    // Per-crate set of ghost ids whose violet re-export arrow the user
-    // has opted to display. Default empty: arrows are off until the
-    // user clicks the corresponding ghost row. Cleared by resetAll.
-    const ghostArrowsShown = new Set<string>();
+    // collapsed crate bands and picks which one(s) to expand. Done ONCE on
+    // first boot; on reload the user's (pruned) expansion is preserved.
+    // The viewer intentionally has no notion of a "primary" crate; this
+    // codebase is a general-purpose multi-crate viewer, not a single-project
+    // frontend.
+    if (!bootstrapped) state.expand(staticRoot.id);
 
     let lastLayout: Layout | null = null;
     const draw = (): void => {
@@ -2220,8 +2314,13 @@ async function main(): Promise<void> {
       layers.resetTransform(true);
     };
 
-    // Each crate gets a fresh ctx; switching crates resets focus mode and
-    // its keybinding indicator so old per-crate state never leaks.
+    // RenderCtx members are readonly, so a reload can't mutate the existing
+    // object in place — we rebuild it. The facts-derived members (ownership,
+    // calls, typeIdSet, typeInfo, draw, navigate*, resetAll) are fresh; the
+    // user-mode members (focusMode, methodsHidden, lastLayout) are CARRIED
+    // OVER from the prior ctx on reload so the user's focus/methods toggles
+    // and last layout survive. On first boot they default off.
+    const prev = currentCtx;
     currentCtx = {
       state,
       selectedFields,
@@ -2237,16 +2336,193 @@ async function main(): Promise<void> {
       revealCallArrow,
       panToFitArrow,
       resetAll,
-      focusMode: false,
-      methodsHidden: false,
-      lastLayout: null,
+      focusMode: bootstrapped ? (prev?.focusMode ?? false) : false,
+      methodsHidden: bootstrapped ? (prev?.methodsHidden ?? false) : false,
+      lastLayout: bootstrapped ? (prev?.lastLayout ?? null) : null,
     };
-    updateFocusModeIndicator(false);
-    updateMethodsIndicator(false);
+    // Indicators reflect the carried-over mode. Reset to false ONLY on first
+    // boot — calling update*(false) on reload would visually wipe a mode the
+    // user has engaged even though currentCtx still carries it.
+    if (!bootstrapped) {
+      updateFocusModeIndicator(false);
+      updateMethodsIndicator(false);
+    }
     draw();
   };
 
-  setupWorkspace();
+  // First boot: build everything, then mark bootstrapped so subsequent
+  // rebuilds preserve user state.
+  rebuildFromFacts();
+  bootstrapped = true;
+
+  // Coalesced live reload. On a facts_updated SSE signal (or a reconnect
+  // resync) re-fetch /api/facts, atomically swap the client-side facts /
+  // spanIndex / diff maps, prune stale ids from the preserved UI state, and
+  // redraw — preserving expansion, selection, focus/methods mode, and the
+  // viewport (re-anchored in screen space at the post-draw scale). The
+  // in-flight guard + trailing flag prevent overlapping reloads from tearing
+  // state when events arrive faster than a rebuild completes.
+  let reloadInFlight = false;
+  let reloadQueued = false;
+  const reloadWorkspace = async (): Promise<void> => {
+    if (reloadInFlight) {
+      reloadQueued = true;
+      return;
+    }
+    reloadInFlight = true;
+    try {
+      // --- ANCHOR CAPTURE (pre-reload, screen space) -------------------
+      // Pick an anchor: the selected element if it resolves in the layout,
+      // else the layout node nearest the viewport vertical centre. Record the
+      // anchor's CURRENT screen pixel via the viewer's real mapping (NOT
+      // data.y*k + t.y — vertical pan is delivered through native scrollTop).
+      const oldLayout = currentCtx?.lastLayout ?? null;
+      const t0 = layers.getTransform();
+      const TOP0 = canvasScroll.clientHeight;
+      const scrollTop0 = canvasScroll.scrollTop;
+      const anchor = captureReloadAnchor(oldLayout, t0, TOP0, scrollTop0);
+
+      // --- FETCH (the only awaited step before the synchronous swap) ----
+      let bundle: FactsBundle;
+      try {
+        bundle = await loadFacts(FACTS_URL);
+      } catch (err) {
+        // Never blank the view on a transient fetch failure — keep the
+        // current facts and wait for the next signal / reconnect resync.
+        console.warn('[live-reload] /api/facts fetch failed; keeping current view', err);
+        return;
+      }
+      // Rebuild the LoC rollup BEFORE the synchronous swap so the +N -M chips
+      // don't flash empty between the swap and the awaited fetch.
+      await rebuildDiffRollup();
+
+      // --- SYNCHRONOUS SWAP (no await, no draw in between) --------------
+      // Mirror of the server's atomic FactsSnapshot: facts / rawFacts /
+      // spanIndex / diff side maps are all reassigned together so no reader
+      // observes a torn pair.
+      facts = bundle.canonical;
+      rawFacts = bundle.raw;
+      spanIndex = buildSpanIndex(rawFacts);
+      rebuildDiffMapsSync();
+
+      // Prune stale ids from every preserved set BEFORE redraw. The id
+      // universe + member checks read the NEW staticRoot / spanIndex / calls,
+      // so this must run after they're available — buildIdUniverse + the
+      // new calls index are built from the swapped facts here.
+      const newRoot = buildWorkspaceTree(facts);
+      const newCalls = buildFunctionCallIndex(facts, newRoot);
+      const universe = buildIdUniverse(newRoot);
+      const { selectedStillPresent } = pruneStaleState({
+        universe,
+        spanIndex,
+        calls: newCalls,
+        viewState,
+        selectedFields,
+        incomingCallTargetsShown,
+        specificCallArrowsShown,
+        ghostArrowsShown,
+        selectedElementId,
+        selectedElementKind,
+      });
+      if (!selectedStillPresent && selectedElementId !== null) {
+        setDiagramSelection(null, null, { defer: true });
+        codePanel.hide();
+        updateCodeIndicator(false);
+      } else if (codePanel.isOpen()) {
+        // The panel is still open and its source may have changed on disk
+        // (the whole reason we're here). Re-fetch so it never strands on
+        // stale bytes. With a surviving selection, re-aim at the element's
+        // fresh span (line numbers may have shifted); for a file-only view
+        // (no selection), re-fetch the current file keeping the user's place.
+        if (selectedStillPresent && selectedElementId !== null && selectedElementKind !== null) {
+          const rec = lookupSpan(spanIndex, selectedElementId, selectedElementKind);
+          if (rec !== null) {
+            codePanel.refresh({
+              file: rec.span.file,
+              startLine: rec.span.start_line,
+              endLine: rec.span.end_line,
+              ...(rec.prev_span !== undefined ? { prev_span: rec.prev_span } : {}),
+              ...(rec.side === 'base' ? { loadFromBase: true } : {}),
+            });
+          }
+        } else if (selectedElementId === null) {
+          codePanel.refresh();
+        }
+      }
+
+      // Rebuild facts-derived indexes + closures and redraw (draw() runs
+      // applyFitScaleExtent + setContentBounds, finalizing the post-draw k
+      // and content bounds).
+      rebuildFromFacts();
+
+      // --- ANCHOR RESTORE (post-draw, re-pin to the same screen pixel) --
+      restoreReloadAnchor(anchor, currentCtx?.lastLayout ?? null);
+    } finally {
+      reloadInFlight = false;
+      if (reloadQueued) {
+        reloadQueued = false;
+        void reloadWorkspace();
+      }
+    }
+  };
+  // Expose the reload entrypoint to the module-scope SSE handlers.
+  requestReload = () => {
+    void reloadWorkspace();
+  };
+
+  // --- viewport anchoring helpers (screen-space pinning) ---------------
+  // Pick the anchor id (selected element, else node nearest viewport centre),
+  // resolve its data point in the OLD layout, and record the screen pixel it
+  // currently occupies. Returns null when nothing suitable is on screen.
+  function captureReloadAnchor(
+    oldLayout: Layout | null,
+    transform: { x: number; y: number; k: number },
+    top: number,
+    scrollTop: number,
+  ): { id: string; kind: ElementKind | 'layout'; screenX: number; screenY: number } | null {
+    if (oldLayout === null) return null;
+    // Anchor candidate 1: the current selection, if it resolves in the layout.
+    if (selectedElementId !== null && selectedElementKind !== null) {
+      const p =
+        lookupElementPoint(oldLayout, selectedElementId, selectedElementKind) ??
+        lookupLayoutPoint(oldLayout, selectedElementId);
+      if (p !== null) {
+        const s = anchorScreenPoint(p, transform, top, scrollTop);
+        return { id: selectedElementId, kind: selectedElementKind, screenX: s.x, screenY: s.y };
+      }
+    }
+    // Anchor candidate 2: the type/module node nearest the viewport centre.
+    const range = layers.visibleYRange();
+    const candidates: { id: string; y: number }[] = [];
+    for (const ty of oldLayout.types) candidates.push({ id: ty.id, y: ty.y });
+    for (const m of oldLayout.modules) candidates.push({ id: m.id, y: m.y });
+    const nearest = nearestToCenter(candidates, range);
+    if (nearest === null) return null; // nothing on-screen → skip anchoring
+    const s = anchorScreenPoint({ x: 0, y: nearest.y }, transform, top, scrollTop);
+    return { id: nearest.id, kind: 'layout', screenX: s.x, screenY: s.y };
+  }
+
+  // Resolve the anchor in the NEW layout via the same fallback ladder and pan
+  // it back to the recorded screen pixel AT THE POST-DRAW SCALE. panTo takes
+  // absolute client coords (it subtracts the scroll container rect itself), so
+  // add the rect offset back to the recorded canvas-local pixel.
+  function restoreReloadAnchor(
+    anchor: { id: string; kind: ElementKind | 'layout'; screenX: number; screenY: number } | null,
+    newLayout: Layout | null,
+  ): void {
+    if (anchor === null || newLayout === null) return;
+    let point: { x: number; y: number } | null = null;
+    if (anchor.kind !== 'layout') {
+      point =
+        lookupElementPoint(newLayout, anchor.id, anchor.kind) ??
+        lookupLayoutPoint(newLayout, anchor.id);
+    } else {
+      point = lookupLayoutPoint(newLayout, anchor.id);
+    }
+    if (point === null) return; // anchor vanished → skip (don't pan a null delta)
+    const rect = canvasScroll.getBoundingClientRect();
+    layers.panTo(point.x, point.y, anchor.screenX + rect.left, anchor.screenY + rect.top, false);
+  }
 }
 
 /** Member ids are `<typeFullPath>::<memberName>`. Trim the trailing
