@@ -773,3 +773,188 @@ describe('removed-text halo override and chip text-shadow (CSS pins)', () => {
     expect(cssRule('#html-modules .module-header .rollup-badge')).toContain('text-shadow: none');
   });
 });
+
+// ======================================================================
+// COVER A: block width counts stable member NAMES, not hover/ty_text suffixes
+// (layout.md "Physical Placement": block width counts member-name anchors;
+//  field `ty_text`/method signatures are hover annotations that must NOT
+//  affect physical block width; Required Invariant "long field/method type
+//  annotations do not affect physical block width").
+// ======================================================================
+describe('physical block width counts member NAMES, not ty_text suffixes', () => {
+  function structWith(field: { name: string; ty_text: string }): LayoutInputs {
+    const c = crate('c', [module('', [typeFacts('c', '', 'S', { fields: [field] })])]);
+    return inputsFrom(c, [], ['c', 'c::S']);
+  }
+
+  it('a long ty_text annotation leaves boxWidth identical to a short one', () => {
+    const short = layoutFor(structWith({ name: 'f', ty_text: 'u8' }));
+    const long = layoutFor(
+      structWith({
+        name: 'f',
+        ty_text: 'std::collections::HashMap<VeryLongKeyType, AnotherVeryLongValueType>',
+      }),
+    );
+    const sBox = short.types.find((t) => t.fullPath === 'c::S');
+    const lBox = long.types.find((t) => t.fullPath === 'c::S');
+    expect(sBox, 'short S').toBeDefined();
+    expect(lBox, 'long S').toBeDefined();
+    if (sBox === undefined || lBox === undefined) return;
+
+    // Guard against a vacuous pass: the long annotation must be measurably
+    // longer than the field name, so a tyText-counting bug WOULD widen the box.
+    expect(measure('std::collections::HashMap<VeryLongKeyType, AnotherVeryLongValueType>')).toBeGreaterThan(
+      measure('f') * 3,
+    );
+    // The ty_text suffix is a hover annotation: it must not move the box edge.
+    expect(lBox.boxWidth).toBe(sBox.boxWidth);
+  });
+
+  it('a longer member NAME does widen the box (proves width tracks the name anchor)', () => {
+    const shortN = layoutFor(structWith({ name: 'f', ty_text: 'u8' }));
+    const longN = layoutFor(
+      structWith({ name: 'aVeryLongFieldNameThatIsQuiteLongIndeed', ty_text: 'u8' }),
+    );
+    const s = shortN.types.find((t) => t.fullPath === 'c::S');
+    const l = longN.types.find((t) => t.fullPath === 'c::S');
+    expect(s).toBeDefined();
+    expect(l).toBeDefined();
+    if (s === undefined || l === undefined) return;
+    // The name anchor IS counted — distinguishes "ignores everything" from
+    // "ignores only the ty_text suffix".
+    expect(l.boxWidth).toBeGreaterThan(s.boxWidth);
+  });
+});
+
+// ======================================================================
+// COVER B: a pathological long member NAME splits into its own layout box
+// for placement, WITHOUT changing the type's identity / rank / order /
+// expansion (layout.md "Physical Placement": splitting "must not create a
+// new graph node or change type identity, ownership rank, stable item order,
+// field/method ownership target, click and expansion behavior").
+// ======================================================================
+describe('pathological long member name splits into its own layout box only', () => {
+  // 75 chars × 7px ≈ 525px > DEFAULT_LONG_ROW_SPLIT_MIN_WIDTH_PX (360) and
+  // well past the median of the short rows, so the splitter isolates it.
+  const LONG_NAME = 'thisIsAnExtremelyLongMemberNameThatShouldForceItsOwnSeparateLayoutBoxForSure';
+
+  function fixtureWith(middleName: string): LayoutInputs {
+    const c = crate('c', [
+      module('', [
+        typeFacts('c', '', 'S', {
+          fields: [
+            { name: 'short1', ty_text: 'u8' },
+            { name: middleName, ty_text: 'u8' },
+            { name: 'short2', ty_text: 'u8' },
+          ],
+        }),
+        // A sibling so we can assert relative order/placement is unaffected.
+        typeFacts('c', '', 'Other', { fields: [{ name: 'z', ty_text: 'u8' }] }),
+      ]),
+    ]);
+    return inputsFrom(c, [], ['c', 'c::S', 'c::Other']);
+  }
+
+  it('produces multiple placement fragments for S while the short variant is one box', () => {
+    const longGeom = geometryFor(fixtureWith(LONG_NAME));
+    const shortGeom = geometryFor(fixtureWith('mid'));
+    const longFrags = longGeom.placedFragments.filter((f) => f.typeId === 'c::S');
+    const shortFrags = shortGeom.placedFragments.filter((f) => f.typeId === 'c::S');
+
+    // Guard: the short variant does NOT split, so the multi-fragment result is
+    // attributable to the long name, not to fragmenting every type.
+    expect(shortFrags.length).toBe(1);
+    expect(longFrags.length).toBeGreaterThan(1);
+    // Exactly one of the long-name fragments is the isolated split-row, and it
+    // carries only the long row.
+    const splitFrag = longFrags.find((f) => f.fragmentKind === 'split-row');
+    expect(splitFrag, 'isolated split-row fragment').toBeDefined();
+    expect(splitFrag?.rowIds.length).toBe(1);
+  });
+
+  it('splitting does NOT change identity, rank, order, or expansion of the type', () => {
+    const longGeom = geometryFor(fixtureWith(LONG_NAME));
+    const shortGeom = geometryFor(fixtureWith('mid'));
+
+    // Identity: still exactly ONE PositionedType for S, with ALL three rows.
+    const longS = longGeom.types.filter((t) => t.node.fullPath === 'c::S');
+    expect(longS.length).toBe(1);
+    const sType = longS[0];
+    const shortS = shortGeom.types.find((t) => t.node.fullPath === 'c::S');
+    expect(sType).toBeDefined();
+    expect(shortS).toBeDefined();
+    if (sType === undefined || shortS === undefined) return;
+
+    expect(sType.visibleRows.map((r) => r.name)).toEqual(['short1', LONG_NAME, 'short2']);
+    // Rank, same-rank order, and expansion are unchanged by the split.
+    expect(sType.rank).toBe(shortS.rank);
+    expect(sType.subrank).toBe(shortS.subrank);
+    expect(sType.bandOrder).toBe(shortS.bandOrder);
+    expect(sType.indexInBandOrder).toBe(shortS.indexInBandOrder);
+    expect(sType.expanded).toBe(shortS.expanded);
+
+    // Relative placement vs the sibling is preserved (S before Other on x).
+    const longOther = longGeom.types.find((t) => t.node.fullPath === 'c::Other');
+    const shortOther = shortGeom.types.find((t) => t.node.fullPath === 'c::Other');
+    expect(longOther).toBeDefined();
+    expect(shortOther).toBeDefined();
+    if (longOther === undefined || shortOther === undefined) return;
+    expect(Math.sign(sType.x - longOther.x)).toBe(Math.sign(shortS.x - shortOther.x));
+  });
+});
+
+// ======================================================================
+// COVER C: expanding/collapsing an inspected box preserves its screen anchor
+// in both axes when it stays visible (layout.md Core Rule 3 "expansion never
+// reflows"; Required Invariant "expanding/collapsing an inspected item
+// preserves its screen anchor in both axes when the item remains visible").
+// ======================================================================
+describe('expand/collapse preserves the inspected box screen anchor and never reflows others', () => {
+  function twoStructs(expanded: string[]): LayoutInputs {
+    const c = crate('c', [
+      module('', [
+        typeFacts('c', '', 'A', {
+          fields: [
+            { name: 'f1', ty_text: 'u8' },
+            { name: 'f2', ty_text: 'u8' },
+          ],
+        }),
+        typeFacts('c', '', 'B', { fields: [{ name: 'g', ty_text: 'u8' }] }),
+      ]),
+    ]);
+    return inputsFrom(c, [], expanded);
+  }
+
+  it('A keeps boxX/boxY/y across its own expand toggle; B (a neighbour) does not move', () => {
+    const collapsed = geometryFor(twoStructs(['c', 'c::B'])); // A collapsed
+    const expanded = geometryFor(twoStructs(['c', 'c::A', 'c::B'])); // A expanded
+
+    const ca = collapsed.types.find((t) => t.node.fullPath === 'c::A');
+    const ea = expanded.types.find((t) => t.node.fullPath === 'c::A');
+    expect(ca, 'A collapsed').toBeDefined();
+    expect(ea, 'A expanded').toBeDefined();
+    if (ca === undefined || ea === undefined) return;
+
+    // Guard non-vacuity: A actually changed expansion state and grew detail rows.
+    expect(ca.expanded).toBe(false);
+    expect(ea.expanded).toBe(true);
+    expect(ea.visibleRows.length).toBeGreaterThan(ca.visibleRows.length);
+
+    // The inspected box's anchor (header x, header y) is preserved in BOTH axes.
+    expect(ea.x).toBeCloseTo(ca.x, 5);
+    expect(ea.y).toBeCloseTo(ca.y, 5);
+
+    // Rule 3: a neighbour must NOT move into a different column/row because A
+    // expanded.
+    const cb = collapsed.types.find((t) => t.node.fullPath === 'c::B');
+    const eb = expanded.types.find((t) => t.node.fullPath === 'c::B');
+    expect(cb).toBeDefined();
+    expect(eb).toBeDefined();
+    if (cb === undefined || eb === undefined) return;
+    expect(eb.x).toBeCloseTo(cb.x, 5);
+    expect(eb.y).toBeCloseTo(cb.y, 5);
+    // Order/rank of both is identical regardless of A's expansion.
+    expect(ea.bandOrder).toBe(ca.bandOrder);
+    expect(eb.bandOrder).toBe(cb.bandOrder);
+  });
+});

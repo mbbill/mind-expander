@@ -20,7 +20,13 @@ import {
   type ArrowHitZone,
   pickArrowsAtPoint,
 } from '../../src/analysis/arrow_hit.ts';
-import type { Arrow, ArrowWaypoint, Layout, TypeBox } from '../../src/analysis/layout_model.ts';
+import type {
+  Arrow,
+  ArrowWaypoint,
+  ChannelObstacle,
+  Layout,
+  TypeBox,
+} from '../../src/analysis/layout_model.ts';
 import { buildLayout } from '../../src/layout/pipeline.ts';
 import {
   type ArrowDisambigGroup,
@@ -156,15 +162,29 @@ describe('AR-12 — waypoints[0]/[last] ARE the source/target endpoints', () => 
       }
       const dst = boxById.get(a.toTypeId);
       if (dst !== undefined) {
-        const onLeft = Math.abs(last.x - dst.boxX) < EPS;
-        const onRight = Math.abs(last.x - (dst.boxX + dst.boxWidth)) < EPS;
-        expect(onLeft || onRight, `${edgeLabel(a)} target x=${last.x} on a vertical box edge`).toBe(
-          true,
-        );
+        // Doc (Arrow Routing rule 4 + Required Invariant): every arrow ends
+        // at the target's LEFT edge — NOT merely "a vertical edge". Asserting
+        // left-OR-right would be a weak oracle that silently admits the
+        // forbidden right-side entry slicing the target's row text.
+        expect(
+          Math.abs(last.x - dst.boxX) < EPS,
+          `${edgeLabel(a)} target x=${last.x} on the LEFT edge (boxX=${dst.boxX})`,
+        ).toBe(true);
         expect(
           last.y >= dst.boxY - EPS && last.y <= dst.boxY + dst.boxHeight + EPS,
           `${edgeLabel(a)} target y within box`,
         ).toBe(true);
+        // Required Invariant: "arrows land on the target left side with a
+        // left-to-right final stub." The penultimate waypoint must sit to the
+        // LEFT of the landing point on the same horizontal (a rightward stub).
+        const penult = a.waypoints[a.waypoints.length - 2];
+        expect(penult, `${edgeLabel(a)} has a penultimate waypoint`).toBeDefined();
+        if (penult !== undefined) {
+          expect(
+            Math.abs(penult.y - last.y) < EPS && penult.x < last.x - EPS,
+            `${edgeLabel(a)} final stub is left-to-right (penult.x=${penult.x} -> last.x=${last.x})`,
+          ).toBe(true);
+        }
         checkedTarget++;
       }
     }
@@ -277,6 +297,135 @@ describe('AR-05 / AR-32 — dense fan-out: all arrows render, none loop', () => 
     it(`no fan-out arrow loops (bounded length + vertical extent): ${sc.name}`, () => {
       const layout = buildLayout({ ...sc.inputs, measureText: measure });
       for (const a of layout.arrows) nonLoopingBound(a);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AR-08 / AR-34 (assembled) — routed arrows AVOID non-source/non-target
+//   block fragments. (Doc: "routed arrows avoid non-source/non-target block
+//   fragments"; routing rule 9 — obstacles are the real placed fragments.)
+//   A box-clearance-only check on the endpoints is not enough: this walks
+//   EVERY segment of EVERY arrow against EVERY obstacle that is not part of
+//   the arrow's own source or target box, so a route that cuts through a
+//   third, unrelated block fails. The source/target's own fragments are
+//   excluded because the explicit source/target stubs may legitimately cross
+//   their own block's clearance envelope (routing rules 6-7).
+// ---------------------------------------------------------------------------
+
+function rectsOverlapBox(o: ChannelObstacle, box: TypeBox): boolean {
+  return (
+    o.left < box.boxX + box.boxWidth + EPS &&
+    o.right > box.boxX - EPS &&
+    o.top < box.boxY + box.boxHeight + EPS &&
+    o.bottom > box.boxY - EPS
+  );
+}
+
+function segmentEntersObstacleInterior(
+  a: ArrowWaypoint,
+  b: ArrowWaypoint,
+  o: ChannelObstacle,
+): boolean {
+  // Raw (un-inflated) obstacle interior. A route may run flush along an
+  // obstacle's edge (the clearance boundary) without entering it; only a
+  // segment whose span strictly pierces the rect interior is a violation.
+  if (Math.abs(a.y - b.y) < EPS) {
+    const lo = Math.min(a.x, b.x);
+    const hi = Math.max(a.x, b.x);
+    return a.y > o.top + EPS && a.y < o.bottom - EPS && hi > o.left + EPS && lo < o.right - EPS;
+  }
+  if (Math.abs(a.x - b.x) < EPS) {
+    const lo = Math.min(a.y, b.y);
+    const hi = Math.max(a.y, b.y);
+    return a.x > o.left + EPS && a.x < o.right - EPS && hi > o.top + EPS && lo < o.bottom - EPS;
+  }
+  return false;
+}
+
+describe('AR-08/AR-34 — routed arrows avoid non-source/non-target fragments', () => {
+  const scenarios = [
+    { name: 'small / owners expanded', inputs: smallFixtureInputs(SMALL_EXPANDED) },
+    { name: 'medium / owners expanded', inputs: mediumFixtureInputs(MEDIUM_EXPANDED) },
+    { name: 'denseHighFanout(24)', inputs: denseHighFanout(24) },
+    { name: 'denseInputs default', inputs: denseInputs({ crossModuleRatio: 0.6 }) },
+  ];
+  for (const sc of scenarios) {
+    it(`no segment pierces a foreign obstacle: ${sc.name}`, () => {
+      const layout = buildLayout({ ...sc.inputs, measureText: measure });
+      const obstacles = layout.debug?.routing.obstacles ?? [];
+      expect(obstacles.length, 'real obstacle model present').toBeGreaterThan(0);
+      expect(layout.arrows.length, 'non-vacuous').toBeGreaterThan(0);
+      const boxById = new Map<string, TypeBox>(layout.types.map((t) => [t.id, t]));
+      for (const arrow of layout.arrows) {
+        const src = boxById.get(arrow.fromTypeId);
+        const dst = boxById.get(arrow.toTypeId);
+        const foreign = obstacles.filter(
+          (o) =>
+            !(src !== undefined && rectsOverlapBox(o, src)) &&
+            !(dst !== undefined && rectsOverlapBox(o, dst)),
+        );
+        for (const [a, b] of segments(arrow.waypoints)) {
+          for (const o of foreign) {
+            expect(
+              segmentEntersObstacleInterior(a, b, o),
+              `${edgeLabel(arrow)} segment (${a.x},${a.y})->(${b.x},${b.y}) pierces foreign obstacle [${o.left},${o.top},${o.right},${o.bottom}]`,
+            ).toBe(false);
+          }
+        }
+      }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Routing does NOT change physical placement. (Doc Required Invariant +
+//   "Routing runs after physical placement and does not feed back into
+//   placement: layout owns block positions, routing owns the path.")
+//   The pipeline computes geometry (the type boxes) BEFORE routing and hands
+//   it to the router read-only. Observable contract: every routed arrow only
+//   *consumes* placement — its target endpoint lands exactly on the target
+//   box's already-placed left edge — and a second fresh build produces byte-
+//   identical box positions (routing introduced no positional feedback or
+//   nondeterminism). A non-vacuity guard requires arrows to actually exist.
+// ---------------------------------------------------------------------------
+
+describe('routing consumes placement, never moves a box', () => {
+  function boxPositions(layout: Layout): string {
+    return layout.types
+      .map((t) => `${t.id}:${t.boxX},${t.boxY},${t.boxWidth},${t.boxHeight}`)
+      .sort()
+      .join('|');
+  }
+
+  for (const sc of [
+    { name: 'small', layout: smallLayout },
+    {
+      name: 'medium',
+      layout: (): Layout =>
+        buildLayout({ ...mediumFixtureInputs(MEDIUM_EXPANDED), measureText: measure }),
+    },
+  ]) {
+    it(`target endpoints sit exactly on placed box left edges: ${sc.name}`, () => {
+      const layout = sc.layout();
+      expect(layout.arrows.length, 'non-vacuous').toBeGreaterThan(0);
+      const boxById = new Map<string, TypeBox>(layout.types.map((t) => [t.id, t]));
+      let checked = 0;
+      for (const a of layout.arrows) {
+        const dst = boxById.get(a.toTypeId);
+        const last = a.waypoints[a.waypoints.length - 1];
+        if (dst === undefined || last === undefined) continue;
+        expect(
+          Math.abs(last.x - dst.boxX) < EPS,
+          `${edgeLabel(a)} target landed on the unmoved box left edge`,
+        ).toBe(true);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(0);
+    });
+
+    it(`a fresh build reproduces identical box placement: ${sc.name}`, () => {
+      expect(boxPositions(sc.layout())).toBe(boxPositions(sc.layout()));
     });
   }
 });

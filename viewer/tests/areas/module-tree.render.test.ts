@@ -441,7 +441,50 @@ describe('FLIP animation (MT-FLIP)', () => {
     return calls;
   }
 
-  it('MT-FLIP01: classifies persisting (translate) / entering (opacity) / exiting (ghost fade)', () => {
+  // jsdom's getBoundingClientRect returns all-zero rects, so a persisting
+  // node never has a measurable dx/dy and the FLIP `translate` branch is
+  // skipped (Math.abs(dx)<0.5 → continue). We therefore can't positively
+  // assert a translate keyframe under jsdom; that needs a real browser
+  // (Tier-3). What we CAN assert as a true oracle is the *classification
+  // boundary*: an entering live node gets an opacity 0→1 keyframe, a
+  // persisting live node does NOT (it must never be misclassified as
+  // entering), and exiting nodes fade out only in the ghost.
+
+  it('MT-FLIP01a: entering nodes fade opacity 0→1; persisting node is not misclassified as entering', () => {
+    const calls = stubAnimate();
+    const inputs = crateInputs(
+      crateOf('c', [mod(''), mod('a', [ty('c', 'a', 'X')]), mod('b', [])]),
+      ['c'], // crate root expanded? no — start with children collapsed
+    );
+    const state = inputs.state;
+    state.collapse('c'); // ensure c::a / c::b are NOT present initially
+    const scrollEl = document.createElement('div');
+    const container = document.createElement('div');
+    scrollEl.appendChild(container);
+    document.body.appendChild(scrollEl);
+
+    // Initial render: only `c` visible (children collapsed).
+    renderHtmlModuleTree(container, buildLayout(inputs), 1, scrollEl, noopOpts());
+    const snap = snapshotTreeState(container);
+    // Expand so c::a / c::b ENTER the live tree.
+    state.expand('c');
+    renderHtmlModuleTree(container, buildLayout(inputs), 1, scrollEl, noopOpts());
+    playTreeFlip(container, snap, { durationMs: 10 });
+
+    const liveA = container.querySelector<HTMLElement>('.module-group[data-id="c::a"]');
+    const liveC = container.querySelector<HTMLElement>('.module-group[data-id="c"]');
+    if (liveA === null || liveC === null) throw new Error('expected c and c::a live');
+    const isOpacityFade = (frames: Keyframe[][]): boolean =>
+      frames.some((f) => f[0]?.opacity === 0 && f[1]?.opacity === 1);
+    // Entering node `c::a` (id absent from the snapshot) → opacity 0→1.
+    expect(isOpacityFade(calls.get(liveA) ?? [])).toBe(true);
+    // Persisting node `c` (id present in snapshot) must NOT get an enter fade.
+    expect(isOpacityFade(calls.get(liveC) ?? [])).toBe(false);
+    // Nothing exited → no ghost mounted.
+    expect(scrollEl.querySelector('[data-tree-ghost]')).toBeNull();
+  });
+
+  it('MT-FLIP01b: exiting nodes fade out in the ghost; persisting node hidden in the ghost', () => {
     const calls = stubAnimate();
     const inputs = crateInputs(
       crateOf('c', [mod(''), mod('a', [ty('c', 'a', 'X')]), mod('b', [])]),
@@ -461,9 +504,6 @@ describe('FLIP animation (MT-FLIP)', () => {
     renderHtmlModuleTree(container, buildLayout(inputs), 1, scrollEl, noopOpts());
     playTreeFlip(container, snap, { durationMs: 10 });
 
-    // Persisting node `c` is still present in the live tree → a translate
-    // keyframe (or none if it didn't move). The exiting nodes c::a / c::b are
-    // only in the ghost → fade 1→0.
     const ghost = scrollEl.querySelector<HTMLElement>('[data-tree-ghost]');
     expect(ghost).not.toBeNull();
     // The ghost as a whole animates opacity 1→0 (exit fade).

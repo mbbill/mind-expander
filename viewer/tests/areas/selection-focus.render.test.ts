@@ -23,10 +23,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
+import type { LayoutInputs } from '../../src/analysis/layout_model.ts';
 import { type Layout, ROW_H } from '../../src/analysis/layout_model.ts';
+import { methodBucketId } from '../../src/analysis/module_tree.ts';
 import { buildLayout } from '../../src/layout/pipeline.ts';
 import { type TreeRenderOptions, renderTree } from '../../src/view/tree.ts';
 import type { ZoomLayers } from '../../src/view/zoom.ts';
+import { buildInputs, crateFacts, edge, mod, ty } from '../fixtures/builders.ts';
 import { smallFixtureInputs } from '../fixtures/small.ts';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -100,12 +103,64 @@ function render(
   selId: string | null,
   selKind: TreeRenderOptions['selectedElementKind'],
 ): SVGGElement {
+  return renderInputs(smallFixtureInputs(SMALL_EXPANDED), selId, selKind);
+}
+
+/** Render an arbitrary `LayoutInputs` (so a test can use a fixture whose
+ *  obstacle block is strictly wider than the header, or one with a method
+ *  bucket expanded) and capture the built layout in the module-global. */
+function renderInputs(
+  baseInputs: LayoutInputs,
+  selId: string | null,
+  selKind: TreeRenderOptions['selectedElementKind'],
+): SVGGElement {
   document.body.innerHTML = '';
-  const inputs = { ...smallFixtureInputs(SMALL_EXPANDED), measureText: measure };
+  const inputs = { ...baseInputs, measureText: measure };
   layout = buildLayout(inputs);
   const made = makeLayers();
   renderTree(made.layers, layout, makeOpts(inputs.ownership, selId, selKind));
   return made.zoom;
+}
+
+// A type whose field name is wider than its header label but still UNDER the
+// long-row split threshold (DEFAULT_LONG_ROW_SPLIT_MIN_WIDTH_PX = 360px under
+// `measure = len*7`), so the wide row is MERGED into the obstacle block and
+// `boxWidth` is STRICTLY greater than the header `width` (instead of being
+// split off into a protrusion, which would leave the block at header width).
+// With the small fixture every box is header-width (boxWidth === width), so a
+// ring/band sized to `d.width` would look identical and the "not header
+// width" guard would be vacuous. This row forces the two strictly apart.
+// 30 chars → ~250px measured row width: > header (96), < 360 split threshold.
+const WIDE_FIELD = 'wide_field_padded_to_30_chars_';
+function wideRowInputs(): LayoutInputs {
+  const c = crateFacts('c', [
+    mod('', [
+      ty('c', '', 'App', [
+        { name: WIDE_FIELD, ty_text: 'core::Engine' },
+        { name: 'x', ty_text: 'core::Other' },
+      ]),
+    ]),
+    mod('core', [ty('c', 'core', 'Engine'), ty('c', 'core', 'Other')]),
+  ]);
+  const edges = [
+    edge('c::App', 'c::core::Engine', `field ${WIDE_FIELD}`),
+    edge('c::App', 'c::core::Other', 'field x'),
+  ];
+  return buildInputs(c, edges, ['c', 'c::core', 'c::App']);
+}
+
+// `App` carries a struct field `store` AND a method `store()` — the exact
+// Rust shape (a field and an inherent method sharing a name) that the
+// `(id, kind)` selection matcher must disambiguate. The method bucket is
+// expanded so the method row is materialised alongside the field row.
+function fieldAndMethodSameNameInputs(): LayoutInputs {
+  const appType = {
+    ...ty('c', '', 'App', [{ name: 'store', ty_text: 'core::Engine' }]),
+    methods: [{ name: 'store', visibility: 'pub', self_kind: 'ref' as const }],
+  };
+  const c = crateFacts('c', [mod('', [appType]), mod('core', [ty('c', 'core', 'Engine')])]);
+  const edges = [edge('c::App', 'c::core::Engine', 'field store')];
+  return buildInputs(c, edges, ['c', 'c::core', 'c::App', methodBucketId('c::App', 'pub')]);
 }
 
 function typeById(id: string): Layout['types'][number] {
@@ -123,13 +178,16 @@ beforeEach(() => {
 
 describe('SF-T1-13 — selection ring is sized to the obstacle block, not header width', () => {
   it('ring width/height/x/y derive from box* (+/- PAD), not d.width', () => {
-    const zoom = render('c::core::Engine', 'type');
+    // Select `App`, whose long-field obstacle block is STRICTLY wider than
+    // its header label. A ring sized to `d.width` would clip the wide row;
+    // sizing to `boxWidth` is what we assert here.
+    const zoom = renderInputs(wideRowInputs(), 'c::App', 'type');
     const box = zoom.querySelector('g.type-box.selected');
-    expect(box?.getAttribute('data-element-id')).toBe('c::core::Engine');
+    expect(box?.getAttribute('data-element-id')).toBe('c::App');
     const ring = box?.querySelector('rect.selection-ring') ?? null;
     expect(ring).not.toBeNull();
 
-    const t = typeById('c::core::Engine');
+    const t = typeById('c::App');
     // The ring is in the type-box's LOCAL frame: the group is translated to
     // (d.x, d.y - ROW_H/2), so the ring's local x = boxX - d.x - PAD, etc.
     const headerTop = t.y - ROW_H / 2;
@@ -138,11 +196,11 @@ describe('SF-T1-13 — selection ring is sized to the obstacle block, not header
     expect(num(ring, 'x')).toBeCloseTo(t.boxX - t.x - SELECTION_PAD, 1);
     expect(num(ring, 'y')).toBeCloseTo(t.boxY - headerTop - SELECTION_PAD, 1);
 
-    // The obstacle block is at least as wide as the header — a ring sized to
-    // d.width would be NARROWER, clipping wide rows. Assert the ring is sized
-    // to the wider extent.
-    expect(t.boxWidth).toBeGreaterThanOrEqual(t.width);
-    expect(num(ring, 'width')).toBeGreaterThanOrEqual(t.width);
+    // Load-bearing guard: the obstacle block is STRICTLY wider than the
+    // header here, so a ring sized to `d.width` would be measurably narrower
+    // than the block. The ring must cover the wider extent, not the header.
+    expect(t.boxWidth).toBeGreaterThan(t.width);
+    expect(num(ring, 'width')).toBeGreaterThan(t.width + SELECTION_PAD * 2);
   });
 });
 
@@ -186,7 +244,10 @@ describe('SF-T1-16 — member band vertical inset keeps it inside its own row', 
 
 describe('SF-T1-17 — member band spans the full obstacle width, not the header width', () => {
   it('member-bg width === d.boxWidth and x === boxX - d.x', () => {
-    const zoom = render('c::App::engine', 'field');
+    // Select the narrow sibling field `x` on a type whose OTHER field is
+    // very long. The band under `x` must still span the full obstacle block
+    // (so the highlight reads as the whole box), not the header width.
+    const zoom = renderInputs(wideRowInputs(), 'c::App::x', 'field');
     const appBox = zoom.querySelector('g.type-box[data-element-id="c::App"]');
     const band = appBox?.querySelector('g.field-row-g.selected-member rect.member-bg') ?? null;
     expect(band).not.toBeNull();
@@ -194,9 +255,40 @@ describe('SF-T1-17 — member band spans the full obstacle width, not the header
     const t = typeById('c::App');
     expect(num(band, 'width')).toBeCloseTo(t.boxWidth, 1);
     expect(num(band, 'x')).toBeCloseTo(t.boxX - t.x, 1);
-    // The obstacle block is the wider extent the band must cover; a band
-    // sized to the header would clip a wide row.
-    expect(t.boxWidth).toBeGreaterThanOrEqual(t.width);
+    // Load-bearing guard: the obstacle block is STRICTLY wider than the
+    // header, so a band sized to `d.width` would clip the wide sibling row.
+    expect(t.boxWidth).toBeGreaterThan(t.width);
+    expect(num(band, 'width')).toBeGreaterThan(t.width);
+  });
+});
+
+describe('SF-T1-15 — member band lights only the row matching (id, kind), not the same-name twin', () => {
+  // `App` has a struct field `store` AND a method `store()`. They share the
+  // canonical id `c::App::store`; only the row whose KIND matches the
+  // selection may light. A name-only matcher would light both — the exact
+  // recurring selection bug this guards.
+  function selectedKinds(zoom: SVGGElement): string[] {
+    return Array.from(zoom.querySelectorAll('g.field-row-g.selected-member')).map(
+      (el) => el.getAttribute('data-element-kind') ?? '',
+    );
+  }
+
+  it('selecting the FIELD lights exactly the field row, not the method row', () => {
+    const zoom = renderInputs(fieldAndMethodSameNameInputs(), 'c::App::store', 'field');
+    expect(selectedKinds(zoom)).toEqual(['field']);
+  });
+
+  it('selecting the METHOD lights exactly the method row, not the field row', () => {
+    const zoom = renderInputs(fieldAndMethodSameNameInputs(), 'c::App::store', 'method');
+    expect(selectedKinds(zoom)).toEqual(['method']);
+  });
+
+  it('both rows are actually present (the fixture is not vacuous)', () => {
+    const zoom = renderInputs(fieldAndMethodSameNameInputs(), null, null);
+    const kinds = Array.from(zoom.querySelectorAll('g.type-box[data-element-id="c::App"] g.field-row-g'))
+      .map((el) => el.getAttribute('data-element-kind') ?? '');
+    expect(kinds).toContain('field');
+    expect(kinds).toContain('method');
   });
 });
 

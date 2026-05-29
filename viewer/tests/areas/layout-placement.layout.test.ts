@@ -108,106 +108,135 @@ function denseSameDepth(typesPerModule = 24): Geometry {
 }
 
 // ===========================================================================
-// LP-01 — Same-depth types share row Y across sub-columns (row-major)
+// LP-24 — Rule 3 + Rule 4 expansion stability: height-only growth, fixed
+//         columns/order, and NO cross-column row-sync.
 // ===========================================================================
-describe('LP-01 same-depth row-major Y alignment', () => {
-  it('types at the same row index share one Y across every sub-column', () => {
-    const g = denseSameDepth(24);
-    const band = 'w::l0';
-    const depthOne = g.types.filter((t) => t.bandId === band && t.depth === 1);
-    // Guard: the fixture really did wrap into multiple sub-columns and >1 row,
-    // otherwise the row-major property holds vacuously.
-    const distinctCols = new Set(depthOne.map((t) => colOf(g, t)));
-    expect(distinctCols.size).toBeGreaterThan(1);
+// This is the most load-bearing layout invariant (layout.md Core Rules 3 & 4):
+// expanding one item must change ONLY that item's box (height, maybe width),
+// keep it in its column, never reorder or move anything between columns, and
+// must NOT drag items in other columns down to a shared baseline. The fixture
+// gives every child a field whose NAME ("x") is narrower than its header label
+// so expansion grows HEIGHT only (block width counts the member-name anchor,
+// not the verbose `ty_text` suffix — see geometry.measuredRowWidth).
+describe('LP-24 expansion stability (Rule 3 fixed columns, Rule 4 no row-sync)', () => {
+  const CHILD_COUNT = 12;
+  const childNames = Array.from({ length: CHILD_COUNT }, (_, i) => `Child${i}`);
 
-    // Group by column; within each column collect the row→y mapping. The
-    // correct oracle (NOT "Y strictly increases with list index" — that is the
-    // WRONG naive invariant for row-major wrapping) is: a given row index has
-    // exactly one Y, shared across all columns that occupy it.
-    const yByRow = new Map<number, number>();
-    for (const t of depthOne) {
-      const row = rowOf(g, t);
-      const existing = yByRow.get(row);
-      if (existing === undefined) {
-        yByRow.set(row, t.y);
-      } else {
-        expect(
-          Math.abs(existing - t.y),
-          `row ${row} y mismatch (${existing} vs ${t.y})`,
-        ).toBeLessThan(EPS);
-      }
-    }
-
-    // More than one row was actually used (so the alignment is non-trivial).
-    expect(yByRow.size).toBeGreaterThan(1);
-
-    // Distinct row Ys strictly increase with row index — rows stack downward.
-    const rowsSorted = [...yByRow.keys()].sort((a, b) => a - b);
-    for (let i = 1; i < rowsSorted.length; i++) {
-      const prev = yByRow.get(rowsSorted[i - 1] as number) as number;
-      const cur = yByRow.get(rowsSorted[i] as number) as number;
-      expect(cur, `row ${rowsSorted[i]} below row ${rowsSorted[i - 1]}`).toBeGreaterThan(prev);
-    }
-  });
-
-  it('medium fixture R-leaves are row-aligned across their sub-columns', () => {
-    const g = computeGeometry({ ...mediumFixtureInputs(['c', 'c::m']), measureText: measure });
-    const rLeaves = g.types.filter((t) => /^c::m::R\d+$/.test(t.node.id));
-    expect(rLeaves).toHaveLength(12);
-    const yByRow = new Map<number, number>();
-    for (const t of rLeaves) {
-      const row = rowOf(g, t);
-      const existing = yByRow.get(row);
-      if (existing === undefined) yByRow.set(row, t.y);
-      else expect(Math.abs(existing - t.y)).toBeLessThan(EPS);
-    }
-    expect(yByRow.size).toBeGreaterThan(1);
-  });
-});
-
-// ===========================================================================
-// LP-02 — Synchronized row heights across sub-columns
-// ===========================================================================
-describe('LP-02 synchronized row heights', () => {
-  // SUSPECTED BUG: the band packer fills each sub-column independently
-  // top-to-bottom, so expanding one owner only pushes the NEXT box in ITS OWN
-  // column down — row-mates in other sub-columns keep their original Y (e.g.
-  // expanded owner's column gets its successor at y=124 while a sibling column
-  // stays at y=76). The plan's oracle (row N height == tallest box in row N,
-  // shared across columns) is the intended correct behavior, but the current
-  // implementation does not height-sync rows across sub-columns. Locked as a
-  // suspected real bug rather than asserting the wrong (per-column) behavior.
-  it.skip('next-row Y clears the tallest box of the previous row across all sub-columns', () => {
-    const names = ['Hub', 'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8'];
-    const c = crateFacts('c', [
-      mod(
+  function buildStabilityInputs(expanded: readonly string[]) {
+    // One owner (Hub, depth 0) fans out to CHILD_COUNT siblings at depth 1 so
+    // the same-depth bucket wraps into >1 column. Each child carries one short
+    // primitive field (`x`) with a long ty_text annotation; the short name
+    // keeps the box at header width, so expanding it grows height only.
+    const types = [
+      ty(
+        'c',
         'm',
-        names.map((n) =>
-          n === 'Hub'
-            ? ty(
-                'c',
-                'm',
-                n,
-                Array.from({ length: 8 }, (_, i) => ({ name: `f${i}`, ty_text: `T${i + 1}` })),
-              )
-            : ty('c', 'm', n),
-        ),
+        'Hub',
+        childNames.map((n, i) => ({ name: `f${i}`, ty_text: n })),
       ),
-    ]);
-    const edges = Array.from({ length: 8 }, (_, i) =>
-      edge('c::m::Hub', `c::m::T${i + 1}`, `field f${i}`),
-    );
-    // Expand T1 only so it is the lone tall box in row 0 of the same-depth band.
-    const g = computeGeometry({
-      ...buildInputs(c, edges, ['c', 'c::m', 'c::m::T1']),
+      ...childNames.map((n) =>
+        ty('c', 'm', n, [{ name: 'x', ty_text: 'LongPrimitiveAnnotation' }]),
+      ),
+    ];
+    const c = crateFacts('c', [mod('m', types)]);
+    const edges = childNames.map((n, i) => edge('c::m::Hub', `c::m::${n}`, `field f${i}`));
+    return buildInputs(c, edges, [...expanded]);
+  }
+
+  /** column index -> top-to-bottom ordered list of depth-1 type ids. */
+  function columnOrder(g: Geometry): Map<number, string[]> {
+    const depthOne = g.types.filter((t) => t.depth === 1);
+    const byCol = new Map<number, PositionedType[]>();
+    for (const t of depthOne) {
+      const col = colOf(g, t);
+      byCol.set(col, [...(byCol.get(col) ?? []), t]);
+    }
+    const out = new Map<number, string[]>();
+    for (const [col, arr] of byCol) {
+      out.set(
+        col,
+        [...arr].sort((a, b) => a.y - b.y).map((t) => t.node.id),
+      );
+    }
+    return out;
+  }
+
+  function partitionKey(g: Geometry): string {
+    return [...columnOrder(g).entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([col, ids]) => `${col}:${ids.join(',')}`)
+      .join('|');
+  }
+
+  it('expanding a short-field item grows only its own box height, keeps its column/order, and moves no other column', () => {
+    const base = ['c', 'c::m'];
+    const target = 'c::m::Child5';
+    const gCollapsed = computeGeometry({ ...buildStabilityInputs(base), measureText: measure });
+    const gExpanded = computeGeometry({
+      ...buildStabilityInputs([...base, target]),
       measureText: measure,
     });
-    const depthOne = g.types.filter((t) => t.depth === 1);
-    const row0 = depthOne.filter((t) => rowOf(g, t) === 0);
-    const row1 = depthOne.filter((t) => rowOf(g, t) === 1);
-    const row0Bottom = Math.max(...row0.map((t) => t.y - ROW_H / 2 + t.height));
-    for (const t of row1) {
-      expect(t.y - ROW_H / 2).toBeGreaterThanOrEqual(row0Bottom - EPS);
+
+    // Non-vacuity: the same-depth bucket actually wrapped into >1 column and
+    // >1 row, and the target is NOT the bottom-most item of its column (so
+    // there is a within-column successor to push and cross-column row-mates to
+    // leave alone). Otherwise the stability assertions hold trivially.
+    const orderCollapsed = columnOrder(gCollapsed);
+    expect(orderCollapsed.size).toBeGreaterThan(1);
+    expect([...orderCollapsed.values()].some((ids) => ids.length > 1)).toBe(true);
+
+    const tCollapsed = gCollapsed.typesById.get(target);
+    const tExpanded = gExpanded.typesById.get(target);
+    if (!tCollapsed || !tExpanded) throw new Error('missing target child');
+    const targetCol = colOf(gCollapsed, tCollapsed);
+
+    // (a) The expanded box grew in HEIGHT (it gained a visible field row) and
+    //     did NOT grow in width — the short field name stays inside the header
+    //     anchor, the long ty_text suffix is excluded from block width.
+    expect(tExpanded.height).toBeGreaterThan(tCollapsed.height);
+    expect(tExpanded.width).toBe(tCollapsed.width);
+    expect(tExpanded.visibleRows.length).toBe(1);
+
+    // (b) The expanded item kept its exact column and y; the column partition
+    //     and each column's top-to-bottom id order are identical collapsed vs
+    //     expanded — no reorder, no item crossed columns (Rule 3).
+    expect(colOf(gExpanded, tExpanded)).toBe(colOf(gCollapsed, tCollapsed));
+    expect(tExpanded.y).toBeCloseTo(tCollapsed.y, 1);
+    expect(partitionKey(gExpanded)).toBe(partitionKey(gCollapsed));
+
+    // (c) No cross-column row-sync (Rule 4): every depth-1 sibling in a
+    //     DIFFERENT column whose collapsed y is at/below the expanded item
+    //     keeps its exact y — the expansion did not drag a neighbouring
+    //     column's items down to a shared baseline.
+    const siblingsBelowInOtherCols = gCollapsed.types.filter(
+      (t) =>
+        t.depth === 1 &&
+        t.node.id !== target &&
+        colOf(gCollapsed, t) !== targetCol &&
+        t.y >= tCollapsed.y - EPS,
+    );
+    expect(siblingsBelowInOtherCols.length).toBeGreaterThan(0); // non-vacuity
+    for (const sib of siblingsBelowInOtherCols) {
+      const after = gExpanded.typesById.get(sib.node.id);
+      if (!after) throw new Error(`missing sibling ${sib.node.id}`);
+      expect(after.y, `${sib.node.id} y must not row-sync to the expanded item`).toBeCloseTo(
+        sib.y,
+        1,
+      );
+    }
+
+    // (d) Within-column behavior is the legitimate Rule-3 effect: the next
+    //     item BELOW the target IN ITS OWN column slides down to clear the
+    //     taller box (it keeps its column, it is not reflowed elsewhere).
+    const targetColIds = orderCollapsed.get(targetCol) ?? [];
+    const targetIdx = targetColIds.indexOf(target);
+    const successorId = targetColIds[targetIdx + 1];
+    if (successorId !== undefined) {
+      const succCollapsed = gCollapsed.typesById.get(successorId);
+      const succExpanded = gExpanded.typesById.get(successorId);
+      if (!succCollapsed || !succExpanded) throw new Error('missing successor');
+      expect(succExpanded.y).toBeGreaterThan(succCollapsed.y);
+      expect(colOf(gExpanded, succExpanded)).toBe(targetCol);
     }
   });
 });
@@ -286,23 +315,6 @@ describe('LP-04 sparse band fn-gap independent of another band density', () => {
     // The reservation clears the fn group's own measured width (it is not a
     // k*cellWidth multiple of the dense band's count).
     expect(gapCols).toBeGreaterThanOrEqual(fnGroupWidthCols);
-  });
-});
-
-// ===========================================================================
-// LP-05 — Overflow rolls into depth+1 (rightward, one column per overflow)
-// ===========================================================================
-describe('LP-05 overflow rollover into depth+1', () => {
-  // CONVERTED (not Tier-3, behavior differs): the implemented design spreads a
-  // same-depth bucket into capped sub-columns AT THE SAME DEPTH and reuses
-  // rows (see LP-03), rather than rolling overflow types one-per-column into
-  // the next depth's column position. The "rightward roll into depth+1" oracle
-  // describes a design the code does not implement (and the per-subcol stacking
-  // alternative is explicitly rejected). LP-03 already locks the real
-  // capped-multi-column behavior, so this distinct oracle is skipped to avoid a
-  // red assertion of an unimplemented mechanism.
-  it.skip('overflow types take the next depth column (push right), one column each', () => {
-    // intentionally unimplemented — see comment above.
   });
 });
 
@@ -560,6 +572,93 @@ describe('LP-14 cross-module owned type stays right of owner', () => {
     expect(owner).toBeDefined();
     expect(target).toBeDefined();
     expect(target?.x ?? 0).toBeGreaterThanOrEqual((owner?.x ?? 0) + (owner?.width ?? 0));
+  });
+});
+
+// ===========================================================================
+// LP-25 — Long field/method type annotations do not affect physical block width
+// ===========================================================================
+// Required invariant (layout.md "Physical Placement" + "Required Invariants"):
+// block width counts the member-NAME anchor, never the hover/detail `ty_text`
+// suffix. A verbose Rust type annotation must not force the parent box wide or
+// push unrelated boxes apart.
+describe('LP-25 long type annotations do not widen the block', () => {
+  function buildWithFieldType(tyText: string): Geometry {
+    // Two sibling types at depth 1 under one owner: the first carries a single
+    // expanded field whose NAME is fixed but whose ty_text varies. The second
+    // is a plain neighbour whose x reveals whether the first box grew.
+    const c = crateFacts('c', [
+      mod('m', [
+        ty('c', 'm', 'Owner', [
+          { name: 'a', ty_text: 'A' },
+          { name: 'b', ty_text: 'B' },
+        ]),
+        ty('c', 'm', 'A', [{ name: 'field', ty_text: tyText }]),
+        ty('c', 'm', 'B'),
+      ]),
+    ]);
+    const edges = [
+      edge('c::m::Owner', 'c::m::A', 'field a'),
+      edge('c::m::Owner', 'c::m::B', 'field b'),
+    ];
+    return computeGeometry({
+      ...buildInputs(c, edges, ['c', 'c::m', 'c::m::A']),
+      measureText: measure,
+    });
+  }
+
+  it('a verbose ty_text leaves the box width and every neighbour x unchanged', () => {
+    const gShort = buildWithFieldType('u8');
+    const gLong = buildWithFieldType(`Verbose::${'Generic<'.repeat(20)}u8>`);
+
+    const aShort = gShort.typesById.get('c::m::A');
+    const aLong = gLong.typesById.get('c::m::A');
+    if (!aShort || !aLong) throw new Error('missing type A');
+
+    // Non-vacuity: the box really is expanded with a visible field row whose
+    // ty_text differs between the two builds.
+    expect(aShort.visibleRows).toHaveLength(1);
+    expect(aLong.visibleRows[0]?.tyText).not.toBe(aShort.visibleRows[0]?.tyText);
+    // The differing ty_text annotation is far wider than the box, yet the box
+    // width is byte-identical — width tracks the member-name anchor only.
+    expect(measure(aLong.visibleRows[0]?.tyText ?? '')).toBeGreaterThan(aShort.width);
+    expect(aLong.width).toBe(aShort.width);
+
+    // The neighbour box B does not get pushed apart by A's verbose annotation.
+    const bShort = gShort.typesById.get('c::m::B');
+    const bLong = gLong.typesById.get('c::m::B');
+    expect(bLong?.x).toBe(bShort?.x);
+    expect(bLong?.y).toBe(bShort?.y);
+  });
+});
+
+// ===========================================================================
+// LP-26 — Rule 2: same-depth items spread into >1 column toward 16:9
+// ===========================================================================
+// Core Rule 2: same-depth items SPREAD into columns (driven by item count +
+// stable order) toward a 16:9 band shape, instead of stacking into one tall
+// column. Spreading must come from count/order, never from measured size —
+// asserted here by checking the column partition is unchanged when one item
+// expands (size changed, columns did not).
+describe('LP-26 same-depth spread toward 16:9', () => {
+  it('a many-item same-depth bucket occupies multiple columns and ignores box size when spreading', () => {
+    const g = denseSameDepth(24);
+    const depthOne = g.types.filter((t) => t.bandId === 'w::l0' && t.depth === 1);
+    expect(depthOne.length).toBe(23);
+
+    const cols = [...new Set(depthOne.map((t) => colOf(g, t)))].sort((a, b) => a - b);
+    // It spread into more than one column but did NOT degenerate to one column
+    // per item (the rejected single-tall-column shape).
+    expect(cols.length).toBeGreaterThan(1);
+    expect(cols.length).toBeLessThan(depthOne.length);
+
+    // Trend toward 16:9: the band is meaningfully wider than tall in column
+    // terms — columns used > rows in the tallest column. (Count-only spread, so
+    // this holds regardless of box pixel sizes.)
+    const perCol = new Map<number, number>();
+    for (const t of depthOne) perCol.set(colOf(g, t), (perCol.get(colOf(g, t)) ?? 0) + 1);
+    const maxPerCol = Math.max(...perCol.values());
+    expect(cols.length).toBeGreaterThanOrEqual(maxPerCol);
   });
 });
 

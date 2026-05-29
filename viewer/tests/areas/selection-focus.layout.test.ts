@@ -15,9 +15,10 @@ import type { Arrow, Layout } from '../../src/analysis/layout_model.ts';
 import { rowArrowKey } from '../../src/analysis/layout_model.ts';
 import { buildSpanIndex, containingTypeBoxIdFor } from '../../src/data/spans.ts';
 import { buildLayout } from '../../src/layout/pipeline.ts';
+import { methodBucketId } from '../../src/analysis/module_tree.ts';
 import { groupArrowHits } from '../../src/view/arrow_disambig.ts';
 import { arrowEndpointLayoutPoint } from '../../src/view/arrow_navigation.ts';
-import { lookupMemberRowPoint } from '../../src/view/layout_lookup.ts';
+import { lookupElementPoint, lookupMemberRowPoint } from '../../src/view/layout_lookup.ts';
 import { fieldKey } from '../../src/view/tree.ts';
 import { ownerFieldsPointingTo } from '../../src/view/type_expansion.ts';
 import { buildInputs, crateFacts, edge, facts, mod, ty } from '../fixtures/builders.ts';
@@ -351,5 +352,79 @@ describe('SF-T2-09 — disambig grouping holds at SCALE with many overlapping ar
     expect(groups.length).toBe(1);
     expect(groups[0]?.kind).toBe('by-target');
     expect(groups[0]?.others.length).toBe(widest.length);
+  });
+});
+
+describe('SF-T2-12 — lookupElementPoint disambiguates a field vs a same-name method', () => {
+  // `App` owns a struct field `store` AND an inherent method `store()`. Both
+  // share the canonical id `c::App::store`; the `kind` argument must pick the
+  // right ROW. A name/id-only lookup would return whichever row it scanned
+  // first and the nav would land on the wrong member — the recurring
+  // field/method-same-name bug. The method bucket is expanded so both rows
+  // are materialised.
+  function fieldAndMethodLayout(): Layout {
+    const appType = {
+      ...ty('c', '', 'App', [{ name: 'store', ty_text: 'core::Engine' }]),
+      methods: [{ name: 'store', visibility: 'pub', self_kind: 'ref' as const }],
+    };
+    const c = crateFacts('c', [mod('', [appType]), mod('core', [ty('c', 'core', 'Engine')])]);
+    const inputs = buildInputs(
+      c,
+      [edge('c::App', 'c::core::Engine', 'field store')],
+      ['c', 'c::core', 'c::App', methodBucketId('c::App', 'pub')],
+    );
+    return buildLayout({ ...inputs, measureText: measure });
+  }
+
+  it('field and method resolve to distinct row points; each matches its own row y', () => {
+    const layout = fieldAndMethodLayout();
+    const fieldPt = lookupElementPoint(layout, 'c::App::store', 'field');
+    const methodPt = lookupElementPoint(layout, 'c::App::store', 'method');
+    expect(fieldPt).not.toBeNull();
+    expect(methodPt).not.toBeNull();
+    // Different rows ⇒ different y. (A name-only matcher would return the
+    // same point for both kinds.)
+    expect(fieldPt?.y).not.toBe(methodPt?.y);
+
+    // Cross-check against the row-level lookup so the two helpers agree on
+    // which row each kind owns.
+    expect(lookupMemberRowPoint(layout, 'c::App', 'store', 'field')).toEqual(fieldPt);
+    expect(lookupMemberRowPoint(layout, 'c::App', 'store', 'method')).toEqual(methodPt);
+  });
+});
+
+describe('SF-T2-13 — free-fn lookupElementPoint resolves only when its group bucket is expanded', () => {
+  // A free function lives in a `function_group` pseudo-type. Its row only
+  // materialises when that group is expanded; nav must skip (null) otherwise
+  // rather than aim at an invisible row.
+  const FN_GROUP = 'c::util::__fn_pub';
+  function freeFnInputs(expanded: string[]) {
+    const utilMod = {
+      path: 'util',
+      file: 'src/util.rs',
+      types: [],
+      functions: [{ name: 'do_thing', visibility: 'pub' }],
+    };
+    const c = crateFacts('c', [mod('', [ty('c', '', 'App')]), utilMod]);
+    return buildInputs(c, [], expanded);
+  }
+
+  it('returns null when the function group is collapsed', () => {
+    const layout = buildLayout({ ...freeFnInputs(['c', 'c::util']), measureText: measure });
+    // Precondition: the group exists but is collapsed.
+    const grp = layout.types.find((t) => t.fullPath === FN_GROUP);
+    expect(grp?.expanded).toBe(false);
+    expect(lookupElementPoint(layout, 'c::util::do_thing', 'function')).toBeNull();
+  });
+
+  it('returns a finite row point when the function group is expanded', () => {
+    const layout = buildLayout({
+      ...freeFnInputs(['c', 'c::util', FN_GROUP]),
+      measureText: measure,
+    });
+    const pt = lookupElementPoint(layout, 'c::util::do_thing', 'function');
+    expect(pt).not.toBeNull();
+    expect(Number.isFinite(pt?.x ?? Number.NaN)).toBe(true);
+    expect(Number.isFinite(pt?.y ?? Number.NaN)).toBe(true);
   });
 });

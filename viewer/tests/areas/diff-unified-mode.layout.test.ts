@@ -98,6 +98,25 @@ describe('canonicalize — cfg-dup merge keeps the modified variant (T-C1)', () 
     expect(merged.side).toBe('modified');
     expect(merged.prev_span).toEqual(prev);
   });
+
+  it('drops a stale prev_span carried by the representative when the merged side is NOT modified', () => {
+    // The other half of the prev_span contract (canonicalize.ts:95-97):
+    // when no variant is `modified`, the merged record must NOT keep a
+    // prev_span — even if the structural representative happened to
+    // carry one. A leaked base location on a `both`/`head` entity would
+    // draw a phantom red half in the union focus frame for an entity
+    // that was never modified.
+    const stale: Span = { file: 'base/lib.rs', start_line: 40, end_line: 50 };
+    // `richBoth` is the representative (more fields) AND carries the
+    // stale prev_span; the merge resolves to `both`, so prev_span must
+    // be stripped.
+    const richBoth = variant('both', { fieldName: 'a', prev_span: stale });
+    const headThin = variant('head');
+    const merged = mergeVariants([richBoth, headThin]);
+
+    expect(merged.side).toBe('both');
+    expect(merged.prev_span).toBeUndefined();
+  });
 });
 
 // --- T-C2 -------------------------------------------------------------

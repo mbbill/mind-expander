@@ -236,6 +236,29 @@ describe('selection ring is derived from the layout contract, not getBBox', () =
     expect(block).toContain('d.boxWidth');
     expect(block).not.toContain('getBBox');
   });
+
+  // COVER D: the type-box HEADER hit/expand sizing path also trusts the
+  // layout contract instead of re-measuring with getBBox. The header rect
+  // widths come from d.headerArrowX / d.headerHitWidth (produced by the same
+  // measurer the layout uses), so the click redraw path never forces a
+  // browser layout. This is the renderer-trusts-geometry invariant applied to
+  // the header, complementing the selection-ring case above.
+  it('the type-box header hit sizing path (sizeTypeHits) trusts d.headerArrowX/headerHitWidth, no getBBox', () => {
+    const idx = TREE_SRC.indexOf('function sizeTypeHits(');
+    expect(idx).toBeGreaterThan(-1);
+    // Bound the slice to this function's body. It ends at the next
+    // `sel.each(...)` close — a fixed, tight window keeps the negative
+    // getBBox assertion scoped to the header-sizing path and not the
+    // unrelated hover ty-hint background sizer elsewhere in the file.
+    const close = TREE_SRC.indexOf('\n}', idx);
+    expect(close).toBeGreaterThan(idx);
+    const block = TREE_SRC.slice(idx, close);
+    expect(block).toContain('d.headerArrowX');
+    expect(block).toContain('d.headerHitWidth');
+    // No getBBox() *call* in the body — the doc-comment legitimately mentions
+    // the banned API by name, so assert on the invocation form, not the word.
+    expect(block).not.toMatch(/\.getBBox\(/);
+  });
 });
 
 // ======================================================================

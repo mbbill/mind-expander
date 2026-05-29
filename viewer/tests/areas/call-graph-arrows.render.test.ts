@@ -41,6 +41,12 @@ const measure = (s: string): number => s.length * 7;
 // row's locality `→` glyph (localityGlyphColor) — they MUST agree.
 const BLUE_EXTERNAL = '#2563eb';
 const GREY_LOCAL = '#94a3b8';
+// The locality `→` glyph's neutral (local-only) fill. Note this is the
+// field-ty grey (#64748b), NOT the call-arrow's local stroke (#94a3b8):
+// the two channels agree only on the external/blue case. The local glyph
+// reuses the neutral field color, so a local-only caller's glyph is just
+// "not the external blue".
+const NEUTRAL_LOCAL_GLYPH = '#64748b';
 
 /** A minimal `ZoomLayers` over three detached <g> — renderTree only reads
  *  the three layers; pan/zoom methods are no-ops. */
@@ -98,17 +104,26 @@ function fn(name: string): FnFacts {
   return { name, visibility: 'pub' };
 }
 
-/** One caller in the root module that calls one callee. `cross` puts the
- *  callee in another module (external/blue); otherwise same module
- *  (local/grey). The single (caller,callee) pair is revealed. */
-function callInputs(cross: boolean): LayoutInputs {
-  const modules: ModuleFacts[] = cross
-    ? [
-        { path: '', file: 'src/lib.rs', functions: [fn('caller')], types: [] },
-        { path: 'other', file: 'src/other.rs', functions: [fn('far')], types: [] },
-      ]
-    : [{ path: '', file: 'src/lib.rs', functions: [fn('caller'), fn('callee')], types: [] }];
-  const calleeId = cross ? 'c::other::far' : 'c::callee';
+type CallLocalityMode = 'local' | 'external' | 'unresolved';
+
+/** One caller in the root module that calls one callee.
+ *  - 'local': callee in the SAME module (grey arrow / neutral glyph)
+ *  - 'external': callee in another module (blue arrow / blue glyph)
+ *  - 'unresolved': callee name not in the workspace (no arrow; orange
+ *    glyph). The single (caller,callee) pair is revealed. */
+function callInputs(mode: CallLocalityMode | boolean): LayoutInputs {
+  const m: CallLocalityMode =
+    mode === true ? 'external' : mode === false ? 'local' : mode;
+  const modules: ModuleFacts[] =
+    m === 'external'
+      ? [
+          { path: '', file: 'src/lib.rs', functions: [fn('caller')], types: [] },
+          { path: 'other', file: 'src/other.rs', functions: [fn('far')], types: [] },
+        ]
+      : [{ path: '', file: 'src/lib.rs', functions: [fn('caller'), fn('callee')], types: [] }];
+  // 'unresolved': name that resolves to no workspace row.
+  const calleeId =
+    m === 'external' ? 'c::other::far' : m === 'unresolved' ? 'c::no_such_fn' : 'c::callee';
   const crate: CrateFacts = {
     name: 'c',
     modules: Object.fromEntries(modules.map((m) => [m.path, m])),
@@ -118,7 +133,7 @@ function callInputs(cross: boolean): LayoutInputs {
       caller: 'c::caller',
       callee: calleeId,
       kind: 'function',
-      resolution: 'exact',
+      resolution: m === 'unresolved' ? 'heuristic' : 'exact',
       origin: calleeId,
     },
   ];
@@ -209,10 +224,12 @@ describe('call-graph-arrows — call arrow DOM binding', () => {
     expect(path?.getAttribute('stroke')).toBe(BLUE_EXTERNAL);
   });
 
-  // CGA-RENDER-06: the row's locality `→` glyph color must AGREE with the
-  // arrow color (same source of truth) — blue for an external caller row,
-  // grey for a local-only one.
-  it('CGA-RENDER-06 locality glyph color agrees with arrow locality', () => {
+  // CGA-RENDER-06: the row's locality `→` glyph color. An external caller
+  // row's glyph is blue (#2563eb) — the SAME blue the external call-arrow
+  // stroke uses (CGA-RENDER-01), so the row indicator and its outgoing
+  // arrow agree. A local-only caller's glyph is the neutral field-ty grey
+  // (#64748b); this is the exact local oracle, not merely "not blue".
+  it('CGA-RENDER-06 locality glyph: external blue agrees with arrow, local is neutral', () => {
     const ext = render(callInputs(true));
     const extGlyphs = Array.from(ext.zoom.querySelectorAll('text.locality-glyph'));
     expect(extGlyphs.length).toBeGreaterThan(0);
@@ -221,8 +238,24 @@ describe('call-graph-arrows — call arrow DOM binding', () => {
 
     const loc = render(callInputs(false));
     const locGlyph = loc.zoom.querySelector('text.locality-glyph[fill]');
-    // local-only caller → glyph is NOT blue (uses the neutral field-ty color).
-    expect(locGlyph?.getAttribute('fill')).not.toBe(BLUE_EXTERNAL);
+    // Non-vacuity: the local glyph is actually rendered (the row has an
+    // outgoing call) — then assert its exact neutral fill.
+    expect(locGlyph, 'local-only caller still renders a locality glyph').not.toBeNull();
+    expect(locGlyph?.getAttribute('fill')).toBe(NEUTRAL_LOCAL_GLYPH);
+  });
+
+  // CGA-RENDER-06b: the third locality branch. A caller whose only call is
+  // to an UNRESOLVED symbol renders the `→` glyph in orange (#f97316) and
+  // materializes NO call arrow (there is no workspace row to land on). This
+  // is the only coverage of the unresolved glyph branch in this area; the
+  // data classification is pinned separately by CGA-DATA-01.
+  it('CGA-RENDER-06b unresolved caller glyph is orange and no arrow is drawn', () => {
+    const { layout, zoom } = render(callInputs('unresolved'));
+    expect(layout.arrows.filter((a) => a.kind === 'call').length).toBe(0);
+    const glyph = zoom.querySelector('text.locality-glyph[fill]');
+    expect(glyph, 'unresolved caller still renders a locality glyph').not.toBeNull();
+    expect(glyph?.textContent).toBe('→');
+    expect(glyph?.getAttribute('fill')).toBe('#f97316');
   });
 });
 
@@ -320,7 +353,11 @@ describe('call-graph-arrows — edge picker affordances', () => {
     const row = document.querySelector('.edge-picker-row');
     row?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     expect(anchor).not.toBeNull();
-    expect(anchor).not.toEqual({ x: 100, y: 100 });
+    // Strong oracle: the anchor is the row rect's CENTER, not the opening
+    // anchor. jsdom getBoundingClientRect returns all-zero, so the center
+    // is exactly (0,0); a code path that reused the opening (100,100) or
+    // the raw rect.left/top would not produce this.
+    expect(anchor).toEqual({ x: 0, y: 0 });
   });
 
   // CGA-PICK-08: ESC dismisses; a capture-phase outside click dismisses; a

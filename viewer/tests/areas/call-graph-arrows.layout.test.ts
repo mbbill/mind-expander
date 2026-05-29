@@ -267,7 +267,17 @@ describe('call-graph-arrows — call Arrow routing (buildLayout end-to-end)', ()
     expect(callerRow, 'caller row present').toBeDefined();
     const first = arrow.waypoints[0];
     const second = arrow.waypoints[1];
+    const last = arrow.waypoints[arrow.waypoints.length - 1];
+    // Non-vacuity guard: the arrow's landing point (callee's left entry)
+    // is to the LEFT of the caller's right exit, so a shortest path WOULD
+    // exit left. Without this the "exits right" assertion could pass by
+    // luck on a callee that already sits to the right.
+    expect((last?.x ?? Number.POSITIVE_INFINITY) < (callerRow?.arrowSourceX ?? 0)).toBe(true);
+
     expect(first?.x).toBeCloseTo(callerRow?.arrowSourceX ?? Number.NaN, 1);
+    // Source endpoint sits at the caller row's own y — it really is the
+    // caller row's right port, not some other row's.
+    expect(first?.y).toBeCloseTo(callerRow?.y ?? Number.NaN, 1);
     // First segment goes RIGHT — the source-exit convention, not a shortest path.
     expect((second?.x ?? 0) > (first?.x ?? 0)).toBe(true);
   });

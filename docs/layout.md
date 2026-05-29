@@ -3,6 +3,38 @@
 This document records the intended direction for the graph layout. It is a
 short architecture guide, not a complete implementation spec.
 
+## Core Rules
+
+These four rules govern object placement. Everything below is detail in
+service of them; if a change conflicts with one of these, the change is wrong.
+
+1. **Depth orders left → right.** An owned item sits to the right of its
+   owner — greater LCA/ownership depth means further right. Ordering across
+   depth layers comes from actual forward predecessors, not from rank number
+   alone.
+
+2. **Same-depth items spread, they don't stack.** Items at the same depth are
+   distributed across columns so a depth layer never becomes one tall column
+   that eats the whole screen; the whole module band trends toward a 16:9
+   shape. Spreading is a physical-placement heuristic computed from item count
+   and stable order — never from measured or expanded box size.
+
+3. **Columns are fixed; expansion never reflows.** Each item's column and its
+   relative order are decided once from the collapsed/static facts and never
+   change. Expanding or collapsing an item changes only its own height (and
+   possibly width); it must not move that item to another column, reorder
+   anything, or push other items into different columns. An item may slide
+   right only to avoid overlap, keeping its column and order. Stability is the
+   point: one expansion must never trigger a large reshuffle, because that
+   makes interaction hard to track.
+
+4. **Objects have columns, not rows.** There is no row alignment between
+   objects — never align items across columns to a shared baseline (expanding
+   one column does not, and should not, drag a neighbouring column's items to
+   match it). The only "row" in the layout is the **module band** itself:
+   everything in a module stays within that module's horizontal band, and that
+   is the sole row concept.
+
 ## Core Principle
 
 Layout has two separate concerns:
@@ -69,8 +101,9 @@ Do not use measured or expanded box size to compute order or group
 assignment:
 
 - sort same-rank items by stable facts-derived order
-- choose a stable column/row assignment from the number of items and the
-  band-level 16:9 target shape
+- choose a stable column assignment from the number of items and the
+  band-level 16:9 target shape (columns only — objects are never aligned
+  into shared rows; see Core Rule 4)
 - keep that assignment stable when boxes expand or shrink
 - use measured rectangles only when finding the actual non-overlapping grid
   position for each assigned item
@@ -256,9 +289,10 @@ grid rectangles; free grid space becomes available routing space. This avoids
 one-off pixel gaps and makes routing easier to reason about.
 
 Module bands are y-axis ranges on the same grid. They split the global grid
-vertically, but they should not impose a separate row system inside the band.
-Items inside a module band may occupy as many grid rows as their snapped boxes
-need, and the band height is derived from the occupied grid height.
+vertically, but they should not impose a separate row system for objects
+inside the band (see Core Rule 4). Items inside a module band may span as many
+vertical grid cells as their snapped boxes need, and the band height is derived
+from the occupied grid height.
 
 Most placement and routing logic should use grid-cell indexes, not pixels:
 
