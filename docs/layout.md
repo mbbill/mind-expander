@@ -8,10 +8,21 @@ short architecture guide, not a complete implementation spec.
 These four rules govern object placement. Everything below is detail in
 service of them; if a change conflicts with one of these, the change is wrong.
 
-1. **Depth orders left → right.** An owned item sits to the right of its
-   owner — greater LCA/ownership depth means further right. Ordering across
-   depth layers comes from actual forward predecessors, not from rank number
-   alone.
+1. **Depth orders left → right, and placement is PREDECESSOR-relative, not
+   layer-relative.** Depth comes from LCA ownership: if `A` is the *only*
+   owner of `B`, then `B` is exactly one depth deeper than `A`, and `B` is
+   placed immediately to the right of **`A`** — NOT to the right of `A`'s
+   entire same-depth group.
+
+   *Why* (this is the rule that has regressed repeatedly): placement exists to
+   serve arrow routing — a forward arrow must route left→right — and the only
+   forward arrow into `B` is `A → B`. The other items in `A`'s depth carry no
+   arrow to `B`, so they impose **no** constraint on `B`'s position. When
+   `A`'s depth spreads wide (the 16:9 rule), pushing `B` to the right of the
+   widest item in `A`'s group is pointless: there is no arrow from those items
+   to `B` that could route backward. An item's leftward floor is the right
+   edge of its **actual forward predecessor(s) only** — never a whole-depth /
+   whole-rank frontier.
 
 2. **Same-depth items spread, they don't stack.** Items at the same depth are
    distributed across columns so a depth layer never becomes one tall column
