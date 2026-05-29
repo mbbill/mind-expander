@@ -1057,15 +1057,15 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
           104,
         ],
         [
-          359,
+          343,
           104,
         ],
         [
-          359,
+          343,
           84,
         ],
         [
-          371,
+          355,
           84,
         ],
       ],
@@ -1138,7 +1138,7 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
     },
     {
       "box": [
-        371,
+        355,
         72,
         96,
         24,
@@ -1148,7 +1148,7 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "height": 24,
       "id": "c::core::Cylinder",
       "width": 96,
-      "x": 371,
+      "x": 355,
       "y": 84,
     },
     {

@@ -87,6 +87,12 @@ interface PreviousFragmentContext {
 interface DisplayGroupTrack {
   readonly regionId: string;
   readonly groupOrder: number;
+  // The rank this display group belongs to. A group only floors a LATER group
+  // in the SAME rank (same-depth 16:9 spreading); it must never floor a group
+  // in a deeper rank, or it becomes a cross-rank layer wall (docs/layout.md
+  // Core Rule 1 — inter-rank placement is predecessor-relative, not
+  // layer-relative).
+  readonly rankOrder: number;
   readonly leftCol: number;
   readonly rightCol: number;
 }
@@ -208,8 +214,16 @@ function placeOneItem(
   const hasEstablishedGroupTrack = groupTracks.byRegionGroup.has(
     regionGroupKey(regionIdForItem(item), item.groupOrder),
   );
+  // Search column-major (try every row at the floor column before moving
+  // right) when the item is anchored to a column — either an established
+  // display-group track OR a forward predecessor. A predecessor-floored item
+  // must pack DOWN at its owner's column, never slide RIGHT past unrelated
+  // same-depth items (docs/layout.md Core Rule 1 + "expansion pushes down
+  // before sideways"). Items with no anchor (a fresh rank-0 spreading group)
+  // keep the row-major search so a new group finds its column to the right.
+  const columnMajor = hasEstablishedGroupTrack || item.predecessorIds.length > 0;
 
-  if (hasEstablishedGroupTrack) {
+  if (columnMajor) {
     // Established display groups are true column tracks: every item in the
     // group first tries the same x, while the next group starts after the
     // widest item seen in this group.
@@ -421,7 +435,12 @@ function minimumLeftColForItem(
     maxRightEdge(predecessorContexts(item.predecessorIds, placedItems, groupExtraOffsets)) +
     groupExtraOffset;
   const currentTrack = groupTracks.byRegionGroup.get(regionGroupKey(regionId, item.groupOrder));
-  const previousTrack = nearestPreviousDisplayGroupTrack(regionId, item.groupOrder, groupTracks);
+  const previousTrack = nearestPreviousDisplayGroupTrack(
+    regionId,
+    item.groupOrder,
+    item.rankOrder,
+    groupTracks,
+  );
   // Display groups are stable tracks from the shape planner, not row-local
   // packing hints. The first placed item defines the track; later lower/wider
   // items are handled as collisions so expansion pushes down before sideways.
@@ -458,12 +477,28 @@ function rankLayerFloorForItem(
     return 0;
   }
 
+  // The LCA layer gap is PREDECESSOR-relative, not layer-relative
+  // (docs/layout.md Core Rule 1): an item's leftward floor comes only from
+  // its ACTUAL forward predecessors' right edges — never from every item in
+  // an earlier depth. Floor only against placed items that are this item's
+  // forward predecessors (same membership test as `predecessorContexts`).
+  // With no forward predecessor, no inter-rank floor applies (the band origin
+  // / fn-column floor governs), because no arrow points at this item that
+  // could route backward.
+  const predecessorIdSet = new Set(item.predecessorIds);
+  if (predecessorIdSet.size === 0) {
+    return 0;
+  }
+
   const localClearanceBounds = boundsOf(item.fragments.map((fragment) => fragment.clearance));
   const leftClearanceCells = Math.max(0, localOwnBounds.col - localClearanceBounds.col);
   let floor = 0;
 
   for (const placed of placedItems) {
     if (placed.rankOrder < firstRankLayerOrder || placed.rankOrder >= item.rankOrder) {
+      continue;
+    }
+    if (!predecessorIdSet.has(placed.id) && !predecessorIdSet.has(placed.ownerId)) {
       continue;
     }
     for (const fragment of placed.fragments) {
@@ -512,12 +547,21 @@ function predecessorContexts(
 function nearestPreviousDisplayGroupTrack(
   regionId: string,
   groupOrder: number,
+  rankOrder: number,
   groupTracks: DisplayGroupTracks,
 ): DisplayGroupTrack | null {
   let previous: DisplayGroupTrack | null = null;
 
   for (const track of groupTracks.byRegionGroup.values()) {
     if (track.regionId !== regionId) {
+      continue;
+    }
+    // Same-rank only: a display group is floored to the right of an earlier
+    // group at the SAME depth (16:9 spreading). A group in a shallower rank
+    // must NOT floor this one — that is the cross-rank layer wall a target's
+    // forward predecessors are responsible for, not the previous rank's
+    // widest group.
+    if (track.rankOrder !== rankOrder) {
       continue;
     }
     if (track.groupOrder >= groupOrder) {
@@ -568,6 +612,7 @@ function rememberDisplayGroupTrack(
   groupTracks.set(key, {
     regionId: item.regionId,
     groupOrder: item.groupOrder,
+    rankOrder: item.rankOrder,
     leftCol: ownBounds.col - groupExtraOffset,
     rightCol: clearanceBounds.col + clearanceBounds.cols - groupExtraOffset,
   });

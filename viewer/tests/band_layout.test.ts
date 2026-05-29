@@ -156,13 +156,17 @@ describe('layout one-module band layout', () => {
   });
 
   it('threads placement extra gaps without changing band shape assignment', () => {
-    const input = [item('A', rankDepth(0)), item('B', rankDepth(1))];
+    // Two items in ONE depth bucket spread into two same-rank display groups
+    // (band_shape rankOrderForBucket gives them a shared rankOrder). The extra
+    // gap is a same-rank spreading channel, so group 1 (B) sits to the right of
+    // group 0 (A) and the gap widens that track by its cells.
+    const input = [item('A', rankDepth(1)), item('B', rankDepth(1))];
     const base = layoutOneModuleBand(input, {
-      shapeStrategy: () => [1, 1],
+      shapeStrategy: () => [2],
       placementOptions: { maxCols: 60, maxRows: 20 },
     });
     const spaced = layoutOneModuleBand(input, {
-      shapeStrategy: () => [1, 1],
+      shapeStrategy: () => [2],
       placementOptions: {
         maxCols: 60,
         maxRows: 20,

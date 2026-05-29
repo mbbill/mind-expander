@@ -35,18 +35,14 @@ describe('layout ownership-DAG placement — regression suite', () => {
     return computeGeometry({ ...buildInputs(c, edges, ['c', 'c::m']), measureText: measure });
   }
 
-  // SUSPECTED BUG / design decision (parked pending a call): the current
-  // placer uses a LAYER model — the whole depth-0 block is laid out, then
-  // depth-1 starts to its right. So a single-owner Target is pushed past ALL
-  // unrelated rank-0 types: with 1 unrelated type Target lands at col 15
-  // (offset 120 from its owner), with 24 it lands at col 105 (offset 840),
-  // while the owner stays at col 0. docs/layout.md ("should not be pushed
-  // after unrelated types that merely have smaller ranks") wants Target near
-  // its owner regardless of unrelated count — the predecessor-frontier model.
-  // This is the sf-nano GlobalInst/GlobalCell regression. Fixing it is a
-  // placement-algorithm change, so the strong oracle is skipped (not asserted
-  // red) until the layer-vs-predecessor model is decided.
-  it.skip('keeps a single-owner target next to its owner, independent of unrelated rank-0 types', () => {
+  // Acceptance test for the predecessor-relative placement fix
+  // (grid_placement.ts): a single-owner target is floored by its OWNER, not by
+  // the whole rank-0 block, and packs down at the owner's column rather than
+  // sliding right past unrelated same-depth types. Before the fix this landed
+  // at col 105 with 24 unrelated types (offset 840); now it stays next to its
+  // owner (offset constant) for any unrelated count. (sf-nano
+  // GlobalInst/GlobalCell regression.)
+  it('keeps a single-owner target next to its owner, independent of unrelated rank-0 types', () => {
     const few = nearOwner(1);
     const many = nearOwner(24);
 

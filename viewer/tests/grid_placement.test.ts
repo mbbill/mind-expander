@@ -54,8 +54,9 @@ function singleFragmentItem(
   indexInGroup: number,
   own: GridRect,
   clearance: Clearance = NONE,
+  rankOrder = groupOrder,
 ): GridPlacementItem {
-  return item(id, groupOrder, indexInGroup, [fragment(id, 'main', own, clearance)]);
+  return item(id, groupOrder, indexInGroup, [fragment(id, 'main', own, clearance)], rankOrder);
 }
 
 function inRegion(item: GridPlacementItem, regionId: string): GridPlacementItem {
@@ -114,11 +115,14 @@ describe('layout grid placement', () => {
   it('keeps later display groups on rightward tracks instead of backfilling under earlier groups', () => {
     const result = placeGridItemsTopToBottom(
       [
-        singleFragmentItem('group0:narrow-top', 0, 0, rect(0, 0, 2, 1), NONE),
-        singleFragmentItem('group0:wide-lower', 0, 1, rect(0, 0, 14, 2), NONE),
-        singleFragmentItem('group1:top', 1, 0, rect(0, 0, 2, 1), NONE),
-        singleFragmentItem('group2:top', 2, 0, rect(0, 0, 2, 1), NONE),
-        singleFragmentItem('group6:top', 6, 0, rect(0, 0, 2, 1), NONE),
+        // All groups spread from one depth bucket, so they share a single
+        // rankOrder (band_shape rankOrderForBucket); same-rank spreading floors
+        // later groups onto rightward tracks.
+        singleFragmentItem('group0:narrow-top', 0, 0, rect(0, 0, 2, 1), NONE, 0),
+        singleFragmentItem('group0:wide-lower', 0, 1, rect(0, 0, 14, 2), NONE, 0),
+        singleFragmentItem('group1:top', 1, 0, rect(0, 0, 2, 1), NONE, 0),
+        singleFragmentItem('group2:top', 2, 0, rect(0, 0, 2, 1), NONE, 0),
+        singleFragmentItem('group6:top', 6, 0, rect(0, 0, 2, 1), NONE, 0),
       ],
       { maxCols: 32, maxRows: 12 },
     );
@@ -136,10 +140,11 @@ describe('layout grid placement', () => {
   it('aligns all same-display-group items on the computed group column', () => {
     const result = placeGridItemsTopToBottom(
       [
-        singleFragmentItem('group0:narrow-top', 0, 0, rect(0, 0, 2, 1), NONE),
-        singleFragmentItem('group0:wide-lower', 0, 1, rect(0, 0, 13, 3), NONE),
-        singleFragmentItem('group1:first', 1, 0, rect(0, 0, 2, 1), NONE),
-        singleFragmentItem('group1:second', 1, 1, rect(0, 0, 2, 1), NONE),
+        // Same depth bucket spread into two display groups: shared rankOrder.
+        singleFragmentItem('group0:narrow-top', 0, 0, rect(0, 0, 2, 1), NONE, 0),
+        singleFragmentItem('group0:wide-lower', 0, 1, rect(0, 0, 13, 3), NONE, 0),
+        singleFragmentItem('group1:first', 1, 0, rect(0, 0, 2, 1), NONE, 0),
+        singleFragmentItem('group1:second', 1, 1, rect(0, 0, 2, 1), NONE, 0),
       ],
       { maxCols: 24, maxRows: 12 },
     );
@@ -172,9 +177,11 @@ describe('layout grid placement', () => {
   it('uses previous display-group max width for later rank placement', () => {
     const result = placeGridItemsTopToBottom(
       [
-        singleFragmentItem('unrelated:narrow-top', 0, 0, rect(0, 0, 2, 1), NONE),
-        singleFragmentItem('unrelated:wide-lower', 0, 1, rect(0, 0, 10, 1), NONE),
-        item('later:unblocked', 1, 0, [fragment('later:unblocked', 'main', rect(0, 0, 2, 1))], 4),
+        // Later display group at the SAME depth/rank as the earlier group:
+        // its column comes from the previous same-rank group's max width.
+        singleFragmentItem('unrelated:narrow-top', 0, 0, rect(0, 0, 2, 1), NONE, 0),
+        singleFragmentItem('unrelated:wide-lower', 0, 1, rect(0, 0, 10, 1), NONE, 0),
+        item('later:unblocked', 1, 0, [fragment('later:unblocked', 'main', rect(0, 0, 2, 1))], 0),
       ],
       { maxCols: 32, maxRows: 4 },
     );
@@ -219,8 +226,10 @@ describe('layout grid placement', () => {
       }),
       'module:a',
     );
+    // The rank-layer gap is predecessor-relative: next-rank actually depends on
+    // lower-rank, so the inter-rank floor applies against its right edge.
     const nextRank = inRegion(
-      item('next-rank', 0, 0, [fragment('next-rank', 'main', rect(0, 0, 1, 1))], 1),
+      item('next-rank', 0, 0, [fragment('next-rank', 'main', rect(0, 0, 1, 1))], 1, ['lower-rank']),
       'module:b',
     );
 
@@ -252,12 +261,18 @@ describe('layout grid placement', () => {
       }),
       'module:a',
     );
+    // Predecessor links so the inter-rank floor (max of rank gap vs clearance)
+    // applies against each item's actual forward predecessor.
     const afterLow = inRegion(
-      item('after-low', 0, 0, [fragment('after-low', 'main', rect(0, 0, 1, 1))], 1),
+      item('after-low', 0, 0, [fragment('after-low', 'main', rect(0, 0, 1, 1))], 1, [
+        'low-clearance',
+      ]),
       'module:b',
     );
     const afterWide = inRegion(
-      item('after-wide', 0, 0, [fragment('after-wide', 'main', rect(0, 0, 1, 1))], 1),
+      item('after-wide', 0, 0, [fragment('after-wide', 'main', rect(0, 0, 1, 1))], 1, [
+        'wide-clearance',
+      ]),
       'module:b',
     );
 
@@ -337,10 +352,12 @@ describe('layout grid placement', () => {
   });
 
   it('is deterministic and does not consume previous physical positions', () => {
+    // a/b/c share one depth bucket's rankOrder; c is a later same-rank group
+    // floored right of b's width.
     const input = [
       singleFragmentItem('a', 0, 0, rect(0, 0, 2, 2)),
       singleFragmentItem('b', 0, 1, rect(0, 0, 3, 1)),
-      singleFragmentItem('c', 1, 0, rect(0, 0, 1, 1)),
+      singleFragmentItem('c', 1, 0, rect(0, 0, 1, 1), NONE, 0),
     ];
 
     const first = placeGridItemsTopToBottom(input, { maxCols: 10, maxRows: 10 });
@@ -370,8 +387,9 @@ describe('layout grid placement', () => {
   it('applies an x afterOrder extra gap as physical spacing for later groups', () => {
     const result = placeGridItemsTopToBottom(
       [
-        singleFragmentItem('left', 0, 0, rect(0, 0, 2, 1)),
-        singleFragmentItem('right', 1, 0, rect(0, 0, 2, 1)),
+        // Same-rank spreading groups; the extra gap widens the rightward track.
+        singleFragmentItem('left', 0, 0, rect(0, 0, 2, 1), NONE, 0),
+        singleFragmentItem('right', 1, 0, rect(0, 0, 2, 1), NONE, 0),
       ],
       {
         maxCols: 20,
@@ -392,9 +410,10 @@ describe('layout grid placement', () => {
   it('accumulates multiple prior x afterOrder extra gaps in group coordinates', () => {
     const result = placeGridItemsTopToBottom(
       [
-        singleFragmentItem('first', 0, 0, rect(0, 0, 1, 1)),
-        singleFragmentItem('second', 1, 0, rect(0, 0, 1, 1)),
-        singleFragmentItem('third', 2, 0, rect(0, 0, 1, 1)),
+        // Three same-rank spreading groups; gaps accumulate along the tracks.
+        singleFragmentItem('first', 0, 0, rect(0, 0, 1, 1), NONE, 0),
+        singleFragmentItem('second', 1, 0, rect(0, 0, 1, 1), NONE, 0),
+        singleFragmentItem('third', 2, 0, rect(0, 0, 1, 1), NONE, 0),
       ],
       {
         maxCols: 20,
@@ -414,9 +433,10 @@ describe('layout grid placement', () => {
   });
 
   it('does not encode extra gaps into fragment clearance or change group assignment', () => {
-    const left = singleFragmentItem('left', 0, 0, rect(0, 0, 2, 1));
+    const left = singleFragmentItem('left', 0, 0, rect(0, 0, 2, 1), NONE, 0);
     const rightFragment = fragment('right', 'main', rect(0, 0, 2, 1));
-    const right = item('right', 1, 0, [rightFragment]);
+    // Same-rank later group; the gap shifts its track without touching clearance.
+    const right = item('right', 1, 0, [rightFragment], 0);
 
     const result = placeGridItemsTopToBottom([left, right], {
       maxCols: 20,
