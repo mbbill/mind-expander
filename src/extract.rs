@@ -92,9 +92,9 @@ fn workspace_signature(entries: &mut [(String, i128, u64)]) -> u64 {
 /// cache root with the git worktrees (`crate::git_view`) so all of
 /// mind-expander's on-disk state lives under one tree.
 fn facts_cache_base() -> Option<PathBuf> {
-    crate::git_view::dirs_cache_dir()
+    crate::git_view::mind_expander_cache_dir()
         .ok()
-        .map(|base| base.join("mind-expander").join("facts"))
+        .map(|base| base.join("facts"))
 }
 
 /// Workspace cache file path. Workspaces are keyed by a hash of

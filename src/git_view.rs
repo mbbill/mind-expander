@@ -172,8 +172,7 @@ pub fn prune_worktrees(repo_root: &Path) -> Result<()> {
 /// `repo-id` is a sha1 of the repo root path so two checkouts of the
 /// same logical repo don't collide.
 pub fn worktree_cache_path(repo_root: &Path, head_sha: &str) -> Result<PathBuf> {
-    let base = dirs_cache_dir()?
-        .join("mind-expander")
+    let base = mind_expander_cache_dir()?
         .join("worktrees")
         .join(repo_hash(repo_root))
         .join(head_sha);
@@ -276,6 +275,20 @@ pub(crate) fn dirs_cache_dir() -> Result<PathBuf> {
         }
     }
     dirs::cache_dir().ok_or_else(|| anyhow!("cannot locate a cache directory"))
+}
+
+/// The single subtree mind-expander itself writes into:
+/// `<cache>/mind-expander/` (parent of both `worktrees/` and `facts/`).
+///
+/// The working-tree watcher excludes THIS, not the whole OS cache root,
+/// as its self-feedback guard: re-extraction only ever writes here, so
+/// this is exactly the set of paths a re-extract can touch. Excluding
+/// the entire `dirs_cache_dir()` is both unnecessary and wrong on
+/// Windows, where `%LOCALAPPDATA%` is an ancestor of `%LOCALAPPDATA%\
+/// Temp` and of any workspace a user keeps under it — those edits would
+/// be silently ignored.
+pub(crate) fn mind_expander_cache_dir() -> Result<PathBuf> {
+    Ok(dirs_cache_dir()?.join("mind-expander"))
 }
 
 #[cfg(test)]

@@ -44,8 +44,8 @@ use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 use crate::diff::{diff_file, DiffOutcome};
 use crate::git_view::{
-    dirs_cache_dir, find_repo_root, materialize_head, prune_worktrees, resolve_sha, show_blob,
-    RevSpec,
+    find_repo_root, materialize_head, mind_expander_cache_dir, prune_worktrees, resolve_sha,
+    show_blob, RevSpec,
 };
 use crate::model::WorkspaceFacts;
 use crate::tour::{ingest, IngestErr, IngestOk, ResolveError, SpanIndex, Tour, TourQueue};
@@ -500,10 +500,15 @@ fn watch_worker(
     state: Arc<AppState>,
     rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
 ) {
-    // Canonicalize the ignored cache dir once so the per-event filter
-    // can compare canonical-against-canonical. Best-effort: if it can't
-    // be resolved, fall back to a path that never matches.
-    let cache_dir = dirs_cache_dir()
+    // Canonicalize mind-expander's own cache subtree once so the
+    // per-event filter can compare canonical-against-canonical. This is
+    // the ONLY tree a re-extract writes into, so excluding it is the
+    // exact self-feedback guard — excluding the whole OS cache root
+    // would also swallow real edits on Windows, where `%LOCALAPPDATA%`
+    // is an ancestor of `%LOCALAPPDATA%\Temp` and user workspaces.
+    // Best-effort: if it can't be resolved, fall back to a path that
+    // never matches.
+    let cache_dir = mind_expander_cache_dir()
         .ok()
         .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)));
 
