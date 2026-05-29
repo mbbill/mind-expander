@@ -1,16 +1,23 @@
 # PR + main-branch test pipeline.
 #
-# Runs on every push to main and every pull request. Fast: one
-# ubuntu-latest runner doing cargo + viewer tests in sequence. The
-# heavy cross-compile matrix lives in release.yml and only fires on
-# tag pushes.
+# Runs on every push to main and every pull request.
 #
-# What's verified:
-#   - Rust: cargo build --release + cargo test (all 56 tests)
-#   - Viewer: vitest suite (340 tests)
-#   - Lint hygiene: cargo fmt --check + cargo clippy -D warnings
+# Job layout:
+#   - rust-test: cargo test on ubuntu + windows + macOS. The matrix
+#     exists specifically because behavior diverges per OS: the
+#     working-tree watcher uses a different `notify` backend on each
+#     (inotify / ReadDirectoryChangesW / FSEvents), and path handling
+#     (separators, canonicalize's UNC form) is platform-sensitive. A
+#     single-OS run cannot prove the watcher or `live_reload` test
+#     behaves everywhere — a Linux-only inotify race already slipped
+#     through once when this was ubuntu-only.
+#   - lint: cargo fmt + clippy. Platform-independent, so ubuntu-only.
+#   - viewer: vitest. Pure JS, so ubuntu-only.
 #
-# Cached: cargo target, viewer node_modules.
+# The heavy release cross-compile matrix lives in release.yml and only
+# fires on tag pushes.
+#
+# Cached: cargo target (per-OS via rust-cache), viewer node_modules.
 
 name: ci
 
@@ -27,8 +34,34 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  rust:
-    name: rust build + test
+  rust-test:
+    name: rust test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # See all platforms' results rather than cancelling siblings on
+      # the first failure — a platform-specific break is the whole
+      # reason this matrix exists.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      # rust-cache keys on the runner OS automatically, so each matrix
+      # leg gets its own cache.
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        # build.rs runs `npm install && npm run build` in viewer/ to
+        # bake viewer/dist into the binary via include_dir!. Without
+        # Node on the runner, every cargo command fails at the build
+        # script.
+        with:
+          node-version: '20'
+      - name: cargo test
+        run: cargo test --all-targets
+
+  lint:
+    name: rust lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -37,10 +70,6 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v5
-        # build.rs in this crate runs `npm install && npm run build`
-        # in viewer/ to bake viewer/dist into the binary via
-        # include_dir!. Without Node on the runner, every cargo
-        # command fails at the build script.
         with:
           node-version: '20'
       - name: cargo fmt --check
@@ -51,8 +80,6 @@ jobs:
         # those are cleaned up, tighten to `-- -D warnings` so any
         # new lint regression breaks the build.
         run: cargo clippy --all-targets
-      - name: cargo test
-        run: cargo test --all-targets
 
   viewer:
     name: viewer test
