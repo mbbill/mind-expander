@@ -208,14 +208,16 @@ test('"s" resets the scale to 100% after a zoom', async ({ page }) => {
   await shiftWheelZoom(page, cx, cy, -100, 4);
   expect(await readZoomScale(page), 'scale rose above 100% from the zoom').toBeGreaterThan(1.01);
 
-  // The real `s` global shortcut → resetScale(1), animated.
+  // The real `s` global shortcut → resetScale(1), animated. Poll until the
+  // scale actually reaches ~1 rather than settleZoom (which can return on
+  // the first stable frame — before the reset tween starts — and read the
+  // pre-reset value, which flaked on the slower CI runner).
   await pressGlobalKey(page, 's' satisfies GlobalKey);
-  await settleZoom(page);
-
-  // Oracle: scale is back to 100%. `s` is documented to reset scale (the
-  // data point under the viewport centre is preserved); we assert the
-  // scale, which is its contract.
-  expect(await readZoomScale(page)).toBeCloseTo(1, 2);
+  await expect
+    .poll(async () => Math.abs((await readZoomScale(page)) - 1) < 1e-2, {
+      message: '`s` resets scale to 100%',
+    })
+    .toBe(true);
 });
 
 test('shift+wheel zoom keeps the point under the cursor fixed (anchored zoom)', async ({ page }) => {
