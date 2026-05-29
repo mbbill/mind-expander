@@ -182,3 +182,162 @@ export function pointInRect(pt: { x: number; y: number }, rect: Rect, margin = 0
     pt.y <= rect.y + rect.height + margin
   );
 }
+
+// ── Global keyboard shortcuts ────────────────────────────────────────
+// The viewer registers ONE keydown listener on `window` (see
+// src/main.ts): it early-returns when any of meta/ctrl/alt is held, uses
+// `e.code === 'Space'` for the overview toggle (ignoring auto-repeat),
+// and `e.key` for the single-letter shortcuts f/m/c/s/r/t/?. These
+// helpers dispatch a faithful KeyboardEvent so specs exercise the real
+// handler instead of clicking the chips — the keydown path is the
+// behavior under test.
+
+/** The single-character global shortcuts the viewer's window keydown
+ *  handler recognises. `Space` is dispatched via `code`, the rest via
+ *  `key` (see `pressGlobalKey`). */
+export type GlobalKey = 'f' | 'm' | 'c' | 's' | 'r' | 't' | '?' | 'Space';
+
+/** Dispatch a `window` keydown for one of the viewer's global
+ *  shortcuts, matching the handler's dispatch contract exactly:
+ *    • `Space` → `{ code: 'Space' }` (the handler keys off `e.code`).
+ *    • everything else → `{ key }` (the handler keys off `e.key`).
+ *  No modifier keys are set, so the handler's `metaKey/ctrlKey/altKey`
+ *  guard never trips — the shortcut always fires. Bubbles + cancelable
+ *  so `preventDefault()` (used by the Space branch) behaves as in a real
+ *  press. Returns once the synchronous handler has run. */
+export async function pressGlobalKey(page: Page, key: GlobalKey): Promise<void> {
+  await page.evaluate((k) => {
+    const init: KeyboardEventInit =
+      k === 'Space'
+        ? { code: 'Space', key: ' ', bubbles: true, cancelable: true }
+        : { key: k, bubbles: true, cancelable: true };
+    window.dispatchEvent(new KeyboardEvent('keydown', init));
+  }, key);
+}
+
+// ── Viewport transform / zoom reader ─────────────────────────────────
+// The viewer does NOT expose the d3.zoom transform on `window`; the
+// authoritative copy lives on the zoom layer's SVG `transform`
+// attribute, written on every zoom event as `translate(x,0) scale(k)`
+// (vertical pan is delivered through native scrollTop, NOT the SVG
+// transform — see src/view/zoom.ts). Reading the attribute therefore
+// gives the true horizontal pan `x` and scale `k`; `y` is intentionally
+// always 0 in the SVG transform and is not recoverable here.
+
+export interface ZoomTransform {
+  /** Horizontal pan in screen px (the `translate(x, …)` term). */
+  x: number;
+  /** Current zoom scale `k` (the `scale(k)` term). 1 = 100%. */
+  k: number;
+}
+
+/** Read the live viewport transform off the zoom layer's `transform`
+ *  attribute — the same value the renderer projects the canvas through,
+ *  so a spec asserts against what the user actually sees rather than a
+ *  re-derivation. Returns `{ x: 0, k: 1 }` (identity) when the layer has
+ *  no transform yet. Note `y` is not represented here: vertical pan is
+ *  native scroll, not part of the SVG transform. */
+export async function readZoomTransform(page: Page): Promise<ZoomTransform> {
+  return page.evaluate(() => {
+    const layer = document.querySelector('#tree g.zoom-layer');
+    const attr = layer?.getAttribute('transform') ?? '';
+    const t = /translate\(\s*([-\d.eE]+)/.exec(attr);
+    const s = /scale\(\s*([-\d.eE]+)/.exec(attr);
+    return {
+      x: t !== null ? Number(t[1]) : 0,
+      k: s !== null ? Number(s[1]) : 1,
+    };
+  });
+}
+
+/** Convenience reader for just the current zoom scale `k`
+ *  (1 = 100%). Thin wrapper over `readZoomTransform`. */
+export async function readZoomScale(page: Page): Promise<number> {
+  return (await readZoomTransform(page)).k;
+}
+
+// ── Chrome affordances (legend / keyhints / minimap) ─────────────────
+// Each affordance hides itself with the `hidden` attribute (see
+// index.html + src/main.ts). These readers report open state by
+// inspecting that attribute on the real elements the handlers toggle, so
+// they track the shipped wiring rather than duplicating it.
+
+/** True when the legend / shortcuts modal (`#legend-modal`, toggled by
+ *  the `?` key) is open. */
+export async function isLegendOpen(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#legend-modal');
+    return el !== null && el.hidden === false;
+  });
+}
+
+/** True when the keyboard-shortcut chip list (`#keyhints-chips`, toggled
+ *  by the corner keyboard-emoji button — mouse only, no key binding) is
+ *  visible. */
+export async function areKeyhintsChipsVisible(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#keyhints-chips');
+    return el !== null && el.hidden === false;
+  });
+}
+
+/** Click the mouse-only keyhints toggle button (`.keyhints-toggle`) —
+ *  there is deliberately no keyboard shortcut for the chip list. */
+export async function clickKeyhintsToggle(page: Page): Promise<void> {
+  await page.locator('.keyhints-toggle').click();
+}
+
+/** True when the minimap body (`#minimap-body`) is expanded. The minimap
+ *  collapses to just its toggle header; the body carries the `hidden`
+ *  attribute. */
+export async function isMinimapBodyVisible(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#minimap-body');
+    return el !== null && el.hidden === false;
+  });
+}
+
+/** Click the minimap collapse/expand toggle (`.minimap-toggle`). */
+export async function clickMinimapToggle(page: Page): Promise<void> {
+  await page.locator('.minimap-toggle').click();
+}
+
+// ── Code panel ───────────────────────────────────────────────────────
+// The code panel (`#code-panel`) is a flex sibling docked on the right;
+// `hidden` toggles it and `style.width` carries its current width (the
+// left-edge splitter `.code-panel-resize-l` drives resize). The `C`
+// global key opens/closes it.
+
+/** True when the right-docked source code panel (`#code-panel`) is open. */
+export async function isCodePanelOpen(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#code-panel');
+    return el !== null && el.hidden === false;
+  });
+}
+
+/** Toggle the code panel via the real `C` global shortcut (open if
+ *  closed, close if open) — exercises the same keydown path a user
+ *  hits, including the selection-aware open logic in main.ts. */
+export async function openCodeViaKey(page: Page): Promise<void> {
+  await pressGlobalKey(page, 'c');
+}
+
+/** Current rendered width of the code panel in px (its
+ *  getBoundingClientRect width), or null when the panel is closed. Use
+ *  for resize assertions — read before and after a splitter drag. */
+export async function codePanelWidth(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#code-panel');
+    if (el === null || el.hidden) return null;
+    return el.getBoundingClientRect().width;
+  });
+}
+
+/** The code panel's left-edge resize splitter locator
+ *  (`.code-panel-resize-l`). Drag it to change the panel width;
+ *  dragging left grows the panel. Exposed so resize specs can drive a
+ *  real pointer drag against the actual splitter element. */
+export function codePanelResizeHandle(page: Page): ReturnType<Page['locator']> {
+  return page.locator('#code-panel .code-panel-resize-l');
+}
