@@ -1,0 +1,7 @@
+[package]
+name = "tb_fixture"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"

@@ -9,11 +9,14 @@
 // element/attribute contract live in ONE place so a renderer change
 // updates every spec through this module.
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { test as base, expect, type Page } from '@playwright/test';
+import { createInterface } from 'node:readline';
+import type { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+import { type Page, test as base, expect } from '@playwright/test';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // Built by the CI job (or locally via `cargo build`). Overridable so CI
@@ -22,12 +25,22 @@ const BIN = process.env.MIND_EXPANDER_BIN ?? path.resolve(HERE, '../../target/de
 const WORKSPACE = path.resolve(HERE, 'fixture-workspace');
 const READY_TIMEOUT_MS = 30_000;
 
-/** Spawn `view <fixture> --port 0` and resolve the bound URL from the
- *  `ready` JSON line the server prints to stdout. */
-function startServer(): Promise<{ url: string; child: ChildProcessWithoutNullStreams }> {
-  const child = spawn(BIN, ['view', WORKSPACE, '--port', '0'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+// The `view` children are spawned with stdio `['ignore','pipe','pipe']`,
+// so stdin is null and stdout/stderr are readable pipes. A minimal
+// structural type captures exactly what the ready-parse + teardown need
+// (a readable stdout, an error event, and kill), without pulling in the
+// ChildProcessWithoutNullStreams shape that doesn't match an ignored
+// stdin.
+interface SpawnedServer {
+  readonly stdout: Readable;
+  on(event: 'error', listener: (err: Error) => void): unknown;
+  kill(signal?: NodeJS.Signals | number): boolean;
+}
+
+/** Resolve the bound URL from the `ready` JSON line a freshly-spawned
+ *  `view` child prints to stdout. Shared by every server-spawn helper
+ *  (plain fixture + diff repo) so the ready-line contract lives once. */
+function waitForReady(child: SpawnedServer): Promise<string> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill();
@@ -39,7 +52,7 @@ function startServer(): Promise<{ url: string; child: ChildProcessWithoutNullStr
         const ev = JSON.parse(line) as { event?: string; url?: string };
         if (ev.event === 'ready' && typeof ev.url === 'string') {
           clearTimeout(timer);
-          resolve({ url: ev.url, child });
+          resolve(ev.url);
         }
       } catch {
         // Non-JSON banner line (e.g. "Extracting facts…") — ignore.
@@ -50,6 +63,16 @@ function startServer(): Promise<{ url: string; child: ChildProcessWithoutNullStr
       reject(e);
     });
   });
+}
+
+/** Spawn `view <fixture> --port 0` and resolve the bound URL from the
+ *  `ready` JSON line the server prints to stdout. */
+async function startServer(): Promise<{ url: string; child: SpawnedServer }> {
+  const child = spawn(BIN, ['view', WORKSPACE, '--port', '0'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const url = await waitForReady(child);
+  return { url, child };
 }
 
 export const test = base.extend<object, { viewerURL: string }>({
@@ -138,7 +161,9 @@ export async function typeBoxRect(page: Page, typeFullPath: string): Promise<Rec
 /** All rendered type-box ids currently in the DOM. */
 export async function typeBoxIds(page: Page): Promise<string[]> {
   return page.evaluate(() =>
-    [...document.querySelectorAll('g.type-box')].map((b) => b.getAttribute('data-element-id') ?? ''),
+    [...document.querySelectorAll('g.type-box')].map(
+      (b) => b.getAttribute('data-element-id') ?? '',
+    ),
   );
 }
 
@@ -340,4 +365,542 @@ export async function codePanelWidth(page: Page): Promise<number | null> {
  *  real pointer drag against the actual splitter element. */
 export function codePanelResizeHandle(page: Page): ReturnType<Page['locator']> {
   return page.locator('#code-panel .code-panel-resize-l');
+}
+
+// ── URL join ─────────────────────────────────────────────────────────
+// The server's `ready` line reports the base URL WITH a trailing slash
+// (`http://127.0.0.1:PORT/`). Naive `url + '/api/...'` produces a double
+// slash that the axum router does NOT match — it falls through to the
+// SPA static fallback and returns index.html instead of JSON. Resolving
+// against the base via the URL constructor collapses the slash, so every
+// API helper below routes through this.
+
+/** Join an `/api/...` path onto the server base URL, collapsing the
+ *  trailing-slash double-slash that would otherwise miss the route. */
+export function apiUrl(base: string, apiPath: string): string {
+  return new URL(apiPath.replace(/^\//, ''), base).toString();
+}
+
+// ── Tour injection (POST /api/tour + SSE-rendered UI) ────────────────
+// The viewer receives tours over SSE (`/api/tour-events`) and replays
+// queued tours from `/api/tours` on load; either path surfaces the
+// `#tour-bar` pill (tour_bar.ts) and lets the player open the bubble
+// (tour_bubble.ts) / panel (tour_panel.ts). A tour step's `ref` is
+// resolved server-side against the span index, so `ref.file` MUST be a
+// real source file the server indexed — we read one from `/api/facts`
+// rather than guessing a path.
+
+/** Wire shape the server accepts at POST /api/tour. NOTE: the live
+ *  server requires `schema_version: 2` (see SCHEMA_VERSION in
+ *  src/tour.rs) — schema_version 1 is rejected with 422. */
+export interface TourStepInput {
+  readonly say: string;
+  /** Element reference. `line` is 1-based; omit to target the module. */
+  readonly ref?: { readonly file: string; readonly line?: number };
+}
+export interface TourInput {
+  readonly schema_version: 2;
+  readonly title?: string;
+  readonly steps: readonly TourStepInput[];
+}
+
+/** A real (file, line) pair pulled from the server's own facts, suitable
+ *  as a tour step `ref` — guaranteed to resolve server-side. */
+export interface FixtureRef {
+  /** Absolute path to a source file the server indexed. */
+  readonly file: string;
+  /** 1-based line of a known type declaration in that file. */
+  readonly line: number;
+  /** The type's canonical id (e.g. `e2e_fixture::core::Engine`), handy
+   *  for asserting selection / anchor against the resolved element. */
+  readonly typeId: string;
+}
+
+// Minimal slice of the /api/facts JSON this harness reads. The full
+// schema lives in the viewer (src/data/schema.ts); we keep an
+// intentionally narrow local shape so the harness doesn't couple to the
+// renderer's model.
+interface FactsSlice {
+  readonly crates: Record<
+    string,
+    {
+      readonly modules: Record<
+        string,
+        {
+          readonly file: string;
+          readonly types?: ReadonlyArray<{
+            readonly full_path: string;
+            readonly span?: { readonly file: string; readonly start_line: number };
+          }>;
+        }
+      >;
+    }
+  >;
+}
+
+/** Fetch `/api/facts` and return the first type declaration with a span
+ *  — its `{file, line, typeId}` is a ref the server will resolve. Throws
+ *  if the facts contain no spanned type (the fixture always has several,
+ *  so a throw means the server/fixture contract broke). */
+export async function fixtureTypeRef(url: string): Promise<FixtureRef> {
+  const res = await fetch(apiUrl(url, '/api/facts'));
+  const facts = (await res.json()) as FactsSlice;
+  for (const crate of Object.values(facts.crates)) {
+    for (const mod of Object.values(crate.modules)) {
+      for (const ty of mod.types ?? []) {
+        if (ty.span !== undefined) {
+          return { file: ty.span.file, line: ty.span.start_line, typeId: ty.full_path };
+        }
+      }
+    }
+  }
+  throw new Error('no spanned type in /api/facts — fixture/server contract changed');
+}
+
+/** Build a minimal valid 2-step tour over the fixture: a text-only
+ *  opener plus one step whose `ref` points at the given real type
+ *  (`fixtureTypeRef`). schema_version is pinned to 2 (the value the
+ *  live server accepts). */
+export function buildFixtureTour(ref: FixtureRef, title = 'E2E fixture tour'): TourInput {
+  return {
+    schema_version: 2,
+    title,
+    steps: [
+      { say: 'Welcome to the fixture tour.' },
+      { say: `This is **${ref.typeId}**.`, ref: { file: ref.file, line: ref.line } },
+    ],
+  };
+}
+
+/** POST a tour to the running server. Resolves to the parsed JSON body
+ *  ({status, tour_id} on 200; {status, errors} on 422) plus the HTTP
+ *  status, so a spec can assert acceptance AND surface resolver errors. */
+export async function postTour(
+  url: string,
+  tour: TourInput,
+): Promise<{ status: number; body: { status?: string; tour_id?: string; errors?: unknown[] } }> {
+  const res = await fetch(apiUrl(url, '/api/tour'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(tour),
+  });
+  const body = (await res.json()) as { status?: string; tour_id?: string; errors?: unknown[] };
+  return { status: res.status, body };
+}
+
+// ── Tour UI readers (tour_bar / tour_bubble / tour_panel) ────────────
+// These inspect the real DOM the tour modules build — `#tour-bar`
+// (tour_bar.ts), `.tour-bubble` (tour_bubble.ts), `.tour-panel`
+// (tour_panel.ts). They report observable state, never re-derive it.
+
+/** True when the "new tour" pill (`#tour-bar`) is visible — it un-hides
+ *  itself the moment the viewer receives its first tour. */
+export async function isTourBarVisible(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#tour-bar');
+    return el !== null && el.hidden === false;
+  });
+}
+
+/** The `#tour-bar` pill's text (e.g. `▶ new tour: <title>`), or null
+ *  when the bar isn't present. */
+export async function tourBarText(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#tour-bar');
+    return el === null ? null : (el.textContent ?? '');
+  });
+}
+
+/** Click the `#tour-bar` pill — opens the tour panel and starts the
+ *  newest tour (the bubble appears as a result). */
+export async function clickTourBar(page: Page): Promise<void> {
+  await page.locator('#tour-bar').click();
+}
+
+/** True when the tour bubble (`.tour-bubble`) is mounted — the player
+ *  builds it on start and removes it on stop, so presence == playing. */
+export async function isTourBubbleVisible(page: Page): Promise<boolean> {
+  return page.evaluate(() => document.querySelector('.tour-bubble') !== null);
+}
+
+/** Rendered body text of the tour bubble (the current step's `say`,
+ *  with markdown rendered to text), or null when no bubble is shown. */
+export async function tourBubbleText(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const body = document.querySelector<HTMLElement>('.tour-bubble .tour-bubble-body');
+    return body === null ? null : (body.textContent ?? '');
+  });
+}
+
+/** The bubble's step counter text (`"1 / 2"`), or null when no bubble. */
+export async function tourBubbleCounter(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const c = document.querySelector<HTMLElement>('.tour-bubble .tour-bubble-counter');
+    return c === null ? null : (c.textContent ?? '');
+  });
+}
+
+/** Advance the tour via the bubble's Next button (same path as the `N`
+ *  key). Throws via locator timeout if the bubble isn't shown. */
+export async function clickTourNext(page: Page): Promise<void> {
+  await page.locator('.tour-bubble .tour-bubble-next').click();
+}
+
+/** Step the tour back via the bubble's Prev button. */
+export async function clickTourPrev(page: Page): Promise<void> {
+  await page.locator('.tour-bubble .tour-bubble-prev').click();
+}
+
+/** Stop the tour via the bubble's Stop button (same path as Esc). */
+export async function clickTourStop(page: Page): Promise<void> {
+  await page.locator('.tour-bubble .tour-bubble-stop').click();
+}
+
+/** True when the tour-steps side panel (`.tour-panel`) is open. The
+ *  panel toggles via the `t` key (pressGlobalKey) or the tour-bar
+ *  click; it hides with the `hidden` attribute. */
+export async function isTourPanelOpen(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('.tour-panel');
+    return el !== null && el.hidden === false;
+  });
+}
+
+/** Per-row step text shown in the open tour panel body
+ *  (`.tour-panel-step-text`), top to bottom. Empty when no panel. */
+export async function tourPanelStepTexts(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('.tour-panel .tour-panel-step-text')].map(
+      (e) => e.textContent ?? '',
+    ),
+  );
+}
+
+// ── Diff / unified-mode server (mind-expander view --at HEAD..) ──────
+// Diff mode needs a real git repo with a committed baseline and a
+// working-tree edit so `--at HEAD..` produces a non-empty delta. We
+// build a throwaway crate in the OS temp dir, commit it, then mutate a
+// source file (add a struct field) so the head facts differ from base.
+// The server materializes a base worktree and reports `diff_enabled` /
+// `unified_mode` via /api/health; the viewer paints `.side-base` /
+// `.side-head` decorations + module rollup chips from /api/diff +
+// /api/changed-files.
+
+/** A live diff-mode server: its bound URL plus a `close()` that kills
+ *  the child and removes the temp repo. */
+export interface DiffServer {
+  readonly url: string;
+  close(): Promise<void>;
+}
+
+/** Build a throwaway git repo with a committed baseline + a working-tree
+ *  edit, spawn `view --at HEAD.. <repo> --port 0`, and return its URL.
+ *  The edit modifies `Engine` (adds a field → a Modified type with a
+ *  `data-side` rollup) AND adds a new `Gearbox` struct (a head-only type
+ *  with the `.side-head` class), so both diff decoration signals plus a
+ *  non-zero module rollup are observable in the viewer. */
+export async function startDiffServer(): Promise<DiffServer> {
+  const repo = mkdtempSync(path.join(tmpdir(), 'me-e2e-diff-'));
+  const git = (...args: string[]): void => {
+    execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+  };
+  mkdirSync(path.join(repo, 'src'), { recursive: true });
+  writeFileSync(
+    path.join(repo, 'Cargo.toml'),
+    '[package]\nname = "diff_fixture"\nversion = "0.0.0"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
+  );
+  writeFileSync(
+    path.join(repo, 'src/lib.rs'),
+    'pub mod core;\n\npub struct App {\n    pub engine: core::Engine,\n}\n',
+  );
+  writeFileSync(path.join(repo, 'src/core.rs'), 'pub struct Engine {\n    pub power: u32,\n}\n');
+  // Local identity only — `git commit` refuses without user.name/email
+  // and we must not depend on the runner's global config.
+  git('init', '-q');
+  git('config', 'user.email', 'e2e@example.com');
+  git('config', 'user.name', 'E2E Harness');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'baseline');
+  // Working-tree edit produces TWO kinds of delta so both diff signals
+  // are observable:
+  //   • `Engine` gains a field → a *Modified* type. Modified types carry
+  //     a `data-side` rollup attribute (`add` here) but NEITHER
+  //     `.side-base`/`.side-head` class (those mark base-only / head-only
+  //     types — see tree.ts).
+  //   • `Gearbox` is brand new → a *head-only* type that DOES get the
+  //     `.side-head` class.
+  // Either way the changed modules light up rollup chips.
+  writeFileSync(
+    path.join(repo, 'src/core.rs'),
+    'pub struct Engine {\n    pub power: u32,\n    pub torque: u32,\n}\n\npub struct Gearbox {\n    pub ratio: u32,\n}\n',
+  );
+
+  const child = spawn(BIN, ['view', repo, '--at', 'HEAD..', '--port', '0'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let url: string;
+  try {
+    url = await waitForReady(child);
+  } catch (e) {
+    child.kill();
+    rmSync(repo, { recursive: true, force: true });
+    throw e;
+  }
+  const close = async (): Promise<void> => {
+    child.kill();
+    rmSync(repo, { recursive: true, force: true });
+  };
+  return { url, close };
+}
+
+/** Worker-scoped diff-mode server fixture — the diff analogue of
+ *  `viewerURL`. Specs that need diff/unified mode pull `diffURL` and
+ *  `page.goto(diffURL)`; the temp repo is torn down at worker exit. */
+export const diffTest = base.extend<object, { diffURL: string }>({
+  diffURL: [
+    async ({}, use) => {
+      const server = await startDiffServer();
+      await use(server.url);
+      await server.close();
+    },
+    { scope: 'worker' },
+  ],
+});
+
+/** Shape of `/api/health` relevant to diff mode. */
+export interface HealthBody {
+  readonly status: string;
+  readonly diff_enabled: boolean;
+  readonly unified_mode: boolean;
+  readonly head_is_working_tree: boolean;
+  readonly base_workspace_root?: string;
+  readonly workspace_root: string;
+}
+
+/** Fetch and parse `/api/health`. In diff mode `diff_enabled` and
+ *  `unified_mode` are both true and `base_workspace_root` is present. */
+export async function fetchHealth(url: string): Promise<HealthBody> {
+  const res = await fetch(apiUrl(url, '/api/health'));
+  return (await res.json()) as HealthBody;
+}
+
+/** Fetch `/api/changed-files` — the per-file add/del counts that drive
+ *  the module rollup chips. Non-empty in diff mode. */
+export async function fetchChangedFiles(
+  url: string,
+): Promise<Array<{ path: string; adds: number; dels: number }>> {
+  const res = await fetch(apiUrl(url, '/api/changed-files'));
+  const body = (await res.json()) as { files: Array<{ path: string; adds: number; dels: number }> };
+  return body.files;
+}
+
+// ── Diff side decorations (DOM readers) ──────────────────────────────
+// In unified mode the SVG type boxes get `.side-base` / `.side-head`
+// classes and a `data-side` rollup attribute (tree.ts); the left HTML
+// tree gives module-groups `.side-{base|head|both}` and a
+// `.rollup-badge` with `.rb-add` / `.rb-del` counts (html_tree.ts).
+
+/** Count of rendered type boxes carrying each diff side class. A
+ *  non-zero total is the observable signal that diff decorations
+ *  rendered (vs. looking identical to normal mode). */
+export async function typeBoxSideCounts(page: Page): Promise<{ base: number; head: number }> {
+  return page.evaluate(() => ({
+    base: document.querySelectorAll('g.type-box.side-base').length,
+    head: document.querySelectorAll('g.type-box.side-head').length,
+  }));
+}
+
+/** The `data-side` rollup attribute of the type box with the given id
+ *  (`'add' | 'del' | 'split'`), or null when absent / unset. */
+export async function typeBoxRollupSide(page: Page, typeFullPath: string): Promise<string | null> {
+  return page.evaluate((id) => {
+    const el = document.querySelector(`g.type-box[data-element-id="${id}"]`);
+    return el === null ? null : el.getAttribute('data-side');
+  }, typeFullPath);
+}
+
+/** Module rollup chips in the left HTML tree, keyed by module data-id,
+ *  with their `+N` / `−M` badge text. Only modules whose subtree has a
+ *  non-zero delta get a `.rollup-badge`, so the returned map is the set
+ *  of changed modules the viewer surfaces. */
+export async function moduleRollupBadges(
+  page: Page,
+): Promise<Record<string, { add: string | null; del: string | null }>> {
+  return page.evaluate(() => {
+    const out: Record<string, { add: string | null; del: string | null }> = {};
+    for (const group of document.querySelectorAll<HTMLElement>('.module-group')) {
+      const id = group.getAttribute('data-id');
+      const badge = group.querySelector('.rollup-badge');
+      if (id === null || badge === null) continue;
+      out[id] = {
+        add: badge.querySelector('.rb-add')?.textContent ?? null,
+        del: badge.querySelector('.rb-del')?.textContent ?? null,
+      };
+    }
+    return out;
+  });
+}
+
+/** Diff side class on a module-group in the left tree
+ *  (`'base' | 'head' | 'both'`), or null when none is applied. */
+export async function moduleSide(page: Page, moduleId: string): Promise<string | null> {
+  return page.evaluate((id) => {
+    const g = document.querySelector(`.module-group[data-id="${id}"]`);
+    if (g === null) return null;
+    for (const s of ['base', 'head', 'both']) {
+      if (g.classList.contains(`side-${s}`)) return s;
+    }
+    return null;
+  }, moduleId);
+}
+
+// ── Shared interaction helpers (hover / arrow-nav / scroll / picker) ─
+// These wrap the real wiring other feature-area specs need. Arrow
+// hit-testing is geometric (tree.ts installArrowClickHandler): the
+// handler picks arrows under the CLICK POINT on the zoom layer, so we
+// drive hover/click at an arrow's painted midpoint rather than against a
+// per-arrow DOM hit target. Selection surfaces as `.type-box.selected`
+// (+ visible `rect.selection-ring`); the call-target picker is
+// `#edge-picker`; arrow-nav disambiguation is `#arrow-disambig`.
+
+/** Screen-space midpoint of the rendered arrow whose
+ *  `data-arrow-from` / `data-arrow-to` match, or null if not found.
+ *  Derived from the painted path (getPointAtLength + screen CTM) — the
+ *  same geometry the user sees, reused for hover/click targeting. */
+export async function arrowMidpoint(
+  page: Page,
+  from: string,
+  to: string,
+): Promise<{ x: number; y: number } | null> {
+  return page.evaluate(
+    ({ from, to }) => {
+      const g = [...document.querySelectorAll('g.arrow')].find(
+        (e) => e.getAttribute('data-arrow-from') === from && e.getAttribute('data-arrow-to') === to,
+      );
+      if (g === undefined) return null;
+      const path = g.querySelector('path.visible') as SVGPathElement | null;
+      if (path === null) return null;
+      const p = path.getPointAtLength(path.getTotalLength() / 2);
+      const m = path.getScreenCTM();
+      if (m === null) return { x: p.x, y: p.y };
+      return { x: p.x * m.a + p.y * m.c + m.e, y: p.x * m.b + p.y * m.d + m.f };
+    },
+    { from, to },
+  );
+}
+
+/** Hover the mouse over an arrow's midpoint (drives the tree's
+ *  hover-highlight path). No-op-safe: throws via the explicit null check
+ *  if the arrow isn't present so a spec fails loudly rather than
+ *  hovering empty canvas. */
+export async function hoverArrow(page: Page, from: string, to: string): Promise<void> {
+  const pt = await arrowMidpoint(page, from, to);
+  if (pt === null) throw new Error(`arrow ${from} → ${to} not found to hover`);
+  await page.mouse.move(pt.x, pt.y);
+}
+
+/** Click an arrow at its midpoint — exercises the zoom-layer
+ *  `click.arrow-nav` hit-test (tree.ts). With a single arrow under the
+ *  point the host navigates directly; with 2+ it opens the
+ *  `#arrow-disambig` popover (see `isArrowDisambigOpen`). */
+export async function clickArrow(page: Page, from: string, to: string): Promise<void> {
+  const pt = await arrowMidpoint(page, from, to);
+  if (pt === null) throw new Error(`arrow ${from} → ${to} not found to click`);
+  await page.mouse.click(pt.x, pt.y);
+}
+
+/** Hover a type box by id (drives any box-level hover affordances). */
+export async function hoverType(page: Page, typeFullPath: string): Promise<void> {
+  await page.locator(`g.type-box[data-element-id="${typeFullPath}"]`).hover();
+}
+
+/** Click a callable row's outgoing-call `→` locality glyph
+ *  (`text.locality-glyph` inside the field-row group). With 2+ callees
+ *  the host opens the call-target picker (`#edge-picker`); with exactly
+ *  1 it toggles that edge directly. `rowElementId` is the row's
+ *  `data-element-id` (the function's full path). */
+export async function clickOutgoingCallGlyph(page: Page, rowElementId: string): Promise<void> {
+  await page.locator(`[data-element-id="${rowElementId}"] text.locality-glyph`).click();
+}
+
+/** True when the call-target / call-source picker (`#edge-picker`) is
+ *  mounted and visible. The picker is appended on open and removed on
+ *  dismiss, so presence == open. */
+export async function isEdgePickerOpen(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#edge-picker');
+    return el !== null && el.offsetParent !== null;
+  });
+}
+
+/** The callee/caller labels listed in the open call-target picker
+ *  (`.edge-picker-row .edge-picker-main`), top to bottom. */
+export async function edgePickerRowLabels(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('#edge-picker .edge-picker-row .edge-picker-main')].map(
+      (e) => e.textContent ?? '',
+    ),
+  );
+}
+
+/** True when the arrow-nav disambiguation popover (`#arrow-disambig`) is
+ *  showing (its root flips `display` from `none`). Opened when a click
+ *  lands on 2+ overlapping arrows. */
+export async function isArrowDisambigOpen(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('#arrow-disambig');
+    return el !== null && el.style.display !== 'none';
+  });
+}
+
+/** The id of the currently selected type box (the one carrying
+ *  `.selected` with a painted selection ring), or null when nothing is
+ *  selected. Multiple `.selected` boxes return the first. */
+export async function selectedTypeId(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const el = document.querySelector('g.type-box.selected');
+    return el === null ? null : el.getAttribute('data-element-id');
+  });
+}
+
+/** True when the type box with this id shows its selection ring — i.e.
+ *  it carries `.selected` AND the ring rect has positive size (the ring
+ *  is sized only for the selected box). The observable "is this focused"
+ *  signal for selection specs. */
+export async function hasSelectionRing(page: Page, typeFullPath: string): Promise<boolean> {
+  return page.evaluate((id) => {
+    const box = document.querySelector(`g.type-box[data-element-id="${id}"]`);
+    if (box === null || !box.classList.contains('selected')) return false;
+    const ring = box.querySelector('rect.selection-ring') as SVGGraphicsElement | null;
+    if (ring === null) return false;
+    const r = ring.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }, typeFullPath);
+}
+
+/** Scroll the diagram canvas viewport (`#canvas-scroll`) by a vertical
+ *  delta in px. Vertical pan is native scroll (see zoom.ts), so this is
+ *  how a spec moves the canvas to bring off-screen modules into view.
+ *  Returns the resulting scrollTop. */
+export async function scrollCanvas(page: Page, deltaY: number): Promise<number> {
+  return page.evaluate((dy) => {
+    const el = document.querySelector<HTMLElement>('#canvas-scroll');
+    if (el === null) return 0;
+    el.scrollTop += dy;
+    return el.scrollTop;
+  }, deltaY);
+}
+
+/** Current vertical scroll offset of the canvas viewport
+ *  (`#canvas-scroll.scrollTop`). */
+export async function canvasScrollTop(page: Page): Promise<number> {
+  return page.evaluate(() => document.querySelector('#canvas-scroll')?.scrollTop ?? 0);
+}
+
+/** Scroll the left HTML module tree (`#html-modules` lives inside the
+ *  same `#canvas-scroll` viewport, so the tree scrolls with the
+ *  canvas). Thin alias over `scrollCanvas` named for tree-navigation
+ *  specs that think in terms of the module list. */
+export async function scrollModuleTree(page: Page, deltaY: number): Promise<number> {
+  return scrollCanvas(page, deltaY);
 }
