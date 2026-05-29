@@ -141,6 +141,7 @@ describe('buildLayout — geometry invariants', () => {
           for (let i = 1; i < a.waypoints.length; i++) {
             const p = a.waypoints[i - 1];
             const q = a.waypoints[i];
+            if (p === undefined || q === undefined) continue;
             const axisAligned = Math.abs(p.x - q.x) < EPS || Math.abs(p.y - q.y) < EPS;
             expect(axisAligned, `${arrowLabel(a)} segment ${i} axis-aligned`).toBe(true);
           }
@@ -153,6 +154,9 @@ describe('buildLayout — geometry invariants', () => {
         for (const a of layout.arrows) {
           const src = boxById.get(a.fromTypeId);
           const dst = boxById.get(a.toTypeId);
+          const first = a.waypoints[0];
+          const last = a.waypoints[a.waypoints.length - 1];
+          if (first === undefined || last === undefined) continue;
           // Only assert when an endpoint's box is present in this layout
           // (an arrow may point at a collapsed/ghosted target).
           if (src !== undefined) {
@@ -160,11 +164,11 @@ describe('buildLayout — geometry invariants', () => {
             // box, so its port x lives within the box (a left-exit drift
             // port may sit just past the left edge), and its y within the
             // box's vertical extent.
-            assertWithinBox(src, a.waypoints[0], `${arrowLabel(a)} source`);
+            assertWithinBox(src, first, `${arrowLabel(a)} source`);
           }
           if (dst !== undefined) {
             // The target lands on a vertical SIDE of the target box.
-            assertOnVerticalEdge(dst, a.waypoints[a.waypoints.length - 1], `${arrowLabel(a)} target`);
+            assertOnVerticalEdge(dst, last, `${arrowLabel(a)} target`);
           }
         }
       });

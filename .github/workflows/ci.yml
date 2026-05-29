@@ -96,3 +96,41 @@ jobs:
           cache-dependency-path: viewer/package-lock.json
       - run: npm ci
       - run: npm test
+
+  viewer-e2e:
+    # Tier-3 end-to-end: spawns the real `mind-expander view` server
+    # against e2e/fixture-workspace and drives a real Chromium, so it is
+    # its own job (needs the Rust binary built + a browser) rather than
+    # part of the fast `viewer test` gate. Asserts real-font geometry
+    # invariants the node/jsdom suites can't see.
+    name: viewer e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: viewer/package-lock.json
+      # Debug build is enough and faster than release; the e2e harness
+      # finds it at ../target/debug/mind-expander by default.
+      - name: build mind-expander
+        run: cargo build
+      - name: npm ci
+        working-directory: viewer
+        run: npm ci
+      - name: install Chromium
+        working-directory: viewer
+        run: npx playwright install --with-deps chromium
+      - name: playwright e2e
+        working-directory: viewer
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        # Failure-only screenshots/traces for debugging a red run.
+        if: failure()
+        with:
+          name: playwright-report
+          path: viewer/playwright-report/
+          retention-days: 7

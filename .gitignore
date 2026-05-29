@@ -10,6 +10,12 @@ dist/
 coverage/
 .nyc_output/
 
+# Playwright (Tier-3 e2e) artifacts
+test-results/
+playwright-report/
+.playwright/
+.playwright-mcp/
+
 # Logs
 *.log
 npm-debug.log*
