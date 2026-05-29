@@ -41,3 +41,6 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Local-only test plan (mined reference, not committed — see git history for the tests it produced)
+test-plan/
