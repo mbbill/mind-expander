@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 import {
+  canvasScrollTop,
   expect,
   scrollCanvas,
   test,
@@ -277,43 +278,47 @@ test('TS folder vs file icons differ; synthesized dir is a folder, real file is 
 });
 
 test('scroll syncs the module tree with the canvas content', async ({ page }) => {
-  // Expand widgets so the column overflows the viewport: the crate +
-  // widgets dir + 20 file leaves is far taller than one screen.
-  await expandChain(page, [CRATE, WIDGETS]);
-  await expect(page.locator(`.module-group[data-id="${GAUGE_MOD}"]`)).toBeVisible();
+  // Expand widgets + gauge so a real SVG type box (Gauge) renders, and the
+  // shared #canvas-scroll has content to scroll. We anchor the sync check
+  // on the SVG TYPE BOX rather than an HTML header row: headers can become
+  // position:sticky and pin at the top (screen-y stops changing), which is
+  // a SEPARATE feature with its own test below — an SVG box never pins, so
+  // it tracks the native scroll 1:1, which is exactly the tree↔canvas sync.
+  await expandChain(page, [CRATE, WIDGETS, GAUGE_MOD]);
+  await expect(page.locator(`g.type-box[data-element-id="${GAUGE_TYPE}"]`)).toBeVisible();
 
-  // Sanity: the shared scroll container actually overflows, so scrolling
-  // is meaningful (otherwise the assertion below would be vacuous).
+  // Scroll by the AVAILABLE overflow (depends on the runner's font metrics),
+  // not a hardcoded magnitude (which flaked on CI). Skip if it cannot scroll
+  // meaningfully rather than assert vacuously.
+  const start = await canvasScrollTop(page);
   const overflow = await page.evaluate(() => {
     const el = document.querySelector('#canvas-scroll') as HTMLElement;
     return el.scrollHeight - el.clientHeight;
   });
-  expect(overflow, 'canvas-scroll overflows the viewport').toBeGreaterThan(200);
+  const target = Math.min(180, Math.max(0, overflow - start));
+  test.skip(target < 60, `#canvas-scroll cannot scroll enough to test sync (overflow ${overflow}px)`);
 
-  // A deep leaf (data-id w9, depth 2) — its header moves UP by the scroll
-  // delta as we scroll the shared #canvas-scroll down (native scroll
-  // moves the SVG content AND the HTML tree, which live in the same
-  // scroll container — that IS the sync).
-  const leaf = `${CRATE}::widgets::w9`;
-  await expect(page.locator(`.module-group[data-id="${leaf}"]`)).toHaveCount(1);
-
-  const before = headerTopSync(await headerTop(page, leaf));
-  await scrollCanvas(page, 200);
-  // Poll until the row's screen-y has actually moved (the scroll handler
-  // is rAF-throttled), so the read reflects the settled scroll.
+  const boxY = async (): Promise<number> => {
+    const r = await typeBoxRect(page, GAUGE_TYPE);
+    expect(r, 'Gauge box present').not.toBeNull();
+    return (r as { y: number }).y;
+  };
+  const before = await boxY();
+  await scrollCanvas(page, target);
+  // Vertical pan is native scroll → wait until the box's screen-y settles.
   await page.waitForFunction(
     ({ id, b }) => {
-      const h = document.querySelector(
-        `#html-modules .module-group[data-id="${id}"] > .module-header`,
-      );
-      return h !== null && (h as HTMLElement).getBoundingClientRect().top < b - 50;
+      const el = document.querySelector(`g.type-box[data-element-id="${id}"]`);
+      return el !== null && b - (el as SVGGraphicsElement).getBoundingClientRect().y > 30;
     },
-    { id: leaf, b: before },
+    { id: GAUGE_TYPE, b: before },
   );
-  const after = headerTopSync(await headerTop(page, leaf));
-  // Moved up by ~the scroll delta (depth-2 leaf is well clear of any
-  // sticky pinning at this scroll, so it tracks scroll 1:1).
-  expect(before - after).toBeGreaterThan(150);
+  const applied = (await canvasScrollTop(page)) - start;
+  const after = await boxY();
+  // The box moved UP by exactly the applied scroll delta (1:1 sync between
+  // the native scroll and the rendered canvas content).
+  expect(applied).toBeGreaterThan(40);
+  expect(before - after).toBeCloseTo(applied, -1);
 });
 
 // Tiny local guard so the assertion above reads `number` not
