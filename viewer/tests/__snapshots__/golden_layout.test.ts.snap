@@ -1,0 +1,1201 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildLayout — golden snapshots > is stable: medium fixture / owners expanded 1`] = `
+{
+  "arrows": [
+    {
+      "from": "c::m::Hub.h0",
+      "kind": "ownership",
+      "to": "c::m::H0",
+      "waypoints": [
+        [
+          130.17,
+          64,
+        ],
+        [
+          174.17,
+          64,
+        ],
+        [
+          182.17,
+          64,
+        ],
+        [
+          182.17,
+          44,
+        ],
+        [
+          194.17,
+          44,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Hub.h1",
+      "kind": "ownership",
+      "to": "c::m::H1",
+      "waypoints": [
+        [
+          130.17,
+          80,
+        ],
+        [
+          174.17,
+          80,
+        ],
+        [
+          182.17,
+          80,
+        ],
+        [
+          182.17,
+          76,
+        ],
+        [
+          194.17,
+          76,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Hub.h2",
+      "kind": "ownership",
+      "to": "c::m::H2",
+      "waypoints": [
+        [
+          130.17,
+          96,
+        ],
+        [
+          174.17,
+          96,
+        ],
+        [
+          182.17,
+          96,
+        ],
+        [
+          182.17,
+          108,
+        ],
+        [
+          194.17,
+          108,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Hub.h3",
+      "kind": "ownership",
+      "to": "c::m::H3",
+      "waypoints": [
+        [
+          130.17,
+          112,
+        ],
+        [
+          174.17,
+          112,
+        ],
+        [
+          174.17,
+          92,
+        ],
+        [
+          302.17,
+          92,
+        ],
+        [
+          302.17,
+          44,
+        ],
+        [
+          314.17,
+          44,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Hub.h4",
+      "kind": "ownership",
+      "to": "c::m::H4",
+      "waypoints": [
+        [
+          130.17,
+          128,
+        ],
+        [
+          174.17,
+          128,
+        ],
+        [
+          302.17,
+          128,
+        ],
+        [
+          302.17,
+          76,
+        ],
+        [
+          314.17,
+          76,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Hub.h5",
+      "kind": "ownership",
+      "to": "c::m::H5",
+      "waypoints": [
+        [
+          130.17,
+          144,
+        ],
+        [
+          174.17,
+          144,
+        ],
+        [
+          302.17,
+          144,
+        ],
+        [
+          302.17,
+          108,
+        ],
+        [
+          314.17,
+          108,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Hub.h6",
+      "kind": "ownership",
+      "to": "c::m::H6",
+      "waypoints": [
+        [
+          130.17,
+          160,
+        ],
+        [
+          174.17,
+          160,
+        ],
+        [
+          422.17,
+          160,
+        ],
+        [
+          422.17,
+          44,
+        ],
+        [
+          434.17,
+          44,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Hub.h7",
+      "kind": "ownership",
+      "to": "c::m::H7",
+      "waypoints": [
+        [
+          130.17,
+          176,
+        ],
+        [
+          174.17,
+          176,
+        ],
+        [
+          422.17,
+          176,
+        ],
+        [
+          422.17,
+          76,
+        ],
+        [
+          434.17,
+          76,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r0",
+      "kind": "ownership",
+      "to": "c::m::R0",
+      "waypoints": [
+        [
+          490.17,
+          128,
+        ],
+        [
+          534.17,
+          128,
+        ],
+        [
+          542.17,
+          128,
+        ],
+        [
+          542.17,
+          44,
+        ],
+        [
+          554.17,
+          44,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r1",
+      "kind": "ownership",
+      "to": "c::m::R1",
+      "waypoints": [
+        [
+          490.17,
+          144,
+        ],
+        [
+          534.17,
+          144,
+        ],
+        [
+          542.17,
+          144,
+        ],
+        [
+          542.17,
+          76,
+        ],
+        [
+          554.17,
+          76,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r10",
+      "kind": "ownership",
+      "to": "c::m::R10",
+      "waypoints": [
+        [
+          497.17,
+          288,
+        ],
+        [
+          534.17,
+          288,
+        ],
+        [
+          542.17,
+          288,
+        ],
+        [
+          542.17,
+          108,
+        ],
+        [
+          554.17,
+          108,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r11",
+      "kind": "ownership",
+      "to": "c::m::R11",
+      "waypoints": [
+        [
+          497.17,
+          304,
+        ],
+        [
+          534.17,
+          304,
+        ],
+        [
+          542.17,
+          304,
+        ],
+        [
+          542.17,
+          140,
+        ],
+        [
+          554.17,
+          140,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r2",
+      "kind": "ownership",
+      "to": "c::m::R2",
+      "waypoints": [
+        [
+          490.17,
+          160,
+        ],
+        [
+          534.17,
+          160,
+        ],
+        [
+          662.17,
+          160,
+        ],
+        [
+          662.17,
+          44,
+        ],
+        [
+          674.17,
+          44,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r3",
+      "kind": "ownership",
+      "to": "c::m::R3",
+      "waypoints": [
+        [
+          490.17,
+          176,
+        ],
+        [
+          534.17,
+          176,
+        ],
+        [
+          662.17,
+          176,
+        ],
+        [
+          662.17,
+          76,
+        ],
+        [
+          674.17,
+          76,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r4",
+      "kind": "ownership",
+      "to": "c::m::R4",
+      "waypoints": [
+        [
+          490.17,
+          192,
+        ],
+        [
+          534.17,
+          192,
+        ],
+        [
+          662.17,
+          192,
+        ],
+        [
+          662.17,
+          108,
+        ],
+        [
+          674.17,
+          108,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r5",
+      "kind": "ownership",
+      "to": "c::m::R5",
+      "waypoints": [
+        [
+          490.17,
+          208,
+        ],
+        [
+          534.17,
+          208,
+        ],
+        [
+          662.17,
+          208,
+        ],
+        [
+          662.17,
+          140,
+        ],
+        [
+          674.17,
+          140,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r6",
+      "kind": "ownership",
+      "to": "c::m::R6",
+      "waypoints": [
+        [
+          490.17,
+          224,
+        ],
+        [
+          534.17,
+          224,
+        ],
+        [
+          782.17,
+          224,
+        ],
+        [
+          782.17,
+          44,
+        ],
+        [
+          794.17,
+          44,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r7",
+      "kind": "ownership",
+      "to": "c::m::R7",
+      "waypoints": [
+        [
+          490.17,
+          240,
+        ],
+        [
+          534.17,
+          240,
+        ],
+        [
+          782.17,
+          240,
+        ],
+        [
+          782.17,
+          76,
+        ],
+        [
+          794.17,
+          76,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r8",
+      "kind": "ownership",
+      "to": "c::m::R8",
+      "waypoints": [
+        [
+          490.17,
+          256,
+        ],
+        [
+          534.17,
+          256,
+        ],
+        [
+          782.17,
+          256,
+        ],
+        [
+          782.17,
+          108,
+        ],
+        [
+          794.17,
+          108,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Root.r9",
+      "kind": "ownership",
+      "to": "c::m::R9",
+      "waypoints": [
+        [
+          490.17,
+          272,
+        ],
+        [
+          534.17,
+          272,
+        ],
+        [
+          782.17,
+          272,
+        ],
+        [
+          782.17,
+          140,
+        ],
+        [
+          794.17,
+          140,
+        ],
+      ],
+    },
+    {
+      "from": "c::m::Tail.root",
+      "kind": "ownership",
+      "to": "c::m::Root",
+      "waypoints": [
+        [
+          144.17,
+          224,
+        ],
+        [
+          174.17,
+          224,
+        ],
+        [
+          422.17,
+          224,
+        ],
+        [
+          422.17,
+          108,
+        ],
+        [
+          434.17,
+          108,
+        ],
+      ],
+    },
+  ],
+  "modules": [
+    {
+      "bandHeight": 24,
+      "expanded": true,
+      "id": "c",
+      "y": 8,
+    },
+    {
+      "bandHeight": 288,
+      "expanded": true,
+      "id": "c::m",
+      "y": 32,
+    },
+  ],
+  "totalHeight": 320,
+  "totalWidth": 890.17,
+  "types": [
+    {
+      "box": [
+        194.17,
+        32,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::H0",
+      "width": 96,
+      "x": 194.17,
+      "y": 44,
+    },
+    {
+      "box": [
+        194.17,
+        64,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::H1",
+      "width": 96,
+      "x": 194.17,
+      "y": 76,
+    },
+    {
+      "box": [
+        194.17,
+        96,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::H2",
+      "width": 96,
+      "x": 194.17,
+      "y": 108,
+    },
+    {
+      "box": [
+        314.17,
+        32,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::H3",
+      "width": 96,
+      "x": 314.17,
+      "y": 44,
+    },
+    {
+      "box": [
+        314.17,
+        64,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::H4",
+      "width": 96,
+      "x": 314.17,
+      "y": 76,
+    },
+    {
+      "box": [
+        314.17,
+        96,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::H5",
+      "width": 96,
+      "x": 314.17,
+      "y": 108,
+    },
+    {
+      "box": [
+        434.17,
+        32,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::H6",
+      "width": 96,
+      "x": 434.17,
+      "y": 44,
+    },
+    {
+      "box": [
+        434.17,
+        64,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::H7",
+      "width": 96,
+      "x": 434.17,
+      "y": 76,
+    },
+    {
+      "box": [
+        74.17,
+        32,
+        96,
+        152,
+      ],
+      "expanded": true,
+      "fieldCount": 8,
+      "height": 152,
+      "id": "c::m::Hub",
+      "width": 96,
+      "x": 74.17,
+      "y": 44,
+    },
+    {
+      "box": [
+        554.17,
+        32,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R0",
+      "width": 96,
+      "x": 554.17,
+      "y": 44,
+    },
+    {
+      "box": [
+        554.17,
+        64,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R1",
+      "width": 96,
+      "x": 554.17,
+      "y": 76,
+    },
+    {
+      "box": [
+        554.17,
+        96,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R10",
+      "width": 96,
+      "x": 554.17,
+      "y": 108,
+    },
+    {
+      "box": [
+        554.17,
+        128,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R11",
+      "width": 96,
+      "x": 554.17,
+      "y": 140,
+    },
+    {
+      "box": [
+        674.17,
+        32,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R2",
+      "width": 96,
+      "x": 674.17,
+      "y": 44,
+    },
+    {
+      "box": [
+        674.17,
+        64,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R3",
+      "width": 96,
+      "x": 674.17,
+      "y": 76,
+    },
+    {
+      "box": [
+        674.17,
+        96,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R4",
+      "width": 96,
+      "x": 674.17,
+      "y": 108,
+    },
+    {
+      "box": [
+        674.17,
+        128,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R5",
+      "width": 96,
+      "x": 674.17,
+      "y": 140,
+    },
+    {
+      "box": [
+        794.17,
+        32,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R6",
+      "width": 96,
+      "x": 794.17,
+      "y": 44,
+    },
+    {
+      "box": [
+        794.17,
+        64,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R7",
+      "width": 96,
+      "x": 794.17,
+      "y": 76,
+    },
+    {
+      "box": [
+        794.17,
+        96,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R8",
+      "width": 96,
+      "x": 794.17,
+      "y": 108,
+    },
+    {
+      "box": [
+        794.17,
+        128,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::m::R9",
+      "width": 96,
+      "x": 794.17,
+      "y": 140,
+    },
+    {
+      "box": [
+        434.17,
+        96,
+        96,
+        216,
+      ],
+      "expanded": true,
+      "fieldCount": 12,
+      "height": 216,
+      "id": "c::m::Root",
+      "width": 96,
+      "x": 434.17,
+      "y": 108,
+    },
+    {
+      "box": [
+        74.17,
+        192,
+        96,
+        40,
+      ],
+      "expanded": true,
+      "fieldCount": 1,
+      "height": 40,
+      "id": "c::m::Tail",
+      "width": 96,
+      "x": 74.17,
+      "y": 204,
+    },
+  ],
+}
+`;
+
+exports[`buildLayout — golden snapshots > is stable: small / collapsed (crate root only) 1`] = `
+{
+  "arrows": [],
+  "modules": [
+    {
+      "bandHeight": 32,
+      "expanded": true,
+      "id": "c",
+      "y": 8,
+    },
+    {
+      "bandHeight": 24,
+      "expanded": false,
+      "id": "c::core",
+      "y": 40,
+    },
+    {
+      "bandHeight": 24,
+      "expanded": false,
+      "id": "c::render",
+      "y": 64,
+    },
+  ],
+  "totalHeight": 88,
+  "totalWidth": 211,
+  "types": [
+    {
+      "box": [
+        115,
+        8,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::App",
+      "width": 96,
+      "x": 115,
+      "y": 20,
+    },
+  ],
+}
+`;
+
+exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1`] = `
+{
+  "arrows": [
+    {
+      "from": "c::App.engine",
+      "kind": "ownership",
+      "to": "c::core::Engine",
+      "waypoints": [
+        [
+          199,
+          40,
+        ],
+        [
+          215,
+          40,
+        ],
+        [
+          223,
+          40,
+        ],
+        [
+          223,
+          84,
+        ],
+        [
+          235,
+          84,
+        ],
+      ],
+    },
+    {
+      "from": "c::App.renderer",
+      "kind": "ownership",
+      "to": "c::render::Renderer",
+      "waypoints": [
+        [
+          213,
+          56,
+        ],
+        [
+          217,
+          56,
+        ],
+        [
+          223,
+          56,
+        ],
+        [
+          223,
+          132,
+        ],
+        [
+          235,
+          132,
+        ],
+      ],
+    },
+    {
+      "from": "c::core::Engine.cyl",
+      "kind": "ownership",
+      "to": "c::core::Cylinder",
+      "waypoints": [
+        [
+          298,
+          104,
+        ],
+        [
+          335,
+          104,
+        ],
+        [
+          359,
+          104,
+        ],
+        [
+          359,
+          84,
+        ],
+        [
+          371,
+          84,
+        ],
+      ],
+    },
+    {
+      "from": "c::render::Renderer.pix",
+      "kind": "ownership",
+      "to": "c::render::Pixel",
+      "waypoints": [
+        [
+          298,
+          152,
+        ],
+        [
+          347.17,
+          152,
+        ],
+        [
+          359,
+          152,
+        ],
+        [
+          359,
+          132,
+        ],
+        [
+          371,
+          132,
+        ],
+      ],
+    },
+  ],
+  "modules": [
+    {
+      "bandHeight": 64,
+      "expanded": true,
+      "id": "c",
+      "y": 8,
+    },
+    {
+      "bandHeight": 48,
+      "expanded": true,
+      "id": "c::core",
+      "y": 72,
+    },
+    {
+      "bandHeight": 48,
+      "expanded": true,
+      "id": "c::render",
+      "y": 120,
+    },
+  ],
+  "totalHeight": 168,
+  "totalWidth": 467,
+  "types": [
+    {
+      "box": [
+        115,
+        8,
+        96,
+        56,
+      ],
+      "expanded": true,
+      "fieldCount": 2,
+      "height": 56,
+      "id": "c::App",
+      "width": 96,
+      "x": 115,
+      "y": 20,
+    },
+    {
+      "box": [
+        371,
+        72,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::core::Cylinder",
+      "width": 96,
+      "x": 371,
+      "y": 84,
+    },
+    {
+      "box": [
+        235,
+        72,
+        96,
+        40,
+      ],
+      "expanded": true,
+      "fieldCount": 1,
+      "height": 40,
+      "id": "c::core::Engine",
+      "width": 96,
+      "x": 235,
+      "y": 84,
+    },
+    {
+      "box": [
+        371,
+        120,
+        96,
+        24,
+      ],
+      "expanded": false,
+      "fieldCount": 0,
+      "height": 24,
+      "id": "c::render::Pixel",
+      "width": 96,
+      "x": 371,
+      "y": 132,
+    },
+    {
+      "box": [
+        235,
+        120,
+        108.17,
+        40,
+      ],
+      "expanded": true,
+      "fieldCount": 1,
+      "height": 40,
+      "id": "c::render::Renderer",
+      "width": 108.17,
+      "x": 235,
+      "y": 132,
+    },
+  ],
+}
+`;
