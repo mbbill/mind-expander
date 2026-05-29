@@ -392,17 +392,20 @@ describe('module-tree data model (MT-D)', () => {
     expect(findModule(root, 'a::b')?.isLeaf).toBe(false);
   });
 
-  // SUSPECTED BUG: the plan's oracle says the crate root must be isLeaf===false
-  // ("represents the package as a whole, not a file" — module_tree.ts:122, and
-  // html_tree.ts:111 keys the folder/file icon off data-leaf). But the
-  // explicit-modules loop (module_tree.ts:160-165) sets node.isLeaf=true for ANY
-  // path in crate.modules, including the always-present '' root (lib.rs/index.ts).
-  // So a TS crate root would render with a file icon instead of a container icon.
-  it.skip('MT-D13b: crate root isLeaf===false even when crate.modules has the "" root', () => {
+  // The crate root represents the package as a whole (a container), not a
+  // file — so its isLeaf must stay false even though crate.modules always
+  // carries the '' root (lib.rs/index.ts). html_tree.ts keys the TS
+  // folder/file icon off data-leaf, so a true here would draw the crate row
+  // as a file. Fixed in module_tree.ts: the explicit-modules loop no longer
+  // flips isLeaf for the '' path.
+  it('MT-D13b: crate root isLeaf===false even when crate.modules has the "" root', () => {
     const root = buildModuleTree(
       crateOf('ts', [mod(''), mod('a', [], { file: '/s/a.ts' })], 'typescript'),
     );
     expect(root.isLeaf).toBe(false);
+    // A real (non-root) module in crate.modules is still a leaf.
+    const a = root.children.find((n) => n.kind === 'module' && n.label.startsWith('a'));
+    expect(a?.kind === 'module' ? a.isLeaf : null).toBe(true);
   });
 
   it('MT-D14: language stamped on every descendant incl. synthesized intermediates; ws root = rust', () => {

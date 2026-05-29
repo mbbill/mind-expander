@@ -295,14 +295,10 @@ describe('expand-hit vs kind marker', () => {
     expect(KIND_MARKER_X).toBe(14);
   });
 
-  // The plan's stated oracle (`rect.expand-hit` x === HEADER_HIT_X) describes
-  // the MODULE row's hit rect. For the TYPE box, the renderer instead gives
-  // the marker its own events via `pointer-events: all` + paint order (the
-  // marker is appended AFTER the expand-hit rect). The plan explicitly
-  // rejects asserting paint order as the invariant, and the type-box hit
-  // rect is NOT offset to HEADER_HIT_X — so this oracle does not apply to the
-  // type box. Covered structurally by #12 (marker owns pointer-events).
-  it.skip('type-box expand-hit starts past the marker (N/A: type box uses pointer-events, not HEADER_HIT_X offset)', () => {});
+  // (An empty N/A skip was removed here: for the TYPE box the kind-marker
+  // owns its own pixels via `pointer-events: all` + paint order, not an
+  // HEADER_HIT_X offset — that contract is already asserted by #12 above, so
+  // the placeholder added no coverage.)
 });
 
 // ======================================================================

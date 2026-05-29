@@ -162,7 +162,13 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
     // as a real source file (vs. a synthesized intermediate). For
     // TS this drives the file-vs-folder icon in the renderer; for
     // Rust it's harmless metadata.
-    node.isLeaf = true;
+    //
+    // EXCEPT the crate root (`m.path === ''`): the always-present root
+    // entry (lib.rs / index.ts) must NOT flip the root to a leaf — the
+    // root represents the package as a whole and stays a container
+    // (`isLeaf=false`, set at construction), so the TS renderer draws a
+    // container, not a file, for the crate row.
+    if (m.path !== '') node.isLeaf = true;
     // TS module path = file path (sans extension); the actual
     // filename — including `.ts` / `.tsx` — is sitting right
     // there in `m.file`. Use it as the leaf label so the tree

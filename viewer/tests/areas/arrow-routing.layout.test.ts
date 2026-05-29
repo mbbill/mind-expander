@@ -27,6 +27,7 @@ import type {
   Layout,
   TypeBox,
 } from '../../src/analysis/layout_model.ts';
+import { rowArrowKey } from '../../src/analysis/layout_model.ts';
 import { buildLayout } from '../../src/layout/pipeline.ts';
 import {
   type ArrowDisambigGroup,
@@ -34,7 +35,8 @@ import {
   groupArrowHits,
 } from '../../src/view/arrow_disambig.ts';
 import { arrowEndpointLayoutPoint } from '../../src/view/arrow_navigation.ts';
-import { denseHighFanout, denseInputs } from '../fixtures/dense.ts';
+import { buildInputs, crateFacts, edge, mod, ty } from '../fixtures/builders.ts';
+import { denseHighFanout, denseInputs, denseShapeIds } from '../fixtures/dense.ts';
 import { mediumFixtureInputs } from '../fixtures/medium.ts';
 import { smallFixtureInputs } from '../fixtures/small.ts';
 
@@ -672,3 +674,107 @@ describe('AR-37 — disambig row model keeps cross-crate prefix, strips matching
 function edgeLabel(a: Arrow): string {
   return `${a.fromTypeId}.${a.fromFieldName}->${a.toTypeId}`;
 }
+
+// ===========================================================================
+// AR-PERSIST — an arrow never silently disappears when the layout changes
+// ===========================================================================
+// User directive (generalizing the sf-nano "selected drift arrow vanished
+// when an intermediate type expanded" bug): ANY arrow — ownership, drift,
+// call, re-export — that is visible must stay visible across a layout
+// change; it may only go away if its source or target is folded up or
+// removed. There must be no fallback that drops an arrow for routing/
+// crowding reasons. Operationally: monotonic expansion (only ADDING
+// expanded ids, never folding) must never DROP an arrow identity.
+describe('AR-PERSIST arrows survive layout changes while endpoints stay visible', () => {
+  const ident = (a: Arrow): string =>
+    `${a.fromTypeId}|${a.fromFieldName}|${a.toTypeId}|${a.toFieldName ?? ''}|${a.kind}`;
+  const arrowIds = (l: Layout): Set<string> => new Set(l.arrows.map(ident));
+
+  // Owner (root) owns deep::Target; an UNRELATED intermediate module `mid`
+  // holds an expandable type M and a leaf N.
+  function build(expanded: string[]): Layout {
+    const c = crateFacts('c', [
+      mod('', [ty('c', '', 'Owner', [{ name: 't', ty_text: 'deep::Target' }])]),
+      mod('mid', [
+        ty('c', 'mid', 'M', [
+          { name: 'x', ty_text: 'u32' },
+          { name: 'y', ty_text: 'u32' },
+        ]),
+        ty('c', 'mid', 'N'),
+      ]),
+      mod('deep', [ty('c', 'deep', 'Target')]),
+    ]);
+    return buildLayout({
+      ...buildInputs(c, [edge('c::Owner', 'c::deep::Target', 'field t')], expanded),
+      measureText: measure,
+    });
+  }
+
+  it('expanding an unrelated intermediate type does not drop the ownership arrow', () => {
+    const base = build(['c', 'c::mid', 'c::deep', 'c::Owner']);
+    const expandMid = build(['c', 'c::mid', 'c::deep', 'c::Owner', 'c::mid::M']);
+    expect(base.arrows.length).toBeGreaterThan(0); // non-vacuous
+    const after = arrowIds(expandMid);
+    for (const k of arrowIds(base)) {
+      expect(after.has(k), `arrow ${k} disappeared when unrelated type M expanded`).toBe(true);
+    }
+  });
+
+  it('expanding the target type does not drop the arrow pointing at it', () => {
+    const base = build(['c', 'c::mid', 'c::deep', 'c::Owner']);
+    const expandTarget = build(['c', 'c::mid', 'c::deep', 'c::Owner', 'c::deep::Target']);
+    const after = arrowIds(expandTarget);
+    for (const k of arrowIds(base)) {
+      expect(after.has(k), `arrow ${k} disappeared when its target expanded`).toBe(true);
+    }
+  });
+
+  it('a SELECTED drift arrow survives expanding an unrelated type (the original sf-nano case)', () => {
+    // Two owners in different modules own the same target T → each ownership
+    // edge is a drift arrow, shown only when its row key is in
+    // fieldArrowsShown. Select OwnerA's, then expand the unrelated OwnerB.
+    const c = crateFacts('c', [
+      mod('x::a', [ty('c', 'x::a', 'OwnerA', [{ name: 'target', ty_text: 'T' }])]),
+      mod('x::b', [ty('c', 'x::b', 'OwnerB', [{ name: 'target', ty_text: 'T' }])]),
+      mod('y', [ty('c', 'y', 'T')]),
+    ]);
+    const edges = [
+      edge('c::x::a::OwnerA', 'c::y::T', 'field target'),
+      edge('c::x::b::OwnerB', 'c::y::T', 'field target'),
+    ];
+    const expanded = ['c', 'c::x', 'c::x::a', 'c::x::a::OwnerA', 'c::x::b', 'c::y'];
+    const fieldArrowsShown = new Set([rowArrowKey('c::x::a::OwnerA', 'target')]);
+    const base = buildLayout({ ...buildInputs(c, edges, expanded), fieldArrowsShown, measureText: measure });
+    const expandB = buildLayout({
+      ...buildInputs(c, edges, [...expanded, 'c::x::b::OwnerB']),
+      fieldArrowsShown,
+      measureText: measure,
+    });
+    // The selected drift arrow is present to begin with...
+    expect(base.arrows.some((a) => a.fromTypeId === 'c::x::a::OwnerA')).toBe(true);
+    // ...and must NOT vanish when the unrelated OwnerB expands. A fallback
+    // that drops the arrow on layout change would fail here.
+    const after = arrowIds(expandB);
+    for (const k of arrowIds(base)) {
+      expect(after.has(k), `selected drift arrow ${k} disappeared when OwnerB expanded`).toBe(true);
+    }
+  });
+
+  it('at scale: expanding more type boxes only adds arrows, never removes one', () => {
+    const opts = { modules: 4, typesPerModule: 5, ownershipFanout: 4, crossModuleRatio: 0.5 } as const;
+    const { moduleIds, typeIds } = denseShapeIds(opts);
+    // Base: every module expanded + the first half of the type boxes. Super:
+    // same modules + ALL type boxes. Endpoints' modules are visible in both,
+    // so super only reveals MORE field rows → strictly more (or equal) arrows.
+    const half = typeIds.slice(0, Math.ceil(typeIds.length / 2));
+    const base = buildLayout({ ...denseInputs({ ...opts, expandedIds: [...moduleIds, ...half] }), measureText: measure });
+    const sup = buildLayout({ ...denseInputs({ ...opts, expandedIds: [...moduleIds, ...typeIds] }), measureText: measure });
+    expect(base.arrows.length).toBeGreaterThan(0);
+    const after = arrowIds(sup);
+    for (const k of arrowIds(base)) {
+      expect(after.has(k), `arrow ${k} disappeared when more type boxes expanded`).toBe(true);
+    }
+    // And expanding more genuinely revealed at least as many arrows.
+    expect(sup.arrows.length).toBeGreaterThanOrEqual(base.arrows.length);
+  });
+});

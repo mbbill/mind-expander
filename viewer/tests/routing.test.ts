@@ -684,16 +684,12 @@ describe('routeArrows obstacle routing', () => {
     expect(routing.arrows).toEqual([]);
   });
 
-  // TODO(post-launch): re-establish this regression test against the
-  // dogfood fixture (viewer/data/facts.json was migrated from
-  // sf-nano-core to mind-expander itself). The original test exercised
-  // a drift-arrow visibility scenario discovered in sf-nano-core's
-  // utils::payload module — needs a structurally-equivalent type pair
-  // in mind-expander's facts. Skipping rather than deleting so the
-  // intent is preserved for the migration commit.
-  it.skip('keeps selected drift arrows visible when an intermediate real type expands', () => {
-    // Body removed pending dogfood-fixture migration.
-  });
+  // The sf-nano "selected drift arrow vanished when an intermediate type
+  // expanded" regression is now covered — generalized to "any arrow survives
+  // a layout change while its endpoints stay visible" — by the AR-PERSIST
+  // suite in tests/areas/arrow-routing.layout.test.ts (which includes the
+  // selected-drift case via fieldArrowsShown). The empty migration stub here
+  // is retired.
 });
 
 function typeBox(
