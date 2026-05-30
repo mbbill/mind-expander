@@ -347,6 +347,12 @@ function renderHeader(
   // We just render whatever's there.
   chip.textContent = m.label;
   chip.style.fontSize = `${(m.modDepth === 0 ? 15 : 14) * k}px`;
+  // The folder/file glyph is a CSS `::before` (shape lives in index.html),
+  // but its SIZE must scale with k like every other row pixel — CSS can't
+  // see k, so publish it here. Without this the fixed-px icon stays full
+  // size as the row shrinks, so at low k adjacent rows' icons overlap.
+  chip.style.setProperty('--icon-size', `${14 * k}px`);
+  chip.style.setProperty('--icon-gap', `${5 * k}px`);
   // No background or border on the chip — legibility comes from the
   // text-shadow halo on `.module-header`. If we want to bring chips
   // back later, restore the background via CSS rather than JS so

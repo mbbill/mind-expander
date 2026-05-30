@@ -211,6 +211,28 @@ describe('renderHtmlModuleTree binding (MT-H)', () => {
     expect(px(headerOf(groupById(container, 'c')).style.top)).toBe(0);
   });
 
+  it('MT-H02b: TS folder/file icon size + gap scale with k (CSS ::before reads renderer vars)', () => {
+    // The folder/file glyph is a CSS `::before` on the chip, so its SHAPE
+    // lives in index.html — but its SIZE must obey the same `* k` rule every
+    // other row pixel does (chevron 14*k, chip font 14*k, header height
+    // ROW_H*k). CSS can't see k, so the renderer must publish the scaled
+    // pixel size as a custom property the `::before` consumes. Without this
+    // the 14px icon stays full-size while the row shrinks, so at low k the
+    // oversized icons of adjacent rows overlap ("stuck together").
+    const { facts, expanded } = tsWorkspace();
+    for (const k of [0.5, 2]) {
+      const { container } = mount(workspaceInputs(facts, expanded), k);
+      // ts::a is a real .ts file (leaf), ts::dir is a synth directory (folder)
+      // — both carry the `::before` icon, both must scale.
+      for (const id of ['ts::a', 'ts::dir']) {
+        const chip = groupById(container, id).querySelector<HTMLElement>('.module-chip');
+        if (chip === null) throw new Error(`no chip for ${id}`);
+        expect(px(chip.style.getPropertyValue('--icon-size'))).toBeCloseTo(14 * k, 5);
+        expect(px(chip.style.getPropertyValue('--icon-gap'))).toBeCloseTo(5 * k, 5);
+      }
+    }
+  });
+
   it('MT-H03: header z-index = 1000 - modDepth (shallower paints on top)', () => {
     const { facts, expanded } = deepRustWorkspace();
     const { container, layout } = mount(workspaceInputs(facts, expanded));
