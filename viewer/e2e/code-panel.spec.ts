@@ -409,12 +409,7 @@ test('the panel renders real Prism syntax-highlight tokens for Rust source', asy
   assertNoPageErrors(page);
 });
 
-test.skip(
-  'live-reload of the edited source updates the open panel — needs a mutable workspace copy + watcher, not present in this fixture',
-  () => {},
-);
-
-test.skip(
-  'inline diff coloring (add/del rows) for a modified entity — needs a git base/head delta fixture launched with --at, not present',
-  () => {},
-);
+// The diff-coloring and live-reload code-panel cases live in
+// code-panel-modes.spec.ts: they need a diff-mode (`--at`) server and a
+// mutable temp-workspace server respectively, neither of which is this
+// spec's read-only fixture + auto-expanding beforeEach.
