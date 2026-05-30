@@ -33,7 +33,6 @@ import type { Page } from '@playwright/test';
 import {
   canvasScrollTop,
   expect,
-  scrollCanvas,
   test,
   typeBoxIds,
   typeBoxRect,
@@ -277,33 +276,44 @@ test('TS folder vs file icons differ; synthesized dir is a folder, real file is 
   expect(folderImg).not.toBe(fileImg);
 });
 
-// QUARANTINED (headless-scroll unreliability): setting #canvas-scroll.scrollTop
-// programmatically moves the content locally but is a no-op in the CI headless
-// Chromium runner (applied delta = 0, content never moves), so these two
-// native-scroll tests can't run there. The tree↔canvas scroll-sync and the
-// sticky-breadcrumb pinning are still covered structurally (one shared scroll
-// container; CSS position:sticky) and the module data by the Tier-1/2 suites.
-// Kept (not deleted) so they run locally and document the intended behavior.
-test.skip('scroll syncs the module tree with the canvas content', async ({ page }) => {
-  // Expand widgets + gauge so a real SVG type box (Gauge) renders, and the
-  // shared #canvas-scroll has content to scroll. We anchor the sync check
-  // on the SVG TYPE BOX rather than an HTML header row: headers can become
-  // position:sticky and pin at the top (screen-y stops changing), which is
-  // a SEPARATE feature with its own test below — an SVG box never pins, so
-  // it tracks the native scroll 1:1, which is exactly the tree↔canvas sync.
+// Drive a REAL vertical scroll. The viewer derives #canvas-scroll.scrollTop
+// from the d3 zoom transform t.y, so setting scrollTop programmatically is
+// reverted on the next render (it briefly moved locally but was a no-op on
+// CI). A real wheel gesture goes through the actual pan path and sticks.
+// Wheels in bursts until scrollTop has moved by at least `minDelta`, then
+// returns the applied scrollTop delta. (Plain wheel scrolls — it does not
+// zoom — in the default input mode; the zoom transform is unchanged.)
+async function wheelScroll(page: Page, minDelta = 120): Promise<number> {
+  const { width, height } = page.viewportSize() ?? { width: 1400, height: 900 };
+  await page.mouse.move(width / 2, height / 2);
+  const start = await canvasScrollTop(page);
+  for (let i = 0; i < 8; i++) {
+    await page.mouse.wheel(0, 240);
+    await page.waitForTimeout(60);
+    if ((await canvasScrollTop(page)) - start >= minDelta) break;
+  }
+  // Let the rendered content settle at the new scroll position.
+  await page.waitForTimeout(120);
+  return (await canvasScrollTop(page)) - start;
+}
+
+test('scroll syncs the module tree with the canvas content', async ({ page }) => {
+  // Runs locally (real coverage); skipped on CI. The viewer's vertical pan is
+  // a custom model — #canvas-scroll.scrollTop is DERIVED from the d3 zoom
+  // transform — and headless CI Chromium does not reliably deliver the wheel
+  // gesture into it (the applied scroll comes back ~0/negative), confirmed by
+  // a diagnostic. Local Chromium drives it fine, so the spec still guards the
+  // behavior on every dev run.
+  test.skip(!!process.env.CI, 'headless CI cannot drive the viewer custom scroll; runs locally');
+  // Expand widgets + gauge so a real SVG type box (Gauge) renders and the
+  // shared #canvas-scroll overflows. We anchor the sync check on the SVG
+  // TYPE BOX, not an HTML header row: headers can become position:sticky and
+  // pin at the top (their screen-y stops changing) — that's a SEPARATE
+  // feature with its own test below. An SVG box never pins, so it tracks the
+  // native scroll 1:1, which IS the tree↔canvas sync.
   await expandChain(page, [CRATE, WIDGETS, GAUGE_MOD]);
   await expect(page.locator(`g.type-box[data-element-id="${GAUGE_TYPE}"]`)).toBeVisible();
-
-  // Scroll by the AVAILABLE overflow (depends on the runner's font metrics),
-  // not a hardcoded magnitude (which flaked on CI). Skip if it cannot scroll
-  // meaningfully rather than assert vacuously.
-  const start = await canvasScrollTop(page);
-  const overflow = await page.evaluate(() => {
-    const el = document.querySelector('#canvas-scroll') as HTMLElement;
-    return el.scrollHeight - el.clientHeight;
-  });
-  const target = Math.min(180, Math.max(0, overflow - start));
-  test.skip(target < 60, `#canvas-scroll cannot scroll enough to test sync (overflow ${overflow}px)`);
+  await waitForLayoutSettled(page);
 
   const boxY = async (): Promise<number> => {
     const r = await typeBoxRect(page, GAUGE_TYPE);
@@ -311,16 +321,7 @@ test.skip('scroll syncs the module tree with the canvas content', async ({ page 
     return (r as { y: number }).y;
   };
   const before = await boxY();
-  await scrollCanvas(page, target);
-  // Vertical pan is native scroll → wait until the box's screen-y settles.
-  await page.waitForFunction(
-    ({ id, b }) => {
-      const el = document.querySelector(`g.type-box[data-element-id="${id}"]`);
-      return el !== null && b - (el as SVGGraphicsElement).getBoundingClientRect().y > 30;
-    },
-    { id: GAUGE_TYPE, b: before },
-  );
-  const applied = (await canvasScrollTop(page)) - start;
+  const applied = await wheelScroll(page, 120);
   const after = await boxY();
   // The box moved UP by exactly the applied scroll delta (1:1 sync between
   // the native scroll and the rendered canvas content).
@@ -328,50 +329,32 @@ test.skip('scroll syncs the module tree with the canvas content', async ({ page 
   expect(before - after).toBeCloseTo(applied, -1);
 });
 
-// Tiny local guard so the assertion above reads `number` not
-// `number | null` (the locator existence check already proved non-null).
+// Tiny local guard so the assertions read `number` not `number | null`
+// (the locator existence checks already proved non-null).
 function headerTopSync(v: number | null): number {
   expect(v).not.toBeNull();
   return v as number;
 }
 
-// QUARANTINED — see the note on the scroll-sync test above (native scrollTop
-// is a no-op in the CI headless runner). Runs locally; documents the behavior.
-test.skip('ancestor header stays pinned (sticky breadcrumb) while content scrolls under it', async ({
+test('ancestor header stays pinned (sticky breadcrumb) while content scrolls under it', async ({
   page,
 }) => {
+  // Local-only for the same reason as the scroll-sync test above: headless
+  // CI cannot drive the viewer's custom (transform-derived) vertical scroll.
+  test.skip(!!process.env.CI, 'headless CI cannot drive the viewer custom scroll; runs locally');
   await expandChain(page, [CRATE, WIDGETS]);
   await expect(page.locator(`.module-group[data-id="${GAUGE_MOD}"]`)).toBeVisible();
+  await waitForLayoutSettled(page);
 
-  // Pick a deep leaf far down the list and a shallow ancestor (widgets,
-  // depth 1) that should pin to the sticky stack as we scroll past it.
+  // A deep leaf far down the list and a shallow ancestor (widgets, depth 1)
+  // that should pin to the sticky stack as the leaf scrolls past it.
   const deepLeaf = `${CRATE}::widgets::w9`;
   const ancestor = WIDGETS;
-
-  // Scroll by the available overflow (font/OS-dependent), not a hardcoded
-  // magnitude; skip if the viewport can't scroll meaningfully.
-  const start = await canvasScrollTop(page);
-  const overflow = await page.evaluate(() => {
-    const el = document.querySelector('#canvas-scroll') as HTMLElement;
-    return el.scrollHeight - el.clientHeight;
-  });
-  const target = Math.min(260, Math.max(0, overflow - start));
-  test.skip(target < 80, `#canvas-scroll cannot scroll enough to pin the ancestor (overflow ${overflow}px)`);
 
   const ancestorBefore = headerTopSync(await headerTop(page, ancestor));
   const leafBefore = headerTopSync(await headerTop(page, deepLeaf));
 
-  await scrollCanvas(page, target);
-  // Poll until the leaf has actually scrolled up (rAF-throttled handler).
-  await page.waitForFunction(
-    ({ id, b }) => {
-      const h = document.querySelector(
-        `#html-modules .module-group[data-id="${id}"] > .module-header`,
-      );
-      return h !== null && b - (h as HTMLElement).getBoundingClientRect().top > 30;
-    },
-    { id: deepLeaf, b: leafBefore },
-  );
+  await wheelScroll(page, 160);
 
   const ancestorAfter = headerTopSync(await headerTop(page, ancestor));
   const leafAfter = headerTopSync(await headerTop(page, deepLeaf));
@@ -473,3 +456,4 @@ test('deep nested chain pins ancestors in z-order (shallower paints on top)', as
     expect(z[i], `z[${i}] (${z[i]}) < z[${i - 1}] (${z[i - 1]})`).toBeLessThan(z[i - 1] as number);
   }
 });
+
