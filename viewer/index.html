@@ -1235,6 +1235,11 @@
         height: 100%;
         cursor: pointer;
         touch-action: none;
+        /* The pan pointer handlers are bound to this svg (see minimap.ts),
+           but `#top-controls * { pointer-events: none }` would block them —
+           the parent `.minimap-body` re-enable does not cascade to the svg.
+           Re-enable here so click/drag-to-pan actually reaches the handlers. */
+        pointer-events: auto;
       }
       #minimap .minimap-viewport {
         fill: rgba(59, 130, 246, 0.12);

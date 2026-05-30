@@ -108,7 +108,7 @@ describe('selected arrow styling', () => {
     expect(source).toContain("Owners (analysis)");
     expect(source).toContain("Owns (analysis)");
     expect(source).toContain('headerDebugMouseenter');
-    expect(source).toMatch(/rect\.expand-hit[\s\S]{0,800}?headerDebugMouseenter/);
+    expect(source).toMatch(/rect\.expand-hit[\s\S]{0,1200}?headerDebugMouseenter/);
     expect(source).toMatch(/rect\.expand-arrow-hit[\s\S]{0,500}?headerDebugMouseenter/);
     expect(source).toMatch(/text\.header-label[\s\S]{0,300}?showTypeDebugPanel/);
     expect(source).toMatch(/text\.kind-marker[\s\S]{0,1500}?showTypeDebugPanel/);

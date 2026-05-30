@@ -456,6 +456,11 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
     entityIsBaseSide: boolean,
     sourceLines: readonly string[] | null,
     totalHeadLines: number | undefined,
+    // Base-side (prev_span) range of a Modified entity. A modified function
+    // occupies a head span (green/add side) AND a base span (red/del side);
+    // tagging must union both so the whole change sits in one focus frame
+    // (the prev_span contract — mirrors what setHighlight does).
+    entityPrev?: { start: number; end: number },
   ): void => {
     // FLAT rendering — no collapse markers, no folding. Every line
     // of the head source file is emitted as a `code-panel-line`,
@@ -473,7 +478,13 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
       baseLine: number | undefined,
     ): void => {
       const ref = entityIsBaseSide ? baseLine : headLine;
-      if (ref !== undefined && ref >= entityStart && ref <= entityEnd) {
+      let inFrame = ref !== undefined && ref >= entityStart && ref <= entityEnd;
+      // Union the base (prev_span) range so a Modified entity's red/del rows
+      // join the same purple frame as its green/add rows on the initial open.
+      if (!inFrame && entityPrev !== undefined && baseLine !== undefined) {
+        inFrame = baseLine >= entityPrev.start && baseLine <= entityPrev.end;
+      }
+      if (inFrame) {
         lineEl.classList.add('entity-row');
       }
     };
@@ -625,6 +636,9 @@ export function createCodePanel(opts: CodePanelOptions): CodePanel {
             args.loadFromBase === true,
             sourceLines,
             totalHeadLines,
+            args.prev_span !== undefined
+              ? { start: args.prev_span.start_line, end: args.prev_span.end_line }
+              : undefined,
           );
           return;
         }

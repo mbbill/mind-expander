@@ -9,7 +9,7 @@
 //   • a method-bucket header     → NO-OP (buckets have no own span)
 //   • a free-function row        → kind 'function'   (complements existing)
 //   • a module label (left tree) → kind 'module'
-//   • a ghost / re-export row    → kind 'type'       (SUSPECTED BUG, skipped)
+//   • a ghost / re-export row    → routed via ghostTarget to the canonical type
 //
 // The type-box and free-function cases already have happy-path coverage
 // in code-panel.spec.ts against its own fixture; this spec fills the row
@@ -317,7 +317,7 @@ test('Cmd+click a method-BUCKET header is a no-op (buckets have no own span)', a
   assertNoPageErrors(page);
 });
 
-test.skip('SUSPECTED BUG: Cmd+click a GHOST re-export row opens the canonical type source', async ({
+test('Cmd+click a GHOST re-export row opens the canonical type source', async ({
   page,
 }) => {
   // tree.ts (line ~1738) fires `onShowCode(d.fullPath, 'type')` for a

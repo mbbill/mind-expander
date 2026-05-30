@@ -173,34 +173,18 @@ test('the tall fixture overflows the viewport so panning is meaningful', async (
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// SUSPECTED BUG — minimap click/drag-to-pan does NOT work in the shipped
-// app.
-//
-// The pan handlers (pointerdown/move/up → panFromPointer → layers.centerOn)
-// are attached to the minimap's `<svg>` node (src/view/minimap.ts). But the
-// page CSS sets `pointer-events: none` on every descendant of #top-controls
-// (`#top-controls *` — index.html ~L803) and re-enables it ONLY on the
-// PARENT `.minimap-body` DIV (`#top-controls .minimap-body { pointer-events:
-// auto }`), NOT on the svg. With the svg at `pointer-events: none`, a real
-// pointer gesture never targets the svg, so its pointerdown/move/up
-// listeners never fire and the canvas never pans.
-//
-// Verified against the real server + Chromium: a real mouse click on the
-// minimap leaves `#canvas-scroll.scrollTop` unchanged (720→720); forcing
-// `svg.style.pointerEvents='auto'` makes the SAME real click pan
-// (720→880). The jsdom Tier-1 tests dispatch directly to the svg node
-// (bypassing CSS hit-testing) and confirm the translation math is correct —
-// so the math layer is fine; the defect is purely the CSS pointer-events
-// boundary. Likely fix: move the pan handlers to `.minimap-body` (which is
-// the pointer-events:auto element) OR add `#top-controls .minimap-body svg
-// { pointer-events: auto }`.
-//
-// These three tests assert the CORRECT observable behavior and are skipped
-// until the pointer-events boundary is fixed; flip `test.skip` → `test` to
-// reproduce the failure / verify a fix.
+// Minimap click/drag-to-pan. The pan handlers (pointerdown/move/up →
+// panFromPointer → layers.centerOn) are attached to the minimap's `<svg>`
+// node. They used to be unreachable: `#top-controls * { pointer-events:
+// none }` blocked the svg while only the parent `.minimap-body` div was
+// re-enabled, so real pointer gestures never hit the svg and the canvas
+// never panned (the jsdom Tier-1 tests, which dispatch directly to the svg,
+// always confirmed the translation math). Fixed by `#minimap svg {
+// pointer-events: auto }` in index.html, so these now exercise the real
+// gesture end to end.
 // ─────────────────────────────────────────────────────────────────────
 
-test.skip('clicking the minimap pans the main canvas; top vs bottom land differently', async ({
+test('clicking the minimap pans the main canvas; top vs bottom land differently', async ({
   page,
 }) => {
   const box = await minimapBox(page);
@@ -225,7 +209,7 @@ test.skip('clicking the minimap pans the main canvas; top vs bottom land differe
   ).toBeGreaterThan(top.scrollTop + 5);
 });
 
-test.skip('clicking the minimap moves the viewport and its indicator down', async ({ page }) => {
+test('clicking the minimap moves the viewport and its indicator down', async ({ page }) => {
   // First pan to the TOP via a top-edge minimap click so there is room to
   // move downward (resetAll/`r` would also fit-all and could leave us
   // already centred).
@@ -253,7 +237,7 @@ test.skip('clicking the minimap moves the viewport and its indicator down', asyn
   );
 });
 
-test.skip('dragging across the minimap pans continuously', async ({ page }) => {
+test('dragging across the minimap pans continuously', async ({ page }) => {
   // Start panned to the top so the drag has room to scroll down.
   const box = await minimapBox(page);
   await page.mouse.click(box.x + box.w / 2, box.y + box.h * 0.05);

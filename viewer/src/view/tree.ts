@@ -1736,7 +1736,12 @@ function renderTypes(
     .on('click', (event: MouseEvent, d) => {
       event.stopPropagation();
       if (event.metaKey || event.ctrlKey) {
-        opts.onShowCode(d.fullPath, 'type');
+        // A ghost (pub-use re-export) box has a SYNTHETIC fullPath that the
+        // span index doesn't know, so opening code for it would no-op. Route
+        // Cmd+click to its ghostTarget — the canonical type's real full_path,
+        // which IS indexed — so it opens the re-exported type's source.
+        const codeId = d.isGhost && d.ghostTarget !== null ? d.ghostTarget : d.fullPath;
+        opts.onShowCode(codeId, 'type');
         return;
       }
       if (d.isGhost && d.ghostTarget !== null) {

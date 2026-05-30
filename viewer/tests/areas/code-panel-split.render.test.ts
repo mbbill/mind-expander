@@ -257,7 +257,7 @@ describe('code-panel split-on-change — renderDiff honors entityIsBaseSide', ()
   });
 });
 
-describe('code-panel split-on-change — show() prev_span contract (SUSPECTED BUG)', () => {
+describe('code-panel split-on-change — show() prev_span contract (fixed)', () => {
   // CONTRACT (CodePanelShowArgs.prev_span docblock): "When set, the focus
   // frame and entity-row tagging extend across the union of (file,
   // startLine..endLine) and (prev_span.file, prev_span.start_line..
@@ -273,7 +273,7 @@ describe('code-panel split-on-change — show() prev_span contract (SUSPECTED BU
   // half only joins the frame after a later reverse-nav click triggers
   // setHighlight. This test asserts the documented (correct) behavior and
   // is skipped until show() honors prev_span.
-  it.skip('SUSPECTED BUG: show() with prev_span frames the base (del) rows on initial open', async () => {
+  it('show() with prev_span frames the base (del) rows on initial open', async () => {
     const panel = createCodePanel({ onLineNavigate: () => {}, diffEnabled: true });
     const body = await showAndSettle(panel, {
       file: 'src/lib.rs',
