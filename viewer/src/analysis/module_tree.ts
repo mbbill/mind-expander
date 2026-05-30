@@ -2,7 +2,15 @@
 // with types as leaves. No DOM, no D3, no view state — view-state machinery
 // keys off the stable `id` field of each node.
 
-import type { CrateFacts, Facts, FieldFacts, FnFacts, Language, ReExport, TypeKind } from '../data/schema.ts';
+import type {
+  CrateFacts,
+  Facts,
+  FieldFacts,
+  FnFacts,
+  Language,
+  ReExport,
+  TypeKind,
+} from '../data/schema.ts';
 import {
   BUCKET_LABEL,
   BUCKET_ORDER,
@@ -13,6 +21,23 @@ import {
 } from './visibility.ts';
 
 export type TreeNode = ModuleNode | TypeNode;
+
+/** How a module maps to source files, which decides its tree label and
+ *  folder/file icon. Derived purely from `ModuleFacts.file` + the module's
+ *  children — see `assignFileRoles`.
+ *   - `crate-root`  the package as a whole (lib.rs/main.rs/index.ts). Bare
+ *                   crate-name label, no file/folder icon.
+ *   - `dir`         a directory module: backed by `mod.rs`, or backed by a
+ *                   `name.rs` that ALSO has submodules (the Rust-2018 sibling
+ *                   form), or a synthesized path intermediate. Folder icon,
+ *                   bare directory-name label.
+ *   - `leaf-file`   a module that is just one file with no submodules. File
+ *                   icon, label is the filename incl. extension (`a.rs`).
+ *   - `inline`      a Rust `mod foo { ... }` with no file of its own — the
+ *                   extractor stamps it with the parent's file, so it shares
+ *                   a filename with its parent/siblings. Distinct icon; label
+ *                   shows `name (parentfile)` to disambiguate. */
+export type FileRole = 'crate-root' | 'dir' | 'leaf-file' | 'inline';
 
 export interface ModuleNode {
   readonly kind: 'module';
@@ -27,6 +52,11 @@ export interface ModuleNode {
    *  TS renderer uses it to draw folder vs file icons since TS
    *  module path = file path. */
   readonly isLeaf: boolean;
+  /** Display role derived from the module's file shape + children. Drives
+   *  the tree label and the folder/file icon. Orthogonal to `isLeaf`: a
+   *  `dir` can be either a real module (its own mod.rs/name.rs) or a
+   *  synthesized intermediate — `isLeaf` keeps that "real file" bit. */
+  readonly fileRole: FileRole;
   /** Source language of the crate this module belongs to. Stamped on
    *  every descendant during tree build so the renderer doesn't have
    *  to walk back to the crate-root to know which language to use.
@@ -108,6 +138,11 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
     path: string;
     children: TreeNode[];
     isLeaf: boolean;
+    fileRole: FileRole;
+    /** Absolute source file from `ModuleFacts.file`. Empty for synthesized
+     *  path intermediates that never appeared in `crate.modules`. Used by
+     *  the role post-pass (filename → label, parent-file match → inline). */
+    file: string;
     language: Language;
   };
 
@@ -120,6 +155,8 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
     // The crate-root node represents the package as a whole, not a
     // file — render it as a container.
     isLeaf: false,
+    fileRole: 'crate-root',
+    file: '',
     language: crateLanguage,
   };
   const byPath = new Map<string, Scratch>([['', root]]);
@@ -143,6 +180,10 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
       path,
       children: [],
       isLeaf: false,
+      // Provisional; overwritten by assignFileRoles once the tree (and
+      // each node's `file`) is fully built.
+      fileRole: 'dir',
+      file: '',
       language: crateLanguage,
     };
     parent.children.push(node);
@@ -158,32 +199,18 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
   // with the parent prefix dimmed/smaller to make module-ness explicit.
   for (const m of modules) {
     const node = m.path === '' ? root : ensureChain(m.path);
+    // Record the backing source file so `assignFileRoles` can derive the
+    // label (filename) and detect inline modules (file shared with parent).
+    node.file = m.file;
     // This module path appeared in `crate.modules` — mark the node
-    // as a real source file (vs. a synthesized intermediate). For
-    // TS this drives the file-vs-folder icon in the renderer; for
-    // Rust it's harmless metadata.
+    // as a real source file (vs. a synthesized intermediate). Drives the
+    // "real vs synthesized" distinction independent of fileRole.
     //
     // EXCEPT the crate root (`m.path === ''`): the always-present root
     // entry (lib.rs / index.ts) must NOT flip the root to a leaf — the
     // root represents the package as a whole and stays a container
-    // (`isLeaf=false`, set at construction), so the TS renderer draws a
-    // container, not a file, for the crate row.
+    // (`isLeaf=false`, set at construction).
     if (m.path !== '') node.isLeaf = true;
-    // TS module path = file path (sans extension); the actual
-    // filename — including `.ts` / `.tsx` — is sitting right
-    // there in `m.file`. Use it as the leaf label so the tree
-    // reads as a filesystem view rather than as a stripped-name
-    // module hierarchy. Rust modules don't get this treatment:
-    // module ≠ file (mod.rs, multi-file modules), so the path
-    // segment is the honest label.
-    //
-    // Crate root (m.path === '') keeps its bare crate-name label
-    // even for TS — we don't want to show `index.ts` for a
-    // single-file package, the crate name is the right grouping.
-    if (crateLanguage === 'typescript' && m.path !== '') {
-      const basename = leafBasename(m.file);
-      if (basename !== null) node.label = basename;
-    }
     // Synthetic function-group pseudo-types come FIRST so they appear at
     // the top of the module's column when the band sorts kind-aware.
     for (const groupNode of synthesiseFunctionGroups(crate.name, m.path, m.functions)) {
@@ -211,11 +238,77 @@ export function buildModuleTree(crate: CrateFacts, options: BuildOptions = {}): 
     }
   }
 
+  // Now that every node carries its `file` and its full child set, derive
+  // the display role + label. Must run BEFORE the child sort, which orders
+  // sibling modules by their (now final) label.
+  assignFileRoles(root, null);
+
   for (const node of byPath.values()) {
     node.children.sort(compareTreeNodes);
   }
 
   return root as ModuleNode;
+}
+
+/** Mutable view of a module node during the build, before it's frozen into
+ *  the readonly `ModuleNode`. Only the fields `assignFileRoles` touches. */
+interface MutableModule {
+  readonly kind: 'module';
+  readonly path: string;
+  label: string;
+  readonly file: string;
+  fileRole: FileRole;
+  readonly children: readonly TreeNode[];
+}
+
+/** Matches a file path ending in `mod.<ext>` (`.../foo/mod.rs`) — the Rust
+ *  directory-module convention. The module name comes from the parent dir,
+ *  not the filename, so such modules render as folders named after the dir. */
+const MOD_FILE_RE = /(?:^|[/\\])mod\.[^./\\]+$/;
+
+/** Derive each module's display role + label from its backing file and its
+ *  children, in one post-order-independent walk. See `FileRole`.
+ *
+ *  The rule (Rust and TS share it; only Rust produces the inline case):
+ *   - crate root → `crate-root`, keep the crate-name label.
+ *   - file === parent's file → `inline` (a `mod foo {}` with no file of its
+ *     own); label `name (parentfile)` since the bare filename is ambiguous.
+ *   - `mod.rs`-backed, OR has child modules (the `name.rs` + `name/` sibling
+ *     form), OR a synthesized intermediate → `dir`; bare directory-name label.
+ *   - otherwise a single file with no submodules → `leaf-file`; label is the
+ *     filename incl. extension.
+ *
+ *  "Has child modules" is what unifies `foo/mod.rs` and `foo.rs`+`foo/`: both
+ *  are directory modules and render identically; only the file Cmd+click
+ *  opens differs (handled server-side by id, not by this label). */
+function assignFileRoles(node: MutableModule, parent: MutableModule | null): void {
+  if (node.path === '') {
+    node.fileRole = 'crate-root';
+  } else {
+    const seg = node.path.split('::').pop() ?? node.path;
+    const hasChildModule = node.children.some((c) => c.kind === 'module');
+    const base = leafBasename(node.file);
+    if (parent !== null && node.file !== '' && node.file === parent.file) {
+      node.fileRole = 'inline';
+      const parentBase = leafBasename(parent.file);
+      node.label = parentBase !== null ? `${seg} (${parentBase})` : seg;
+    } else if (MOD_FILE_RE.test(node.file) || hasChildModule) {
+      node.fileRole = 'dir';
+      node.label = seg;
+    } else if (base !== null) {
+      node.fileRole = 'leaf-file';
+      node.label = base;
+    } else {
+      // No file and no children — degenerate; treat as a bare container.
+      node.fileRole = 'dir';
+      node.label = seg;
+    }
+  }
+  for (const child of node.children) {
+    if (child.kind === 'module') {
+      assignFileRoles(child as unknown as MutableModule, node);
+    }
+  }
 }
 
 /** Synthetic id used as the root of a multi-crate workspace tree. Not a
@@ -254,6 +347,7 @@ export function buildWorkspaceTree(facts: Facts, options: BuildOptions = {}): Mo
     // single source file — render as a container if it were ever
     // rendered (the layout currently skips painting it).
     isLeaf: false,
+    fileRole: 'dir',
     // The language field is denormalized down from each crate; the
     // workspace root itself spans multiple languages in a polyglot
     // repo, so picking one would lie. The renderer never reads the

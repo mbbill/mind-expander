@@ -9,23 +9,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::H0",
       "waypoints": [
         [
-          130.17,
+          154.67,
           64,
         ],
         [
-          174.17,
+          198.67,
           64,
         ],
         [
-          182.17,
+          206.67,
           64,
         ],
         [
-          182.17,
+          206.67,
           44,
         ],
         [
-          194.17,
+          218.67,
           44,
         ],
       ],
@@ -36,23 +36,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::H1",
       "waypoints": [
         [
-          130.17,
+          154.67,
           80,
         ],
         [
-          174.17,
+          198.67,
           80,
         ],
         [
-          182.17,
+          206.67,
           80,
         ],
         [
-          182.17,
+          206.67,
           76,
         ],
         [
-          194.17,
+          218.67,
           76,
         ],
       ],
@@ -63,23 +63,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::H2",
       "waypoints": [
         [
-          130.17,
+          154.67,
           96,
         ],
         [
-          174.17,
+          198.67,
           96,
         ],
         [
-          182.17,
+          206.67,
           96,
         ],
         [
-          182.17,
+          206.67,
           108,
         ],
         [
-          194.17,
+          218.67,
           108,
         ],
       ],
@@ -90,27 +90,27 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::H3",
       "waypoints": [
         [
-          130.17,
+          154.67,
           112,
         ],
         [
-          174.17,
+          198.67,
           112,
         ],
         [
-          174.17,
+          198.67,
           92,
         ],
         [
-          302.17,
+          326.67,
           92,
         ],
         [
-          302.17,
+          326.67,
           44,
         ],
         [
-          314.17,
+          338.67,
           44,
         ],
       ],
@@ -121,23 +121,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::H4",
       "waypoints": [
         [
-          130.17,
+          154.67,
           128,
         ],
         [
-          174.17,
+          198.67,
           128,
         ],
         [
-          302.17,
+          326.67,
           128,
         ],
         [
-          302.17,
+          326.67,
           76,
         ],
         [
-          314.17,
+          338.67,
           76,
         ],
       ],
@@ -148,23 +148,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::H5",
       "waypoints": [
         [
-          130.17,
+          154.67,
           144,
         ],
         [
-          174.17,
+          198.67,
           144,
         ],
         [
-          302.17,
+          326.67,
           144,
         ],
         [
-          302.17,
+          326.67,
           108,
         ],
         [
-          314.17,
+          338.67,
           108,
         ],
       ],
@@ -175,23 +175,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::H6",
       "waypoints": [
         [
-          130.17,
+          154.67,
           160,
         ],
         [
-          174.17,
+          198.67,
           160,
         ],
         [
-          422.17,
+          446.67,
           160,
         ],
         [
-          422.17,
+          446.67,
           44,
         ],
         [
-          434.17,
+          458.67,
           44,
         ],
       ],
@@ -202,23 +202,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::H7",
       "waypoints": [
         [
-          130.17,
+          154.67,
           176,
         ],
         [
-          174.17,
+          198.67,
           176,
         ],
         [
-          422.17,
+          446.67,
           176,
         ],
         [
-          422.17,
+          446.67,
           76,
         ],
         [
-          434.17,
+          458.67,
           76,
         ],
       ],
@@ -229,23 +229,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R0",
       "waypoints": [
         [
-          490.17,
+          514.67,
           128,
         ],
         [
-          534.17,
+          558.67,
           128,
         ],
         [
-          542.17,
+          566.67,
           128,
         ],
         [
-          542.17,
+          566.67,
           44,
         ],
         [
-          554.17,
+          578.67,
           44,
         ],
       ],
@@ -256,23 +256,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R1",
       "waypoints": [
         [
-          490.17,
+          514.67,
           144,
         ],
         [
-          534.17,
+          558.67,
           144,
         ],
         [
-          542.17,
+          566.67,
           144,
         ],
         [
-          542.17,
+          566.67,
           76,
         ],
         [
-          554.17,
+          578.67,
           76,
         ],
       ],
@@ -283,23 +283,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R10",
       "waypoints": [
         [
-          497.17,
+          521.67,
           288,
         ],
         [
-          534.17,
+          558.67,
           288,
         ],
         [
-          542.17,
+          566.67,
           288,
         ],
         [
-          542.17,
+          566.67,
           108,
         ],
         [
-          554.17,
+          578.67,
           108,
         ],
       ],
@@ -310,23 +310,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R11",
       "waypoints": [
         [
-          497.17,
+          521.67,
           304,
         ],
         [
-          534.17,
+          558.67,
           304,
         ],
         [
-          542.17,
+          566.67,
           304,
         ],
         [
-          542.17,
+          566.67,
           140,
         ],
         [
-          554.17,
+          578.67,
           140,
         ],
       ],
@@ -337,23 +337,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R2",
       "waypoints": [
         [
-          490.17,
+          514.67,
           160,
         ],
         [
-          534.17,
+          558.67,
           160,
         ],
         [
-          662.17,
+          686.67,
           160,
         ],
         [
-          662.17,
+          686.67,
           44,
         ],
         [
-          674.17,
+          698.67,
           44,
         ],
       ],
@@ -364,23 +364,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R3",
       "waypoints": [
         [
-          490.17,
+          514.67,
           176,
         ],
         [
-          534.17,
+          558.67,
           176,
         ],
         [
-          662.17,
+          686.67,
           176,
         ],
         [
-          662.17,
+          686.67,
           76,
         ],
         [
-          674.17,
+          698.67,
           76,
         ],
       ],
@@ -391,23 +391,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R4",
       "waypoints": [
         [
-          490.17,
+          514.67,
           192,
         ],
         [
-          534.17,
+          558.67,
           192,
         ],
         [
-          662.17,
+          686.67,
           192,
         ],
         [
-          662.17,
+          686.67,
           108,
         ],
         [
-          674.17,
+          698.67,
           108,
         ],
       ],
@@ -418,23 +418,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R5",
       "waypoints": [
         [
-          490.17,
+          514.67,
           208,
         ],
         [
-          534.17,
+          558.67,
           208,
         ],
         [
-          662.17,
+          686.67,
           208,
         ],
         [
-          662.17,
+          686.67,
           140,
         ],
         [
-          674.17,
+          698.67,
           140,
         ],
       ],
@@ -445,23 +445,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R6",
       "waypoints": [
         [
-          490.17,
+          514.67,
           224,
         ],
         [
-          534.17,
+          558.67,
           224,
         ],
         [
-          782.17,
+          806.67,
           224,
         ],
         [
-          782.17,
+          806.67,
           44,
         ],
         [
-          794.17,
+          818.67,
           44,
         ],
       ],
@@ -472,23 +472,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R7",
       "waypoints": [
         [
-          490.17,
+          514.67,
           240,
         ],
         [
-          534.17,
+          558.67,
           240,
         ],
         [
-          782.17,
+          806.67,
           240,
         ],
         [
-          782.17,
+          806.67,
           76,
         ],
         [
-          794.17,
+          818.67,
           76,
         ],
       ],
@@ -499,23 +499,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R8",
       "waypoints": [
         [
-          490.17,
+          514.67,
           256,
         ],
         [
-          534.17,
+          558.67,
           256,
         ],
         [
-          782.17,
+          806.67,
           256,
         ],
         [
-          782.17,
+          806.67,
           108,
         ],
         [
-          794.17,
+          818.67,
           108,
         ],
       ],
@@ -526,23 +526,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::R9",
       "waypoints": [
         [
-          490.17,
+          514.67,
           272,
         ],
         [
-          534.17,
+          558.67,
           272,
         ],
         [
-          782.17,
+          806.67,
           272,
         ],
         [
-          782.17,
+          806.67,
           140,
         ],
         [
-          794.17,
+          818.67,
           140,
         ],
       ],
@@ -553,23 +553,23 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "to": "c::m::Root",
       "waypoints": [
         [
-          144.17,
+          168.67,
           224,
         ],
         [
-          174.17,
+          198.67,
           224,
         ],
         [
-          422.17,
+          446.67,
           224,
         ],
         [
-          422.17,
+          446.67,
           108,
         ],
         [
-          434.17,
+          458.67,
           108,
         ],
       ],
@@ -590,11 +590,11 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
     },
   ],
   "totalHeight": 320,
-  "totalWidth": 890.17,
+  "totalWidth": 914.67,
   "types": [
     {
       "box": [
-        194.17,
+        218.67,
         32,
         96,
         24,
@@ -604,12 +604,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::H0",
       "width": 96,
-      "x": 194.17,
+      "x": 218.67,
       "y": 44,
     },
     {
       "box": [
-        194.17,
+        218.67,
         64,
         96,
         24,
@@ -619,12 +619,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::H1",
       "width": 96,
-      "x": 194.17,
+      "x": 218.67,
       "y": 76,
     },
     {
       "box": [
-        194.17,
+        218.67,
         96,
         96,
         24,
@@ -634,12 +634,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::H2",
       "width": 96,
-      "x": 194.17,
+      "x": 218.67,
       "y": 108,
     },
     {
       "box": [
-        314.17,
+        338.67,
         32,
         96,
         24,
@@ -649,12 +649,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::H3",
       "width": 96,
-      "x": 314.17,
+      "x": 338.67,
       "y": 44,
     },
     {
       "box": [
-        314.17,
+        338.67,
         64,
         96,
         24,
@@ -664,12 +664,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::H4",
       "width": 96,
-      "x": 314.17,
+      "x": 338.67,
       "y": 76,
     },
     {
       "box": [
-        314.17,
+        338.67,
         96,
         96,
         24,
@@ -679,12 +679,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::H5",
       "width": 96,
-      "x": 314.17,
+      "x": 338.67,
       "y": 108,
     },
     {
       "box": [
-        434.17,
+        458.67,
         32,
         96,
         24,
@@ -694,12 +694,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::H6",
       "width": 96,
-      "x": 434.17,
+      "x": 458.67,
       "y": 44,
     },
     {
       "box": [
-        434.17,
+        458.67,
         64,
         96,
         24,
@@ -709,12 +709,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::H7",
       "width": 96,
-      "x": 434.17,
+      "x": 458.67,
       "y": 76,
     },
     {
       "box": [
-        74.17,
+        98.67,
         32,
         96,
         152,
@@ -724,12 +724,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 152,
       "id": "c::m::Hub",
       "width": 96,
-      "x": 74.17,
+      "x": 98.67,
       "y": 44,
     },
     {
       "box": [
-        554.17,
+        578.67,
         32,
         96,
         24,
@@ -739,12 +739,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R0",
       "width": 96,
-      "x": 554.17,
+      "x": 578.67,
       "y": 44,
     },
     {
       "box": [
-        554.17,
+        578.67,
         64,
         96,
         24,
@@ -754,12 +754,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R1",
       "width": 96,
-      "x": 554.17,
+      "x": 578.67,
       "y": 76,
     },
     {
       "box": [
-        554.17,
+        578.67,
         96,
         96,
         24,
@@ -769,12 +769,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R10",
       "width": 96,
-      "x": 554.17,
+      "x": 578.67,
       "y": 108,
     },
     {
       "box": [
-        554.17,
+        578.67,
         128,
         96,
         24,
@@ -784,12 +784,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R11",
       "width": 96,
-      "x": 554.17,
+      "x": 578.67,
       "y": 140,
     },
     {
       "box": [
-        674.17,
+        698.67,
         32,
         96,
         24,
@@ -799,12 +799,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R2",
       "width": 96,
-      "x": 674.17,
+      "x": 698.67,
       "y": 44,
     },
     {
       "box": [
-        674.17,
+        698.67,
         64,
         96,
         24,
@@ -814,12 +814,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R3",
       "width": 96,
-      "x": 674.17,
+      "x": 698.67,
       "y": 76,
     },
     {
       "box": [
-        674.17,
+        698.67,
         96,
         96,
         24,
@@ -829,12 +829,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R4",
       "width": 96,
-      "x": 674.17,
+      "x": 698.67,
       "y": 108,
     },
     {
       "box": [
-        674.17,
+        698.67,
         128,
         96,
         24,
@@ -844,12 +844,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R5",
       "width": 96,
-      "x": 674.17,
+      "x": 698.67,
       "y": 140,
     },
     {
       "box": [
-        794.17,
+        818.67,
         32,
         96,
         24,
@@ -859,12 +859,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R6",
       "width": 96,
-      "x": 794.17,
+      "x": 818.67,
       "y": 44,
     },
     {
       "box": [
-        794.17,
+        818.67,
         64,
         96,
         24,
@@ -874,12 +874,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R7",
       "width": 96,
-      "x": 794.17,
+      "x": 818.67,
       "y": 76,
     },
     {
       "box": [
-        794.17,
+        818.67,
         96,
         96,
         24,
@@ -889,12 +889,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R8",
       "width": 96,
-      "x": 794.17,
+      "x": 818.67,
       "y": 108,
     },
     {
       "box": [
-        794.17,
+        818.67,
         128,
         96,
         24,
@@ -904,12 +904,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 24,
       "id": "c::m::R9",
       "width": 96,
-      "x": 794.17,
+      "x": 818.67,
       "y": 140,
     },
     {
       "box": [
-        434.17,
+        458.67,
         96,
         96,
         216,
@@ -919,12 +919,12 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 216,
       "id": "c::m::Root",
       "width": 96,
-      "x": 434.17,
+      "x": 458.67,
       "y": 108,
     },
     {
       "box": [
-        74.17,
+        98.67,
         192,
         96,
         40,
@@ -934,7 +934,7 @@ exports[`buildLayout — golden snapshots > is stable: medium fixture / owners e
       "height": 40,
       "id": "c::m::Tail",
       "width": 96,
-      "x": 74.17,
+      "x": 98.67,
       "y": 204,
     },
   ],
@@ -965,11 +965,11 @@ exports[`buildLayout — golden snapshots > is stable: small / collapsed (crate 
     },
   ],
   "totalHeight": 88,
-  "totalWidth": 211,
+  "totalWidth": 235.5,
   "types": [
     {
       "box": [
-        115,
+        139.5,
         8,
         96,
         24,
@@ -979,7 +979,7 @@ exports[`buildLayout — golden snapshots > is stable: small / collapsed (crate 
       "height": 24,
       "id": "c::App",
       "width": 96,
-      "x": 115,
+      "x": 139.5,
       "y": 20,
     },
   ],
@@ -995,23 +995,23 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "to": "c::core::Engine",
       "waypoints": [
         [
-          199,
+          223.5,
           40,
         ],
         [
-          215,
+          239.5,
           40,
         ],
         [
-          223,
+          247.5,
           40,
         ],
         [
-          223,
+          247.5,
           84,
         ],
         [
-          235,
+          259.5,
           84,
         ],
       ],
@@ -1022,23 +1022,23 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "to": "c::render::Renderer",
       "waypoints": [
         [
-          213,
+          237.5,
           56,
         ],
         [
-          217,
+          241.5,
           56,
         ],
         [
-          223,
+          247.5,
           56,
         ],
         [
-          223,
+          247.5,
           132,
         ],
         [
-          235,
+          259.5,
           132,
         ],
       ],
@@ -1049,23 +1049,23 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "to": "c::core::Cylinder",
       "waypoints": [
         [
-          298,
+          322.5,
           104,
         ],
         [
-          335,
+          359.5,
           104,
         ],
         [
-          343,
+          367.5,
           104,
         ],
         [
-          343,
+          367.5,
           84,
         ],
         [
-          355,
+          379.5,
           84,
         ],
       ],
@@ -1076,23 +1076,23 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "to": "c::render::Pixel",
       "waypoints": [
         [
-          298,
+          322.5,
           152,
         ],
         [
-          347.17,
+          371.67,
           152,
         ],
         [
-          359,
+          383.5,
           152,
         ],
         [
-          359,
+          383.5,
           132,
         ],
         [
-          371,
+          395.5,
           132,
         ],
       ],
@@ -1119,11 +1119,11 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
     },
   ],
   "totalHeight": 168,
-  "totalWidth": 467,
+  "totalWidth": 491.5,
   "types": [
     {
       "box": [
-        115,
+        139.5,
         8,
         96,
         56,
@@ -1133,12 +1133,12 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "height": 56,
       "id": "c::App",
       "width": 96,
-      "x": 115,
+      "x": 139.5,
       "y": 20,
     },
     {
       "box": [
-        355,
+        379.5,
         72,
         96,
         24,
@@ -1148,12 +1148,12 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "height": 24,
       "id": "c::core::Cylinder",
       "width": 96,
-      "x": 355,
+      "x": 379.5,
       "y": 84,
     },
     {
       "box": [
-        235,
+        259.5,
         72,
         96,
         40,
@@ -1163,12 +1163,12 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "height": 40,
       "id": "c::core::Engine",
       "width": 96,
-      "x": 235,
+      "x": 259.5,
       "y": 84,
     },
     {
       "box": [
-        371,
+        395.5,
         120,
         96,
         24,
@@ -1178,12 +1178,12 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "height": 24,
       "id": "c::render::Pixel",
       "width": 96,
-      "x": 371,
+      "x": 395.5,
       "y": 132,
     },
     {
       "box": [
-        235,
+        259.5,
         120,
         108.17,
         40,
@@ -1193,7 +1193,7 @@ exports[`buildLayout — golden snapshots > is stable: small / owners expanded 1
       "height": 40,
       "id": "c::render::Renderer",
       "width": 108.17,
-      "x": 235,
+      "x": 259.5,
       "y": 132,
     },
   ],

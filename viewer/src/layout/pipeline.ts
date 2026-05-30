@@ -71,6 +71,7 @@ function toModuleRows(geometry: Geometry): ModuleRow[] {
       prefixSegments: m.prefixSegments,
       leafBg: m.leafBg,
       isLeaf: m.node.isLeaf,
+      fileRole: m.node.fileRole,
       language: m.node.language,
     }),
   );

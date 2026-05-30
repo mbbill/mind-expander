@@ -3,7 +3,7 @@ import type { ViewState } from '../state/view_state.ts';
 import type { FunctionCallIndex, FunctionCallRef, FunctionRowRef } from './calls.ts';
 import type { DriftClass, DriftIndex } from './drift.ts';
 import type { LeafBgSegment, PrefixSegment } from './layout_metrics.ts';
-import type { ModuleNode } from './module_tree.ts';
+import type { FileRole, ModuleNode } from './module_tree.ts';
 import type { OwnershipIndex } from './ownership.ts';
 
 export { FIELD_ROW_H, INDENT_PX, LEFT_PAD, ROW_H, TOP_PAD } from './layout_metrics.ts';
@@ -33,9 +33,12 @@ export interface ModuleRow {
    *  intermediate. The TS renderer uses this for the folder/file
    *  icon. See `ModuleNode.isLeaf` for the source of truth. */
   readonly isLeaf: boolean;
+  /** Display role (folder/file/inline/crate-root) used to pick the row's
+   *  icon and is already reflected in `label`. See `ModuleNode.fileRole`. */
+  readonly fileRole: FileRole;
   /** Source language the owning crate was extracted from. Lets the
-   *  renderer scope language-specific decorations (folder/file icons
-   *  for TS) without walking up to the crate root. */
+   *  renderer scope language-specific decorations without walking up to
+   *  the crate root. */
   readonly language: Language;
 }
 

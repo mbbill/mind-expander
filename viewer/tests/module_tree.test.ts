@@ -99,20 +99,18 @@ describe('buildModuleTree', () => {
     const root = buildModuleTree(
       crateOf('c', [mod(''), mod('a::b::c', [ty('c', 'a::b::c', 'X')])]),
     );
-    // Every module — synthetic intermediate or real — uses its bare last
-    // path segment as the label. We deliberately do NOT synthesize file-
-    // shaped labels (e.g. `c.rs`) — the pane is a Rust module hierarchy.
+    // `a` and `a::b` are directory modules (they have submodules) → bare
+    // folder names. `a::b::c` is a leaf file → filename with extension.
     expect(findModule(root, 'a')?.label).toBe('a');
     expect(findModule(root, 'a::b')?.label).toBe('b');
     const abc = findModule(root, 'a::b::c');
-    expect(abc?.label).toBe('c');
+    expect(abc?.label).toBe('c.rs');
     expect(childLabels(abc as ModuleNode)).toEqual(['X']);
   });
 
-  it('module label is the last path segment regardless of file shape', () => {
-    // All three of these resolve to the same bare-name label even though
-    // the underlying source layout differs (mod.rs-backed, leaf .rs, leaf
-    // .rs with companion submodules). File shape isn't part of the label.
+  it('label follows file shape: leaf → name.rs, directory module → bare name', () => {
+    // Leaf .rs files show the filename; directory modules (mod.rs-backed,
+    // or a leaf .rs that ALSO has submodules) show the bare directory name.
     const root = buildModuleTree(
       crateOf('c', [
         mod(''),
@@ -122,15 +120,16 @@ describe('buildModuleTree', () => {
         mod('split::sub', [], { file: 'src/split/sub.rs' }),
       ]),
     );
-    expect(findModule(root, 'modrs_backed')?.label).toBe('modrs_backed');
-    expect(findModule(root, 'leaf')?.label).toBe('leaf');
-    expect(findModule(root, 'split')?.label).toBe('split');
-    expect(findModule(root, 'split::sub')?.label).toBe('sub');
+    expect(findModule(root, 'modrs_backed')?.label).toBe('modrs_backed'); // mod.rs → dir
+    expect(findModule(root, 'leaf')?.label).toBe('leaf.rs'); // leaf file
+    expect(findModule(root, 'split')?.label).toBe('split'); // has submodule → dir
+    expect(findModule(root, 'split::sub')?.label).toBe('sub.rs'); // leaf file
   });
 
   it('places submodules before type leaves at the same level', () => {
     const root = buildModuleTree(crateOf('c', [mod('', [ty('c', '', 'TypeAtRoot')]), mod('sub')]));
-    expect(childLabels(root)).toEqual(['sub', 'TypeAtRoot']);
+    // `sub` is a leaf .rs file → `sub.rs`; still sorts before the type leaf.
+    expect(childLabels(root)).toEqual(['sub.rs', 'TypeAtRoot']);
   });
 
   it('excludes test modules by default', () => {

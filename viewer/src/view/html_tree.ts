@@ -108,12 +108,13 @@ export function renderHtmlModuleTree(
     const group = document.createElement('div');
     group.className = 'module-group';
     group.dataset.id = m.id;
-    // `data-leaf` = "this module is a real source file" vs a
-    // synthesized directory intermediate. `data-crate-lang` =
-    // owning crate's language ("rust" | "typescript"). Both are
-    // pure data attributes read by CSS to switch the
-    // folder-vs-file icon on TypeScript crates; Rust rows ignore
-    // them (no matching CSS).
+    // `data-file-role` (crate-root | dir | leaf-file | inline) is the
+    // single attribute CSS keys off to pick the folder/file/inline icon —
+    // language-agnostic, so Rust and TS rows decorate the same way. The
+    // role is derived in module_tree.ts and already reflected in `label`.
+    // `data-leaf` (real source file vs synthesized intermediate) and
+    // `data-crate-lang` are retained for any non-icon consumers/tests.
+    group.dataset.fileRole = m.fileRole;
     group.dataset.leaf = m.isLeaf ? 'true' : 'false';
     group.dataset.crateLang = m.language;
     // Union-diff side coloring. When the host provides a sideByModule
@@ -170,11 +171,7 @@ export function renderHtmlModuleTree(
  *   • Read-then-write loop avoids layout thrashing (one layout per frame
  *     instead of one per header).
  *   • rAF throttle collapses scroll bursts to one update per frame. */
-function installScrollVisibility(
-  container: HTMLElement,
-  scrollEl: HTMLElement,
-  k: number,
-): void {
+function installScrollVisibility(container: HTMLElement, scrollEl: HTMLElement, k: number): void {
   type Host = { __sfHideStaleScroll?: () => void };
   const host = scrollEl as unknown as Host;
   if (host.__sfHideStaleScroll) {
@@ -184,9 +181,9 @@ function installScrollVisibility(
 
   // Snapshot headers + their depth once per render. The DOM was just
   // built by the caller, so re-querying every scroll is wasted work.
-  const headers = Array.from(
-    container.querySelectorAll<HTMLElement>('.module-header'),
-  ).map((el) => ({ el, depth: Number(el.dataset.depth ?? '0') }));
+  const headers = Array.from(container.querySelectorAll<HTMLElement>('.module-header')).map(
+    (el) => ({ el, depth: Number(el.dataset.depth ?? '0') }),
+  );
 
   const apply = (): void => {
     if (headers.length === 0) return;

@@ -207,10 +207,11 @@ describe('module-tree data model (MT-D)', () => {
     const root = buildModuleTree(
       crateOf('c', [mod('', [ty('c', '', 'Zed'), ty('c', '', 'Alpha')]), mod('sub')]),
     );
-    expect(root.children.map((c) => c.label)).toEqual(['sub', 'Alpha', 'Zed']);
+    // `sub` is a leaf .rs file → `sub.rs`; modules still sort before types.
+    expect(root.children.map((c) => c.label)).toEqual(['sub.rs', 'Alpha', 'Zed']);
   });
 
-  it('MT-D03: label is the last path segment regardless of file shape (no .rs)', () => {
+  it('MT-D03: Rust label follows file shape — leaf shows name.rs, directory modules stay bare', () => {
     const root = buildModuleTree(
       crateOf('c', [
         mod(''),
@@ -219,9 +220,51 @@ describe('module-tree data model (MT-D)', () => {
         mod('split::sub', [], { file: 'src/split/sub.rs' }),
       ]),
     );
-    expect(findModule(root, 'split::sub')?.label).toBe('sub');
+    // Leaf module backed by its own `.rs` file → show the filename (the
+    // module name is redundant with it, so we don't repeat both).
+    expect(findModule(root, 'split::sub')?.label).toBe('sub.rs');
+    // `modrs_backed/mod.rs` → directory module. The literal filename
+    // (`mod.rs`) is useless, so it renders as the bare directory name.
     expect(findModule(root, 'modrs_backed')?.label).toBe('modrs_backed');
+    // `split.rs` + `split/sub.rs` is the sibling spelling of a directory
+    // module: `split` has a submodule, so it's a folder named `split`
+    // (NOT `split.rs`) — identical to how the mod.rs form renders. Cmd+click
+    // still opens split.rs (its body file).
     expect(findModule(root, 'split')?.label).toBe('split');
+  });
+
+  it('MT-D03b: fileRole classifies leaf-file / dir / crate-root from file shape + children', () => {
+    const root = buildModuleTree(
+      crateOf('c', [
+        mod(''),
+        mod('modrs_backed', [], { file: 'src/modrs_backed/mod.rs' }),
+        mod('split', [], { file: 'src/split.rs' }),
+        mod('split::sub', [], { file: 'src/split/sub.rs' }),
+      ]),
+    );
+    expect(root.fileRole).toBe('crate-root');
+    expect(findModule(root, 'modrs_backed')?.fileRole).toBe('dir'); // mod.rs
+    expect(findModule(root, 'split')?.fileRole).toBe('dir'); // has a submodule
+    expect(findModule(root, 'split::sub')?.fileRole).toBe('leaf-file');
+  });
+
+  it('MT-D03c: inline mod (file === parent file) → inline role + "name (parentfile)" label', () => {
+    // An inline `mod helpers { ... }` declared inside lib.rs has no file of
+    // its own — the extractor stamps it with the PARENT's file. That shared
+    // filename is ambiguous on its own, so the rare inline case shows the
+    // module name AND the file it lives in, with its own role/icon.
+    const root = buildModuleTree(
+      crateOf('c', [
+        mod('', [], { file: 'src/lib.rs' }),
+        mod('helpers', [], { file: 'src/lib.rs' }),
+        mod('real', [], { file: 'src/real.rs' }),
+      ]),
+    );
+    expect(findModule(root, 'helpers')?.fileRole).toBe('inline');
+    expect(findModule(root, 'helpers')?.label).toBe('helpers (lib.rs)');
+    // A sibling backed by its own distinct file is a normal leaf, not inline.
+    expect(findModule(root, 'real')?.fileRole).toBe('leaf-file');
+    expect(findModule(root, 'real')?.label).toBe('real.rs');
   });
 
   it('MT-D04: test modules excluded by default, kept when excludeTests:false; any segment matches', () => {

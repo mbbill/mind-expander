@@ -16,6 +16,9 @@ const layout: Layout = {
       hasChildren: false,
       prefixSegments: [],
       leafBg: { name: 'm', xStart: 0, width: 10, isParent: false },
+      isLeaf: true,
+      fileRole: 'leaf-file',
+      language: 'rust',
     },
   ],
   types: [

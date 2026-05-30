@@ -282,6 +282,27 @@ describe('renderHtmlModuleTree binding (MT-H)', () => {
     expect(groupById(r.container, 'c::a').dataset.crateLang).toBe('rust');
   });
 
+  it('MT-H05b: data-file-role drives the icon for both languages (Rust gets icons too)', () => {
+    // Rust crate exercising every role: inline (helpers, shares lib.rs),
+    // directory (split has a submodule), leaf file (split::sub), crate root.
+    const facts: Facts = {
+      crates: {
+        c: crateOf('c', [
+          mod(''),
+          mod('helpers', [], 'src/lib.rs'),
+          mod('split', [], 'src/split.rs'),
+          mod('split::sub', [], 'src/split/sub.rs'),
+        ]),
+      },
+      edges: [],
+    };
+    const { container } = mount(workspaceInputs(facts, [WORKSPACE_ROOT_ID, 'c', 'c::split']));
+    expect(groupById(container, 'c').dataset.fileRole).toBe('crate-root');
+    expect(groupById(container, 'c::helpers').dataset.fileRole).toBe('inline');
+    expect(groupById(container, 'c::split').dataset.fileRole).toBe('dir');
+    expect(groupById(container, 'c::split::sub').dataset.fileRole).toBe('leaf-file');
+  });
+
   it('MT-H06: indent-guide vars only on expanded-with-children groups', () => {
     const { facts, expanded } = deepRustWorkspace();
     const k = 2;

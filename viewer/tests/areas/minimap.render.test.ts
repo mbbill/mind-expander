@@ -51,6 +51,7 @@ function band(id: string, y: number, bandHeight: number): ModuleRow {
     prefixSegments: [],
     leafBg: { name: id, xStart: 0, width: 0, isParent: false },
     isLeaf: true,
+    fileRole: 'leaf-file',
     language: 'rust',
   } as ModuleRow;
 }
