@@ -1,6 +1,6 @@
 [package]
 name = "mind-expander"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 authors = ["Bill Ming <mbbill@gmail.com>"]
 description = "An infinite-canvas workspace for coding with AI agents."

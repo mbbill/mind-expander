@@ -948,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "mind-expander"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "arc-swap",
