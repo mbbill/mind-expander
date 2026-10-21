@@ -43,7 +43,7 @@ jobs:
       # reason this matrix exists.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
